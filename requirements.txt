@@ -1,5 +1,2 @@
 pyTelegramBotAPI
-flask
-Pillow
-imageio
-imageio-ffmpeg
+yt-dlp
