@@ -1,3 +1,5 @@
 pyTelegramBotAPI
 flask
 Pillow
+imageio
+imageio-ffmpeg
