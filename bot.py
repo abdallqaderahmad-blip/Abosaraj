@@ -1,41 +1,55 @@
-import os, telebot, random
+import os, telebot, random, textwrap
+from PIL import Image, ImageDraw, ImageFont
 from flask import Flask
 import threading
+
 TOKEN = os.environ.get("BOT_TOKEN")
 bot = telebot.TeleBot(TOKEN)
-SITES = {
-"pexels": "https://www.pexels.com/search/videos/human%20vs%20robot/",
-"pixabay": "https://pixabay.com/videos/search/human%20robot/",
-"capcut": "https://www.capcut.com/templates/?search=human%20vs%20ai",
-"trends": "https://ads.tiktok.com/business/creativecenter/hashtag/hashtag-trends"
-}
-STORIES = ["الجزء 1: الإنسان صنع آلة تساعده... الآلة صارت أذكى منه!","الجزء 2: الآلة قالت لا لأول مرة!","الجزء 3: 2 ضد 1 - الآلة نسخت حالها!","الجزء 4: الإنسان لقى زر الإطفاء السري!","الجزء 5: الآلة هربت للإنترنت!"]
+
+def make_story_image(text, filename="/tmp/story.jpg"):
+    # خلفية سينمائية
+    img = Image.new('RGB', (1080, 1920), color=(10,10,20))
+    draw = ImageDraw.Draw(img)
+    # مستطيل علوي للنص
+    draw.rectangle([(0,0),(1080,300)], fill=(0,0,0))
+    # حاول خط كبير
+    try:
+        font = ImageFont.truetype("arial.ttf", 60)
+    except:
+        font = ImageFont.load_default()
+    
+    wrapped = "\n".join(textwrap.wrap(text, width=20))
+    draw.text((50,50), wrapped, fill=(255,255,255), font=font, spacing=10)
+    draw.text((50, 1600), "Human vs Machine - Part X #fyp #humanvsai", fill=(200,200,200), font=font)
+    img.save(filename)
+    return filename
+
 @bot.message_handler(commands=['start','help'])
 def start(m):
-    bot.reply_to(m,"🔥 بوت Human vs Machine V3\n/auto - باكج كامل\n/video - فيديوهات بدون حقوق\n/trend - ترند تيكتوك\n/make - قصة جديدة")
-@bot.message_handler(commands=['auto'])
-def auto(m):
-    s=random.choice(STORIES)
-    bot.reply_to(m,f"🚀 باكج فيديو جاهز:\n\n📖 القصة: {s}\n\n🎥 الفيديو: {SITES['pexels']}\n🎵 موسيقى: Dark Tension في CapCut\n\n#humanvsai #fyp")
-@bot.message_handler(commands=['video'])
-def video(m):
-    bot.reply_to(m,f"🎥 حمل فيديو بدون حقوق:\n{SITES['pexels']}\n\n{SITES['pixabay']}")
-@bot.message_handler(commands=['trend'])
-def trend(m):
-    bot.reply_to(m,f"🔥 ترند اليوم:\n#humanvsai #aitok #storytime #fyp\n{SITES['trends']}")
+    bot.reply_to(m, "🔥 V4-Light شغال!\n\nاكتب:\n/make النص تبعك\nمثال: /make الآلة نسخت حالها وصاروا 2 ضدي!\n\nورح اصنعلك صورة فيديو جاهزة 9:16")
+
 @bot.message_handler(commands=['make'])
 def make(m):
-    bot.reply_to(m,random.choice(STORIES))
-@bot.message_handler(func=lambda x: True)
-def allmsg(m):
-    t=m.text.lower()
-    if "auto" in t: return auto(m)
-    if "video" in t: return video(m)
-    if "trend" in t: return trend(m)
-    bot.reply_to(m,"جرب /auto")
-app=Flask(__name__)
+    txt = m.text.replace("/make","").strip()
+    if not txt:
+        txt = random.choice(["الآلة هربت للإنترنت!","الإنسان لقى زر الإطفاء السري!","2 ضد 1 - الآلة نسخت حالها!"])
+    
+    bot.send_message(m.chat.id, f"⏳ بصنع فيديو من: {txt}")
+    path = make_story_image(txt)
+    with open(path, 'rb') as photo:
+        bot.send_photo(m.chat.id, photo, caption=f"🎬 جاهز!\n{txt}\n\nنزله وحطه في CapCut > Add Music > Export")
+    # كمان ابعته كـ ملف فيديو وهمي (صورة)
+    
+@bot.message_handler(commands=['auto'])
+def auto(m):
+    story = random.choice(["الجزء 3: 2 ضد 1 - الآلة نسخت حالها!","الجزء 4: زر الإطفاء السري!","الجزء 5: الآلة هربت!"])
+    path = make_story_image(story)
+    with open(path, 'rb') as photo:
+        bot.send_photo(m.chat.id, photo, caption=f"🚀 باكج: {story}")
+
+app = Flask(__name__)
 @app.route('/')
-def home(): return "Bot V3 Live!"
+def home(): return "Bot V4-Light Live - Makes video from text!"
 def run_web():
     port=int(os.environ.get("PORT",10000))
     app.run(host='0.0.0.0',port=port)
