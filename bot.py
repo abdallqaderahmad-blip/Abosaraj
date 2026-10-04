@@ -1,57 +1,64 @@
-import os, telebot, random, textwrap
+import os, telebot, textwrap, random
 from PIL import Image, ImageDraw, ImageFont
+import imageio
 from flask import Flask
 import threading
 
 TOKEN = os.environ.get("BOT_TOKEN")
 bot = telebot.TeleBot(TOKEN)
 
-def make_story_image(text, filename="/tmp/story.jpg"):
-    # خلفية سينمائية
-    img = Image.new('RGB', (1080, 1920), color=(10,10,20))
-    draw = ImageDraw.Draw(img)
-    # مستطيل علوي للنص
-    draw.rectangle([(0,0),(1080,300)], fill=(0,0,0))
-    # حاول خط كبير
+def make_video_from_text(text, out="/tmp/story.mp4"):
+    W, H = 1080, 1920
+    frames = []
     try:
-        font = ImageFont.truetype("arial.ttf", 60)
+        font_big = ImageFont.truetype("DejaVuSans.ttf", 80)
     except:
-        font = ImageFont.load_default()
-    
-    wrapped = "\n".join(textwrap.wrap(text, width=20))
-    draw.text((50,50), wrapped, fill=(255,255,255), font=font, spacing=10)
-    draw.text((50, 1600), "Human vs Machine - Part X #fyp #humanvsai", fill=(200,200,200), font=font)
-    img.save(filename)
-    return filename
+        font_big = ImageFont.load_default()
+
+    lines = textwrap.wrap(text, width=16)
+    text_joined = "\n".join(lines)
+
+    # اعمل 45 فريم مع تأثير زووم خفيف
+    for i in range(45):
+        # خلفية بتتغير
+        r = 20 + i
+        img = Image.new('RGB', (W, H), (r, 10, 60))
+        draw = ImageDraw.Draw(img)
+
+        # مستطيل
+        draw.rectangle([(30, 350-i), (1050, 1550+i)], fill=(0,0,0), outline=(150,100,255), width=6)
+
+        # النص في النص
+        y = 600
+        for line in lines:
+            bbox = draw.textbbox((0,0), line, font=font_big)
+            w = bbox[2]-bbox[0]
+            x = (W - w)//2
+            draw.text((x, y), line, fill=(255,255,255), font=font_big)
+            y += 130
+
+        frames.append(img)
+
+    imageio.mimsave(out, frames, fps=15, macro_block_size=1)
+    return out
 
 @bot.message_handler(commands=['start','help'])
 def start(m):
-    bot.reply_to(m, "🔥 V4-Light شغال!\n\nاكتب:\n/make النص تبعك\nمثال: /make الآلة نسخت حالها وصاروا 2 ضدي!\n\nورح اصنعلك صورة فيديو جاهزة 9:16")
+    bot.reply_to(m, "🎬 V5 VIDEO! \nاكتب:\n/make نص الفيديو\nورح ابعتلك MP4 حقيقي!")
 
 @bot.message_handler(commands=['make'])
 def make(m):
     txt = m.text.replace("/make","").strip()
-    if not txt:
-        txt = random.choice(["الآلة هربت للإنترنت!","الإنسان لقى زر الإطفاء السري!","2 ضد 1 - الآلة نسخت حالها!"])
-    
-    bot.send_message(m.chat.id, f"⏳ بصنع فيديو من: {txt}")
-    path = make_story_image(txt)
-    with open(path, 'rb') as photo:
-        bot.send_photo(m.chat.id, photo, caption=f"🎬 جاهز!\n{txt}\n\nنزله وحطه في CapCut > Add Music > Export")
-    # كمان ابعته كـ ملف فيديو وهمي (صورة)
-    
-@bot.message_handler(commands=['auto'])
-def auto(m):
-    story = random.choice(["الجزء 3: 2 ضد 1 - الآلة نسخت حالها!","الجزء 4: زر الإطفاء السري!","الجزء 5: الآلة هربت!"])
-    path = make_story_image(story)
-    with open(path, 'rb') as photo:
-        bot.send_photo(m.chat.id, photo, caption=f"🚀 باكج: {story}")
+    if not txt: txt = "الإنسان لقى زر الإطفاء السري!"
+    bot.send_message(m.chat.id, f"⏳ بصنع فيديو MP4: {txt}")
+    path = make_video_from_text(txt)
+    with open(path, 'rb') as v:
+        bot.send_video(m.chat.id, v, caption=f"🎥 جاهز! {txt}\n#humanvsai #fyp")
 
 app = Flask(__name__)
 @app.route('/')
-def home(): return "Bot V4-Light Live - Makes video from text!"
+def home(): return "V5 Video Bot Live"
 def run_web():
-    port=int(os.environ.get("PORT",10000))
-    app.run(host='0.0.0.0',port=port)
-threading.Thread(target=run_web,daemon=True).start()
+    app.run(host='0.0.0.0', port=int(os.environ.get("PORT",10000)))
+threading.Thread(target=run_web, daemon=True).start()
 bot.infinity_polling()
