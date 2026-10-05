@@ -1,8 +1,4 @@
-# -*- coding: utf-8 -*-
-import os
-import json
-import logging
-import requests
+import os, json, logging, requests
 from flask import Flask, request
 from fal_client import subscribe
 from groq import Groq
@@ -13,41 +9,36 @@ FAL_KEY = os.getenv('FAL_KEY')
 if FAL_KEY:
     os.environ['FAL_KEY'] = FAL_KEY
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
 groq_client = Groq(api_key=GROQ_KEY)
 flask_app = Flask(__name__)
 
-def tg_send(chat_id, text):
-    url = 'https://api.telegram.org/bot' + TOKEN + '/sendMessage'
-    requests.post(url, json={'chat_id': chat_id, 'text': text}, timeout=20)
+def tg_send(cid, txt):
+    u = 'https://api.telegram.org/bot' + TOKEN + '/sendMessage'
+    requests.post(u, json={'chat_id': cid, 'text': txt}, timeout=20)
 
-def tg_photo(chat_id, photo_url, caption):
-    url = 'https://api.telegram.org/bot' + TOKEN + '/sendPhoto'
-    requests.post(url, json={'chat_id': chat_id, 'photo': photo_url, 'caption': caption}, timeout=40)
+def tg_photo(cid, url):
+    u = 'https://api.telegram.org/bot' + TOKEN + '/sendPhoto'
+    requests.post(u, json={'chat_id': cid, 'photo': url}, timeout=40)
 
 def get_scenes(story):
-    prompt = 'Return ONLY JSON array of 8 english prompts. Story: ' + story
-    comp = groq_client.chat.completions.create(
+    p = 'Return JSON array 8 prompts. Story: ' + story
+    c = groq_client.chat.completions.create(
         model='openai/gpt-oss-20b',
-        messages=[{'role': 'user', 'content': prompt}],
+        messages=[{'role': 'user', 'content': p}],
         max_tokens=2000
     )
-    raw = comp.choices[0].message.content.strip()
+    raw = c.choices[0].message.content.strip()
     a = raw.find('[')
     b = raw.rfind(']') + 1
     data = json.loads(raw[a:b])
     out = []
-    for item in data:
-        if isinstance(item, str):
-            out.append(item)
-        else:
-            if 'prompt' in item:
-                out.append(item['prompt'])
+    for x in data:
+        if isinstance(x, str):
+            out.append(x)
     return out
 
-def gen_image(p):
-    r = subscribe('fal-ai/flux/dev', arguments={'prompt': p, 'image_size': 'landscape_16_9'})
+def gen_image(pr):
+    r = subscribe('fal-ai/flux/dev', arguments={'prompt': pr, 'image_size': 'landscape_16_9'})
     return r['images'][0]['url']
 
 @flask_app.route('/')
@@ -56,12 +47,36 @@ def home():
 
 @flask_app.route('/webhook', methods=['POST'])
 def webhook():
+    data = request.get_json(force=True)
+    msg = data.get('message')
+    if not msg:
+        return 'ok', 200
+    cid = msg['chat']['id']
+    txt = msg.get('text', '')
+    if txt.startswith('/start'):
+        tg_send(cid, 'Ready! Send story')
+        return 'ok', 200
+    if len(txt) < 15:
+        tg_send(cid, 'Short')
+        return 'ok', 200
+    tg_send(cid, 'Analyzing...')
+    scenes = get_scenes(txt)
+    tg_send(cid, 'Drawing...')
+    for pr in scenes:
+        try:
+            url = gen_image(pr)
+            tg_photo(cid, url)
+        except Exception as e:
+            tg_send(cid, 'Fail ' + str(e)[:300])
+    tg_send(cid, 'Done!')
+    return 'ok', 200
+
+if __name__ == '__main__':
+    wh = 'https://abosaraj.onrender.com/webhook'
+    api = 'https://api.telegram.org/bot' + TOKEN + '/setWebhook?url=' + wh
     try:
-        data = request.get_json(force=True)
-        if 'message' not in data:
-            return 'ok', 200
-        chat_id = data['message']['chat']['id']
-        text = data['message'].get('text', '')
-        if text.startswith('/start'):
-            tg_send(chat_id, 'Ready! Send story')
-            return 'ok',
+        requests.get(api, timeout=10)
+    except:
+        pass
+    port = int(os.environ.get('PORT', 10000))
+    flask_app.run(host='0.0.0.0', port=port)
