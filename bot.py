@@ -1,4 +1,4 @@
-import os, json, threading, requests
+import os, json, threading, requests, time
 from flask import Flask
 from google import genai
 from telegram import Update
@@ -13,18 +13,33 @@ client = genai.Client(api_key=GEMINI)
 
 flask_app = Flask(__name__)
 @flask_app.route('/')
-def home(): return "Bot Live 3.8", 200
+def home(): return "Bot Live", 200
 def run_flask(): flask_app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("أهلا بك في بوت أبو سراج! 🎉 أرسل قصة.")
+
+def get_gemini_response(prompt):
+    models = ["gemini-3.8-flash", "gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
+    for m in models:
+        try:
+            print(f"Trying model: {m}")
+            response = client.models.generate_content(model=m, contents=prompt)
+            return response
+        except Exception as e:
+            print(f"Model {m} failed: {e}")
+            if "503" in str(e) or "UNAVAILABLE" in str(e):
+                time.sleep(2)
+                continue
+            continue
+    raise Exception("كل موديلات جوجل مشغولة حاليا، جرب بعد دقيقة")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     story = update.message.text
     await update.message.reply_text("⏳ جاري تحليل قصتك لـ 8 مشاهد...")
     prompt = f"قسم القصة لـ 8 مشاهد JSON فقط [{{'scene':1,'prompt':'english cartoon prompt'}}] القصة: {story}"
     try:
-        response = client.models.generate_content(model="gemini-3.8-flash", contents=prompt)
+        response = get_gemini_response(prompt)
         text = response.text.replace("```json","").replace("```","").strip()
         scenes = json.loads(text)
         for s in scenes[:8]:
