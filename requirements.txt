@@ -1,5 +1,6 @@
-python-telegram-bot==22.3
-Flask
-fal-client
-python-dotenv
+python-telegram-bot==20.7
 google-genai
+fal-client
+Flask
+requests
+groq
