@@ -1,6 +1,5 @@
-python-telegram-bot
-openai
-requests
+python-telegram-bot==20.7
+flask
 fal-client
 python-dotenv
-flask
+google-generativeai
