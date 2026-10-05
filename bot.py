@@ -130,8 +130,47 @@ Format:
 Story:
 {story}
 """
-
     response = client.responses.create(
         model="gpt-4o-mini",
         input=prompt
     )
+    story_text = response.output_text
+    return story_text
+
+# ========== تشغيل التليجرام + فلاسك مع بعض ==========
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters
+import threading, os
+from flask import Flask
+
+TOKEN = os.getenv("BOT_TOKEN") or os.getenv("TELEGRAM_TOKEN")
+if not TOKEN:
+    raise ValueError("BOT_TOKEN مش موجود في Render Environment")
+
+web_app = Flask(__name__)
+
+@web_app.route('/')
+def home():
+    return "Bot is Alive! 🤖", 200
+
+def run_web():
+    web_app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
+
+# هنا حط الهاندلرات تبعك
+# مثال: application.add_handler(CommandHandler("start", start))
+# اذا عندك دالة start و handle_message موجودة فوق
+
+async def start(update, context):
+    await update.message.reply_text("أهلا أبو سراج! البوت شغال الآن ✅\nابعت فكرة القصة")
+
+def build_app():
+    application = ApplicationBuilder().token(TOKEN).build()
+    application.add_handler(CommandHandler("start", start))
+    # اذا عندك هاندلر للرسائل النصية، فكه:
+    # application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_story))
+    return application
+
+if __name__ == "__main__":
+    threading.Thread(target=run_web, daemon=True).start()
+    app = build_app()
+    print("Bot started polling...")
+    app.run_polling()
