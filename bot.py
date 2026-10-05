@@ -4,7 +4,6 @@ import json
 import logging
 import requests
 from flask import Flask, request
-import telegram
 from fal_client import subscribe
 from groq import Groq
 
@@ -18,8 +17,15 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 groq_client = Groq(api_key=GROQ_KEY)
-bot = telegram.Bot(token=TOKEN)
 flask_app = Flask(__name__)
+
+def tg_send(chat_id, text):
+    url = 'https://api.telegram.org/bot' + TOKEN + '/sendMessage'
+    requests.post(url, json={'chat_id': chat_id, 'text': text}, timeout=15)
+
+def tg_photo(chat_id, photo_url, caption):
+    url = 'https://api.telegram.org/bot' + TOKEN + '/sendPhoto'
+    requests.post(url, json={'chat_id': chat_id, 'photo': photo_url, 'caption': caption}, timeout=30)
 
 def get_scenes(story):
     prompt = 'Make 8 scenes JSON array. Story: ' + story
@@ -39,7 +45,7 @@ def gen_image(p):
 
 @flask_app.route('/')
 def home():
-    return 'Bot Live'
+    return 'Bot Live - Requests Mode'
 
 @flask_app.route('/webhook', methods=['POST'])
 def webhook():
@@ -50,18 +56,24 @@ def webhook():
         chat_id = data['message']['chat']['id']
         text = data['message'].get('text', '')
         if text.startswith('/start'):
-            bot.send_message(chat_id=chat_id, text='Ready')
+            tg_send(chat_id, 'Ready! Send story')
             return 'ok', 200
         if len(text) < 10:
-            bot.send_message(chat_id=chat_id, text='Short')
+            tg_send(chat_id, 'Short story')
             return 'ok', 200
-        bot.send_message(chat_id=chat_id, text='Analyzing')
+        tg_send(chat_id, 'Analyzing with Groq...')
         scenes = get_scenes(text)
+        tg_send(chat_id, 'Drawing 8 scenes...')
         for s in scenes:
             pr = s.get('prompt', '')
-            url = gen_image(pr)
-            bot.send_photo(chat_id=chat_id, photo=url, caption='Scene')
-        bot.send_message(chat_id=chat_id, text='Done')
+            if not pr:
+                continue
+            try:
+                url = gen_image(pr)
+                tg_photo(chat_id, url, 'Scene')
+            except Exception as e2:
+                tg_send(chat_id, 'Failed: ' + str(e2))
+        tg_send(chat_id, 'Done!')
     except Exception as e:
         logger.error(str(e))
     return 'ok', 200
