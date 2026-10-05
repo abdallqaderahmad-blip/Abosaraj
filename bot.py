@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import os
 import json
 import logging
@@ -9,7 +10,6 @@ from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, fil
 from fal_client import subscribe
 from groq import Groq
 
-# ================= CONFIG =================
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 GROQ_KEY = os.getenv("GROQ_API_KEY")
 FAL_KEY = os.getenv("FAL_KEY")
@@ -17,92 +17,99 @@ FAL_KEY = os.getenv("FAL_KEY")
 if FAL_KEY:
     os.environ["FAL_KEY"] = FAL_KEY
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 groq_client = Groq(api_key=GROQ_KEY)
-
 flask_app = Flask(__name__)
 telegram_app = ApplicationBuilder().token(TOKEN).build()
 
-# ================= PROMPTS =================
-SYSTEM_PROMPT = """
-You are a professional children's story scene extractor.
-Your job: Convert a story into exactly 8 vivid cartoon scenes.
-Return ONLY valid JSON array.
-Format: [{"scene": 1, "prompt": "detailed english cartoon prompt"},...]
-Rules:
-- Prompts MUST be in English
-- Style: cute cartoon storybook, vibrant colors, soft lighting, Pixar style
-- Keep same main character across all scenes
-- Describe background and action clearly
-- Exactly 8 scenes, no more no less
-- No extra text outside JSON
-"""
-
-def get_scenes_from_groq(story_text):
-    user_prompt = SYSTEM_PROMPT + "\n\nStory to convert:\n" + story_text + "\n\nReturn JSON only, 8 scenes."
-    completion = groq_client.chat.completions.create(
+def get_scenes(story):
+    prompt = "Return ONLY JSON array 8 scenes: [{\"scene\":1,\"prompt\":\"english cartoon prompt\"}] Story: " + story
+    comp = groq_client.chat.completions.create(
         model="llama-3.3-70b-versatile",
-        messages=[
-            {"role": "system", "content": "You are a JSON generator. Return only valid JSON array."},
-            {"role": "user", "content": user_prompt}
-        ],
+        messages=[{"role": "user", "content": prompt}],
         temperature=0.7,
-        max_tokens=2500
+        max_tokens=2000
     )
-    raw_text = completion.choices[0].message.content.strip()
-    logger.info("Groq raw: %s", raw_text[:300])
-    start_idx = raw_text.find("[")
-    end_idx = raw_text.rfind("]") + 1
-    if start_idx == -1 or end_idx == 0:
-        raise ValueError("Groq did not return JSON. Output: " + raw_text[:500])
-    json_str = raw_text[start_idx:end_idx]
-    scenes = json.loads(json_str)
-    if len(scenes) < 4:
-        raise ValueError("Too few scenes returned")
-    return scenes[:8]
+    raw = comp.choices[0].message.content.strip()
+    s = raw.find("[")
+    e = raw.rfind("]") + 1
+    if s == -1:
+        raise ValueError("No JSON")
+    return json.loads(raw[s:e])
 
-def generate_image_fal(prompt_en):
-    full_prompt = prompt_en + ", cute cartoon storybook illustration, Pixar style, vibrant colors, soft lighting, highly detailed, 4k, cheerful"
-    result = subscribe(
-        "fal-ai/flux/dev",
-        arguments={
-            "prompt": full_prompt,
-            "image_size": "landscape_16_9",
-            "num_images": 1,
-            "num_inference_steps": 28
-        }
-    )
-    image_url = result["images"][0]["url"]
-    logger.info("Image generated: %s", image_url[:100])
-    return image_url
+def gen_image(p):
+    full = p + ", cute cartoon storybook, Pixar style, vibrant colors, 4k"
+    r = subscribe("fal-ai/flux/dev", arguments={"prompt": full, "image_size": "landscape_16_9"})
+    return r["images"][0]["url"]
 
-# ================= TELEGRAM =================
-async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    welcome_text = (
-        "مرحبا يا أبو سراج! 🥕✨\n\n"
-        "أنا بوت تحويل القصص لصور كرتونية دسمة\n"
-        "أرسل لي أي قصة قصيرة\n"
-        "مثال: كان هناك أرنب صغير يبحث عن جزرة ذهبية في غابة سحرية\n\n"
-        "ورح أحولها لـ 8 صور كرتونية متتابعة كأنها فيلم 🎬🎨\n\n"
-        "الأوامر:\n"
-        "/start - رسالة الترحيب\n"
-        "/help - كيف أستخدم البوت\n"
-        "/story - مثال لقصة"
-    )
-    await update.message.reply_text(welcome_text)
+async def start_cmd(update, context):
+    await update.message.reply_text("Bot Ready! Send me a story and I will create 8 cartoon images.")
 
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    help_text = (
-        "كيف تستخدم البوت:\n"
-        "1. اكتب قصة قصيرة (3-5 أسطر)\n"
-        "2. أرسلها هنا\n"
-        "3. انتظر، رح أحللها بـ Groq وأرسمها بـ Flux\n"
-        "4. رح توصلك 8 صور واحدة ورا الثانية\n\n"
-        "نصيحة: اذكر الشخصيات والمكان بوضوح"
-    )
-    await update.message.reply_text(help_text)
+async def help_cmd(update, context):
+    await update.message.reply_text("Just send a story text, e.g. a rabbit looking for a golden carrot.")
 
-async def story_example(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    example = "كان هناك أرنب صغير اسمه بوبو يبحث عن جزرة ذهبية في غابة سحرية مليئة بالأشجار المضيئة، واجه ثعلب ماكر، عبر نهر لامع، وتسلق جبل عالي حتى وجد الجز
+async def handle_story(update, context):
+    if not update.message or not update.message.text:
+        return
+    txt = update.message.text.strip()
+    if txt.startswith("/"):
+        return
+    if len(txt) < 10:
+        await update.message.reply_text("Story too short, send longer one")
+        return
+    await update.message.reply_text("Analyzing story with Groq...")
+    try:
+        scenes = get_scenes(txt)
+        await update.message.reply_text("Found " + str(len(scenes)) + " scenes, drawing now...")
+        for idx, sc in enumerate(scenes, 1):
+            num = sc.get("scene", idx)
+            pr = sc.get("prompt", "")
+            if not pr:
+                continue
+            await update.message.reply_text("Drawing scene " + str(num) + "/8")
+            try:
+                url = gen_image(pr)
+                await update.message.reply_photo(photo=url, caption="Scene " + str(num) + "/8")
+            except Exception as e2:
+                logger.error("img error %s", e2)
+                await update.message.reply_text("Failed scene " + str(num))
+                continue
+        await update.message.reply_text("Done! All images created.")
+    except Exception as e:
+        logger.error("main error %s", e)
+        await update.message.reply_text("Error: " + str(e))
+
+telegram_app.add_handler(CommandHandler("start", start_cmd))
+telegram_app.add_handler(CommandHandler("help", help_cmd))
+telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_story))
+
+@flask_app.route("/")
+def home():
+    return "Bot Live Final No Arabic"
+
+@flask_app.route("/webhook", methods=["POST"])
+def webhook():
+    async def proc():
+        await telegram_app.initialize()
+        data = request.get_json(force=True)
+        upd = Update.de_json(data, telegram_app.bot)
+        await telegram_app.process_update(upd)
+    asyncio.run(proc())
+    return "ok", 200
+
+@flask_app.route("/health")
+def health():
+    return "ok"
+
+if __name__ == "__main__":
+    wh = "https://abosaraj.onrender.com/webhook"
+    api = "https://api.telegram.org/bot" + TOKEN + "/setWebhook?url=" + wh
+    try:
+        rr = requests.get(api, timeout=15)
+        logger.info(rr.text)
+    except Exception as ex:
+        logger.warning(str(ex))
+    port = int(os.environ.get("PORT", 10000))
+    flask_app.run(host="0.0.0.0", port=port)
