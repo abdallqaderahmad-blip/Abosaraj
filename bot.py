@@ -33,7 +33,7 @@ def get_scenes(story):
     s = raw.find("[")
     e = raw.rfind("]") + 1
     if s == -1:
-        raise ValueError("No JSON in response: " + raw[:200])
+        raise ValueError("No JSON found")
     return json.loads(raw[s:e])
 
 def gen_image(p):
@@ -43,7 +43,7 @@ def gen_image(p):
 
 @flask_app.route("/")
 def home():
-    return "Bot Live - gpt-oss-20b - No Event Loop"
+    return "Bot Live gpt-oss-20b"
 
 @flask_app.route("/webhook", methods=["POST"])
 def webhook():
@@ -54,16 +54,41 @@ def webhook():
         msg = data["message"]
         chat_id = msg["chat"]["id"]
         text = msg.get("text", "")
-
         if not text:
             return "ok", 200
-
         if text.startswith("/start"):
-            bot.send_message(chat_id=chat_id, text="Bot Ready! Send me a story and I will create 8 cartoon images.")
+            bot.send_message(chat_id=chat_id, text="Bot Ready! Send story")
             return "ok", 200
-
         if text.startswith("/"):
             return "ok", 200
-
         if len(text) < 10:
-            bot.send_message(chat_id=chat_id, text="Story too short, send longer
+            bot.send_message(chat_id=chat_id, text="Story too short")
+            return "ok", 200
+        bot.send_message(chat_id=chat_id, text="Analyzing with Groq...")
+        scenes = get_scenes(text)
+        bot.send_message(chat_id=chat_id, text="Found scenes, drawing now")
+        for idx, sc in enumerate(scenes, 1):
+            num = sc.get("scene", idx)
+            pr = sc.get("prompt", "")
+            if not pr:
+                continue
+            bot.send_message(chat_id=chat_id, text="Drawing scene")
+            try:
+                url = gen_image(pr)
+                bot.send_photo(chat_id=chat_id, photo=url, caption="Scene")
+            except Exception as e2:
+                bot.send_message(chat_id=chat_id, text="Failed scene")
+        bot.send_message(chat_id=chat_id, text="Done!")
+    except Exception as e:
+        logger.error("Error: %s", e)
+    return "ok", 200
+
+if __name__ == "__main__":
+    wh = "https://abosaraj.onrender.com/webhook"
+    api = "https://api.telegram.org/bot" + TOKEN + "/setWebhook?url=" + wh
+    try:
+        requests.get(api, timeout=15)
+    except:
+        pass
+    port = int(os.environ.get("PORT", 10000))
+    flask_app.run(host="0.0.0.0", port=port)
