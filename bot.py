@@ -1,98 +1,62 @@
-import os, requests, threading, time, random
+import os, threading, time, random, yt_dlp, requests
 import telebot
 from flask import Flask
 
-print("TIKTOK V3 FIX")
+print("YT-DLP MODE")
 TOKEN = os.getenv("BOT_TOKEN")
 bot = telebot.TeleBot(TOKEN, threaded=False)
 app = Flask(__name__)
-
 @app.route('/')
-def home():
-    return "OK V3"
+def home(): return "OK YTDLP"
 
 @bot.message_handler(commands=["start"])
 def start(m):
-    bot.reply_to(m, "Ready! /reel dance")
+    bot.reply_to(m, "🔥 Fixed! Send TikTok link OR use /reel dance")
 
-def get_tiktok_by_keyword(topic):
-    # جرب 3 APIs مختلفة
-    headers = {"User-Agent": "Mozilla/5.0"}
-    # 1- TikWM
-    try:
-        r = requests.post("https://www.tikwm.com/api/feed/search", data={"keywords":topic,"count":10,"HD":1}, headers=headers, timeout=15)
-        if r.text.strip().startswith("{"):
-            vids = r.json().get("data",{}).get("videos",[])
-            if vids: return random.choice(vids)
-    except: pass
-    # 2- Fallback API
-    try:
-        r = requests.get(f"https://api.tiklydown.eu.org/api/download?url=https://www.tiktok.com/tag/{topic}", headers=headers, timeout=15)
-        # هذا بس للروابط، للكلمات نستخدم Pexels كبديل مؤقت بفيديو طويل بصوت
-    except: pass
-    return None
-
-def get_pexels_fallback(topic):
-    # فيديو طويل 20-30 ثانية بصوت اذا فشل التيكتوك
-    try:
-        PEXELS = "wRZ5R4Y0N8z8V8k8..."
-        # استخدم Pixabay HD طويل
-        r = requests.get(f"https://pixabay.com/api/videos/?key=47212371-3d5e2e3c1c8b9a5f8a5c9b5c2&q={topic}&per_page=10", timeout=15).json()
-        hits = r.get("hits", [])
-        if hits:
-            v = random.choice(hits)
-            return v["videos"]["large"]["url"], "Stock but long"
-    except: pass
-    return None, None
+def get_direct_url(tiktok_url):
+    ydl_opts = {'quiet':True,'no_warnings':True,'format':'mp4'}
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        info = ydl.extract_info(tiktok_url, download=False)
+        return info.get('url'), info.get('title')
 
 @bot.message_handler(commands=["reel"])
 def reel(m):
     topic = m.text.split(maxsplit=1)[1] if len(m.text.split())>1 else "dance"
-    msg = bot.reply_to(m, "🔍 Searching TikTok: " + topic)
+    wait = bot.reply_to(m, f"🔍 Searching '{topic}' on TikTok...")
     try:
-        data = get_tiktok_by_keyword(topic)
-        if data and data.get("play"):
-            vurl = data.get("play") or data.get("hdplay")
-            bot.send_video(m.chat.id, vurl, caption=data.get("title","")[:150] + " #" + topic)
-            bot.delete_message(m.chat.id, msg.message_id)
-            return
-
-        # لو التيكتوك فشل، جيب فيديو طويل بديل
-        bot.edit_message_text("TikTok blocked, trying backup...", m.chat.id, msg.message_id)
-        # استخدم API ثاني مباشر
-        r = requests.post("https://tikwm.com/api/feed/list", data={"count":10}, headers={"User-Agent":"Mozilla/5.0","Referer":"https://www.tikwm.com/"}, timeout=20)
-        if r.text.strip():
-            j = r.json()
-            vids = j.get("data",{}).get("videos",[])
-            if vids:
-                v = random.choice(vids)
-                vurl = v.get("play") or v.get("hdplay")
-                bot.send_video(m.chat.id, vurl, caption=v.get("title","")[:150] + f" #{topic} #fyp")
-                bot.delete_message(m.chat.id, msg.message_id)
-                return
-
-        bot.edit_message_text("API blocked from Render. Need proxy.", m.chat.id, msg.message_id)
+        ydl_opts = {'quiet':True,'no_warnings':True,'format':'mp4','playlistend':5}
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            # نبحث بصفحة الهاشتاق
+            info = ydl.extract_info(f"https://www.tiktok.com/tag/{topic}", download=False)
+            entries = [e for e in info.get('entries',[]) if e]
+            if not entries:
+                # جرب سيرش عام
+                info = ydl.extract_info(f"ytsearch5:tiktok {topic}", download=False)
+                entries = info.get('entries',[])
+            if entries:
+                vid = random.choice(entries)
+                vurl = vid.get('url') or vid.get('webpage_url')
+                direct, title = get_direct_url(vurl) if 'tiktok.com' in vurl else (vid.get('url'), vid.get('title'))
+                if direct:
+                    bot.send_video(m.chat.id, direct, caption=(title or topic)[:200] + f"\n#{topic} #fyp")
+                    bot.delete_message(m.chat.id, wait.message_id)
+                    return
+        bot.edit_message_text("Not found, try another word or send link", m.chat.id, wait.message_id)
     except Exception as e:
-        bot.edit_message_text("Error: " + str(e)[:200], m.chat.id, msg.message_id)
+        bot.edit_message_text(f"Error: {str(e)[:200]}", m.chat.id, wait.message_id)
 
 @bot.message_handler(func=lambda m: "tiktok.com" in m.text)
-def link(m):
-    msg = bot.reply_to(m, "Downloading link...")
+def link_handler(m):
+    wait = bot.reply_to(m, "⬇️ Downloading with sound...")
     try:
-        for api_url in ["https://www.tikwm.com/api/", "https://tikwm.com/api/"]:
-            try:
-                r = requests.post(api_url, data={"url": m.text, "HD":1}, headers={"User-Agent":"Mozilla/5.0"}, timeout=20)
-                if r.text.strip().startswith("{"):
-                    d = r.json().get("data",{})
-                    vurl = d.get("play") or d.get("hdplay")
-                    if vurl:
-                        bot.send_video(m.chat.id, vurl, caption=d.get("title","")[:150] + " Ready for TikTok")
-                        bot.delete_message(m.chat.id, msg.message_id)
-                        return
-            except: continue
-        bot.edit_message_text("Failed to download, TikTok blocking Render IP", m.chat.id, msg.message_id)
+        url, title = get_direct_url(m.text.strip())
+        if url:
+            bot.send_video(m.chat.id, url, caption=(title or "")[:200] + "\nReady for Reels ✅")
+            bot.delete_message(m.chat.id, wait.message_id)
+        else:
+            bot.edit_message_text("Failed", m.chat.id, wait.message_id)
     except Exception as e:
-        bot.edit_message_text("Error " + str(e), m.chat.id, msg.message_id)
+        bot.edit_message_text(f"Error: {str(e)[:200]}", m.chat.id, wait.message_id)
 
 def run_bot():
     bot.remove_webhook()
@@ -101,4 +65,4 @@ def run_bot():
 
 threading.Thread(target=run_bot, daemon=True).start()
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT", 10000)))
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT",10000)))
