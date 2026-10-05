@@ -1,5 +1,5 @@
 python-telegram-bot==20.7
-flask
-fal-client
-python-dotenv
-google-generativeai
+Flask==2.3.3
+fal-client==0.4.10
+python-dotenv==1.0.0
+google-generativeai==0.5.4
