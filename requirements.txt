@@ -2,3 +2,4 @@ python-telegram-bot
 openai
 requests
 fal-client
+python-dotenv
