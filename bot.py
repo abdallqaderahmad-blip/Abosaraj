@@ -19,7 +19,7 @@ from telegram.ext import (
     filters,
 )
 from flask import Flask
-import threading
+import threading, os
 
 # سيرفر وهمي عشان Render
 web_app = Flask(__name__)
