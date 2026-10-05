@@ -18,7 +18,19 @@ from telegram.ext import (
     ContextTypes,
     filters,
 )
+from flask import Flask
+import threading
 
+# سيرفر وهمي عشان Render
+web_app = Flask(__name__)
+@web_app.route('/')
+def home():
+    return "Abosaraj Bot is Live!"
+
+def run_web():
+    web_app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
+
+threading.Thread(target=run_web, daemon=True).start()
 # =========================
 # SETTINGS
 # =========================
