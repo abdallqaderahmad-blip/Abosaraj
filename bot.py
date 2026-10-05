@@ -13,7 +13,7 @@ client = genai.Client(api_key=GEMINI)
 
 flask_app = Flask(__name__)
 @flask_app.route('/')
-def home(): return "Bot Live", 200
+def home(): return "Bot Live 3.8", 200
 def run_flask(): flask_app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -24,7 +24,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("⏳ جاري تحليل قصتك لـ 8 مشاهد...")
     prompt = f"قسم القصة لـ 8 مشاهد JSON فقط [{{'scene':1,'prompt':'english cartoon prompt'}}] القصة: {story}"
     try:
-        response = client.models.generate_content(model="gemini-2.0-flash", contents=prompt)
+        response = client.models.generate_content(model="gemini-3.8-flash", contents=prompt)
         text = response.text.replace("```json","").replace("```","").strip()
         scenes = json.loads(text)
         for s in scenes[:8]:
