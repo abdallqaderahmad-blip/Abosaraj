@@ -29,7 +29,7 @@ def home(): return "Bot Live with Gemini Free!", 200
 def run_web(): web_app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🎬 أهلاً بك! البوت هلا مجاني 100% - أرسل قصتك!")
+    await update.message.reply_text("اهلا بك! البوت هلا مجاني 100% - ارسل قصتك!")
 
 def create_scenes(story):
     prompt = f"""
@@ -49,24 +49,24 @@ async def handle_story(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(user_story) < 10:
         await update.message.reply_text("القصة قصيرة")
         return
-    await update.message.reply_text("⏳ جاري تحليل قصتك مع Gemini المجاني... وتقسيمها لـ 8 مشاهد")
+    await update.message.reply_text("جاري تحليل قصتك مع Gemini المجاني...")
     try:
         result_text = create_scenes(user_story)
         data = json.loads(result_text)
         title = data.get("title", "قصتك")
         narration = data.get("narration", "")
         scenes = data.get("scenes", [])
-        await update.message.reply_text(f"✅ {title}\n\n📖 {narration}\n\n🎬 جاري توليد {len(scenes)} مشهد...")
+        await update.message.reply_text(f"{title}\n\n{narration}\n\nجاري توليد {len(scenes)} مشهد...")
 
         for i, scene in enumerate(scenes, 1):
             p = scene.get("prompt", "")
-            await update.message.reply_text(f"🎥 مشهد {i}/8 - {p[:50]}...")
+            await update.message.reply_text(f"مشهد {i}/8...")
             try:
                 result = subscribe(VIDEO_MODEL, arguments={"prompt": p})
                 video_url = result.get("video", {}).get("url") if isinstance(result.get("video"), dict) else result.get("url")
                 if video_url:
                     await update.message.reply_video(video_url, caption=f"مشهد {i}")
             except Exception as e:
-                await update.message.reply_text(f"⚠️ فشل مشهد {i}: {e}")
+                await update.message.reply_text(f"فشل مشهد {i}: {e}")
                 continue
-        await update.message.reply_text("🎉 خلصت كل المشاهد يا أبو سر
+        await update.message.reply_text("خلصت كل المشاهد يا ابو سراج!
