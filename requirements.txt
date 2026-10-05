@@ -3,3 +3,4 @@ openai
 requests
 fal-client
 python-dotenv
+flask
