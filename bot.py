@@ -1,14 +1,17 @@
-import os, telebot
+import os
+import telebot
+
 TOKEN = os.getenv("BOT_TOKEN")
-print(f"TOKEN exists: {bool(TOKEN)}")
+if not TOKEN:
+    print("ERROR: BOT_TOKEN not found in Environment!")
+    exit(1)
+
+print("Starting bot...")
 bot = telebot.TeleBot(TOKEN)
 
-@bot.message_handler(commands=['start'])
-def s(m):
-    bot.send_message(m.chat.id, "شغال! 🔥 جرب /reel cat")
+@bot.message_handler(commands=['start','reel'])
+def handle(m):
+    bot.reply_to(m, "✅ البوت شغال! Pixabay مربوط: " + str(bool(os.getenv("PIXABAY_KEY"))))
 
-@bot.message_handler(commands=['reel'])
-def r(m):
-    bot.send_message(m.chat.id, "PIXABAY مربوط: " + str(bool(os.getenv("PIXABAY_KEY"))))
-
+print("Bot polling...")
 bot.infinity_polling()
