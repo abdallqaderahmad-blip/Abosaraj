@@ -13,7 +13,7 @@ FAL = os.getenv("FAL_KEY")
 os.environ["FAL_KEY"] = FAL
 
 genai.configure(api_key=GEMINI)
-model = genai.GenerativeModel("gemini-2.0-flash")
+model = genai.GenerativeModel("gemini-2.5-flash")
 
 flask_app = Flask(__name__)
 @flask_app.route('/')
