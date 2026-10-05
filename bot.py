@@ -1,56 +1,51 @@
-import os, json, threading
-import google.generativeai as genai
-from fal_client import subscribe
+import os, json, threading, asyncio
 from flask import Flask
+import google.generativeai as genai
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
+from fal_client import subscribe
 
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN") or os.getenv("BOT_TOKEN")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-FAL_KEY = os.getenv("FAL_KEY")
-os.environ["FAL_KEY"] = FAL_KEY
-genai.configure(api_key=GEMINI_API_KEY)
+TOKEN = os.getenv("TELEGRAM_TOKEN")
+GEMINI = os.getenv("GEMINI_API_KEY")
+FAL = os.getenv("FAL_KEY")
+os.environ["FAL_KEY"] = FAL
+genai.configure(api_key=GEMINI)
 model = genai.GenerativeModel("gemini-1.5-flash")
 
-web_app = Flask(__name__)
-@web_app.route('/')
-def home(): return "OK", 200
-def run_web(): web_app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
+app_flask = Flask(__name__)
+@app_flask.route('/')
+def home(): return "Bot is Live", 200
 
-async def start(update, context):
-    await update.message.reply_text("Bot Ready! Send story")
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("جاهز! ابعت القصة")
 
-def make_scenes(story):
-    p = f"You are director. Convert to 8 scenes JSON only. Format: {{\"title\":\"t\",\"scenes\":[{{\"prompt\":\"English prompt\"}}]}} Story: {story}"
-    r = model.generate_content(p)
-    t = r.text.replace("```json","").replace("```","").strip()
-    return t
-
-async def handle(update, context):
-    txt = update.message.text
-    await update.message.reply_text("Analyzing...")
+async def handle_msg(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    story = update.message.text
+    await update.message.reply_text("بحلل القصة...")
     try:
-        raw = make_scenes(txt)
-        data = json.loads(raw)
-        scenes = data.get("scenes", [])
-        await update.message.reply_text(f"Generating {len(scenes)} scenes")
-        for i, s in enumerate(scenes, 1):
-            pr = s.get("prompt","")
-            await update.message.reply_text(f"Scene {i}")
-            res = subscribe("fal-ai/kling-video/o3/pro/text-to-video", arguments={"prompt": pr})
-            url = res.get("video",{}).get("url") if isinstance(res.get("video"), dict) else res.get("url")
+        prompt = f'Convert story to JSON only: {{"title":"x","scenes":[{{"prompt":"english video prompt"}}]}} Story:{story}'
+        resp = model.generate_content(prompt)
+        txt = resp.text.replace("```json","").replace("```","").strip()
+        data = json.loads(txt)
+        for i, sc in enumerate(data.get("scenes",[])[:8], 1):
+            await update.message.reply_text(f"بنفذ مشهد {i}")
+            r = subscribe("fal-ai/kling-video/o3/pro/text-to-video", arguments={"prompt": sc["prompt"]})
+            video = r.get("video",{})
+            url = video.get("url") if isinstance(video, dict) else r.get("url")
             if url:
-                await update.message.reply_video(url, caption=f"Scene {i}")
-        await update.message.reply_text("Done!")
+                await update.message.reply_video(url, caption=f"مشهد {i}")
+        await update.message.reply_text("خلصت ✅")
     except Exception as e:
-        await update.message.reply_text(f"Error {e}")
+        await update.message.reply_text(f"خطأ: {e}")
 
-def build():
-    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
-    return app
+def run_bot():
+    async def main():
+        app = ApplicationBuilder().token(TOKEN).build()
+        app.add_handler(CommandHandler("start", start))
+        app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_msg))
+        await app.run_polling()
+    asyncio.run(main())
 
 if __name__ == "__main__":
-    threading.Thread(target=run_web, daemon=True).start()
-    build().run_polling()
+    threading.Thread(target=lambda: app_flask.run(host="0.0.0.0", port=int(os.getenv("PORT",10000))), daemon=True).start()
+    run_bot()
