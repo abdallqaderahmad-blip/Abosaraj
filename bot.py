@@ -97,13 +97,13 @@ IMPORTANT:
 - Describe emotion.
 - Make every scene visually interesting.
 - Do not add text inside the generated video.
+- Do not add text inside the generated video.
 - Do not change the story.
 - Make prompts suitable for an AI video generator.
 
 Return ONLY valid JSON.
 
 Format:
-
 {{
   "title": "short title",
   "narration": "complete narration in Arabic",
@@ -115,11 +115,11 @@ Format:
     }}
   ]
 }}
-
 Story:
-
 {story}
 """
 
     response = client.responses.create(
-       
+        model="gpt-4o-mini",
+        input=prompt
+    )
