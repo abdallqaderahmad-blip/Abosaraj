@@ -1,7 +1,4 @@
-import os
-import json
-import threading
-import asyncio
+import os, json, threading, asyncio
 from flask import Flask
 import google.generativeai as genai
 from telegram import Update
@@ -18,31 +15,30 @@ model = genai.GenerativeModel("gemini-1.5-flash")
 
 flask_app = Flask(__name__)
 @flask_app.route('/')
-def home():
-    return "Bot is Live", 200
-
-def run_flask():
-    flask_app.run(host="0.0.0.0", port=int(os.getenv("PORT", 10000)))
+def home(): return "Bot Live", 200
+def run_flask(): flask_app.run(host="0.0.0.0", port=int(os.getenv("PORT",10000)))
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("أهلاً! ابعت القصة 🎬")
+    await update.message.reply_text("🎬 أهلاً! ابعت القصة")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     story = update.message.text
-    await update.message.reply_text("⏳ بحلل القصة...")
+    await update.message.reply_text("⏳ جاري تحليل قصتك وتقسيمها لـ 8 مشاهد...")
     try:
-        prompt = f'Convert to JSON only: {{"title":"x","scenes":[{{"prompt":"english cinematic video prompt"}}]}} Story:{story}'
+        prompt = f"""حلل هالقصة وقسمها 8 مشاهد. رجع JSON فقط بهالشكل:
+        {{"title":"عنوان","scenes":[{{"prompt":"English cinematic video prompt, detailed"}}]}}
+        القصة: {story}"""
         resp = model.generate_content(prompt)
         txt = resp.text.replace("```json","").replace("```","").strip()
         data = json.loads(txt)
         for i, sc in enumerate(data.get("scenes",[])[:8], 1):
-            await update.message.reply_text(f"🎥 مشهد {i}")
+            await update.message.reply_text(f"🎥 بعمل مشهد {i}/8...")
             r = subscribe("fal-ai/kling-video/o3/pro/text-to-video", arguments={"prompt": sc["prompt"]})
             video = r.get("video",{})
             url = video.get("url") if isinstance(video, dict) else r.get("url")
             if url:
                 await update.message.reply_video(url, caption=f"مشهد {i}")
-        await update.message.reply_text("✅ خلصت!")
+        await update.message.reply_text("✅ خلصت القصة كاملة!")
     except Exception as e:
         await update.message.reply_text(f"خطأ: {e}")
 
