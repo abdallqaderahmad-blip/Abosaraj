@@ -1,59 +1,51 @@
-import os, time, threading, requests, telebot
+import os, requests, threading, telebot
 from flask import Flask
-from gtts import gTTS
-from moviepy.editor import VideoFileClip, AudioFileClip
+import time
 
 TOKEN = os.getenv("BOT_TOKEN")
 PIXABAY_KEY = os.getenv("PIXABAY_KEY")
+
 bot = telebot.TeleBot(TOKEN, threaded=False)
 app = Flask(__name__)
 
 @app.route('/')
-def home():
-    return "Bot is Live!"
-
-def get_video(q):
-    try:
-        url = "https://pixabay.com/api/videos/"
-        params = {"key": PIXABAY_KEY, "q": q, "per_page": 3}
-        data = requests.get(url, params=params, timeout=20).json()
-        return data["hits"][0]["videos"]["medium"]["url"]
-    except:
-        return None
+def home(): return "OK"
 
 @bot.message_handler(commands=["start"])
-def start_cmd(m):
-    bot.send_message(m.chat.id, "Bot is working! Send /reel cat")
+def start(m): bot.reply_to(m, "✅ شغال! ابعت /reel cat")
 
 @bot.message_handler(commands=["reel"])
-def reel_cmd(m):
-    topic = m.text.replace("/reel", "").strip()
-    if not topic:
-        topic = "cat"
-    s = bot.reply_to(m, "Loading " + topic)
-    try:
-        vurl = get_video(topic)
-        if not vurl:
-            bot.send_message(m.chat.id, "No video found")
-            return
-        open("bg.mp4", "wb").write(requests.get(vurl, timeout=30).content)
-        gTTS(topic, lang="en").save("v.mp3")
-        vc = VideoFileClip("bg.mp4").subclip(0, 5)
-        ac = AudioFileClip("v.mp3")
-        final = vc.set_audio(ac)
-        final.write_videofile("out.mp4", fps=24, logger=None)
-        bot.send_video(m.chat.id, open("out.mp4", "rb"))
-        bot.delete_message(m.chat.id, s.message_id)
-    except Exception as e:
-        bot.send_message(m.chat.id, "Error: " + str(e))
-        print(e)
+def reel(m):
+    topic = m.text.replace("/reel","").strip() or "cat"
+    # منع التكرار
+    if hasattr(reel, 'busy') and reel.busy: return
+    reel.busy = True
 
-def run_bot():
+    status = bot.reply_to(m, f"⏳ بدور على {topic}... ثانية وحدة")
+    try:
+        r = requests.get("https://pixabay.com/api/videos/", params={
+            "key": PIXABAY_KEY, "q": topic, "per_page": 3
+        }, timeout=20).json()
+
+        if not r.get("hits"):
+            bot.edit_message_text(f"❌ ما لقيت {topic} جرب: dog, nature", m.chat.id, status.message_id)
+            reel.busy = False
+            return
+
+        vurl = r["hits"][0]["videos"]["medium"]["url"]
+        bot.edit_message_text(f"✅ لقيته! بحمل...", m.chat.id, status.message_id)
+        bot.send_video(m.chat.id, vurl, caption=f"جاهز للريلز: {topic} ✅")
+        bot.delete_message(m.chat.id, status.message_id)
+    except Exception as e:
+        bot.edit_message_text(f"❌ Error: {e}\nتأكد من PIXABAY_KEY", m.chat.id, status.message_id)
+        print(e)
+    reel.busy = False
+
+def run():
     bot.remove_webhook()
-    time.sleep(2)
-    bot.infinity_polling(skip_pending=True)
+    time.sleep(3)
+    bot.infinity_polling(skip_pending=True, timeout=60, long_polling_timeout=60)
 
 if __name__ == "__main__":
-    threading.Thread(target=run_bot, daemon=True).start()
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
+    threading.Thread(target=run, daemon=True).start()
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
