@@ -11,17 +11,18 @@ if FAL_KEY:
 
 groq_client = Groq(api_key=GROQ_KEY)
 flask_app = Flask(__name__)
+logging.basicConfig(level=logging.INFO)
 
 def tg_send(cid, txt):
     u = 'https://api.telegram.org/bot' + TOKEN + '/sendMessage'
-    requests.post(u, json={'chat_id': cid, 'text': txt}, timeout=20)
+    requests.post(u, json={'chat_id': cid, 'text': txt[:4000]}, timeout=20)
 
-def tg_photo(cid, url):
+def tg_photo(cid, url, cap=''):
     u = 'https://api.telegram.org/bot' + TOKEN + '/sendPhoto'
-    requests.post(u, json={'chat_id': cid, 'photo': url}, timeout=40)
+    requests.post(u, json={'chat_id': cid, 'photo': url, 'caption': cap}, timeout=50)
 
 def get_scenes(story):
-    p = 'Return JSON array 8 prompts. Story: ' + story
+    p = 'Return ONLY JSON array of 8 short english cartoon prompts. Story: ' + story
     c = groq_client.chat.completions.create(
         model='openai/gpt-oss-20b',
         messages=[{'role': 'user', 'content': p}],
@@ -35,48 +36,12 @@ def get_scenes(story):
     for x in data:
         if isinstance(x, str):
             out.append(x)
-    return out
+        elif isinstance(x, dict) and 'prompt' in x:
+            out.append(x['prompt'])
+    return out[:8]
 
 def gen_image(pr):
-    r = subscribe('fal-ai/flux/dev', arguments={'prompt': pr, 'image_size': 'landscape_16_9'})
-    return r['images'][0]['url']
-
-@flask_app.route('/')
-def home():
-    return 'Bot Live'
-
-@flask_app.route('/webhook', methods=['POST'])
-def webhook():
-    data = request.get_json(force=True)
-    msg = data.get('message')
-    if not msg:
-        return 'ok', 200
-    cid = msg['chat']['id']
-    txt = msg.get('text', '')
-    if txt.startswith('/start'):
-        tg_send(cid, 'Ready! Send story')
-        return 'ok', 200
-    if len(txt) < 15:
-        tg_send(cid, 'Short')
-        return 'ok', 200
-    tg_send(cid, 'Analyzing...')
-    scenes = get_scenes(txt)
-    tg_send(cid, 'Drawing...')
-    for pr in scenes:
-        try:
-            url = gen_image(pr)
-            tg_photo(cid, url)
-        except Exception as e:
-            tg_send(cid, 'Fail ' + str(e)[:300])
-    tg_send(cid, 'Done!')
-    return 'ok', 200
-
-if __name__ == '__main__':
-    wh = 'https://abosaraj.onrender.com/webhook'
-    api = 'https://api.telegram.org/bot' + TOKEN + '/setWebhook?url=' + wh
+    # حاول fal اول
     try:
-        requests.get(api, timeout=10)
-    except:
-        pass
-    port = int(os.environ.get('PORT', 10000))
-    flask_app.run(host='0.0.0.0', port=port)
+        if FAL_KEY:
+            r = subscribe('fal-ai/flux/dev', arguments={'prompt': pr,
