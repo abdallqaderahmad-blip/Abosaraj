@@ -1,0 +1,29 @@
+services:
+  - type: web
+    name: Abosaraj
+    runtime: python
+
+    buildCommand: |
+      pip install -r requirements.txt
+      apt-get update
+      apt-get install -y ffmpeg
+
+    startCommand: python bot.py
+
+    healthCheckPath: /health
+
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
+
+      - key: GROQ_API_KEY
+        sync: false
+
+      - key: FAL_KEY
+        sync: false
+
+      - key: GROQ_MODEL
+        value: llama-3.3-70b-versatile
+
+      - key: FAL_MODEL
+        value: fal-ai/hunyuan-image/v3/text-to-image
