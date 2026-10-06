@@ -1,7 +1,7 @@
 import os
 import asyncio
-import logging
 import threading
+import logging
 
 from flask import Flask
 from telegram import Update
@@ -12,14 +12,16 @@ from telegram.ext import (
 )
 
 # =========================================================
-# SETTINGS
+# CONFIG
 # =========================================================
 
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
-PORT = int(os.environ.get("PORT", 10000))
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+PORT = int(os.getenv("PORT", "10000"))
 
 if not TELEGRAM_TOKEN:
-    raise RuntimeError("TELEGRAM_TOKEN is missing from Render Environment Variables")
+    raise RuntimeError(
+        "ERROR: TELEGRAM_TOKEN is not set in Render Environment Variables."
+    )
 
 
 # =========================================================
@@ -31,11 +33,11 @@ logging.basicConfig(
     level=logging.INFO,
 )
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("Abosaraj")
 
 
 # =========================================================
-# FLASK SERVER
+# FLASK WEB SERVER
 # =========================================================
 
 app = Flask(__name__)
@@ -51,7 +53,9 @@ def health():
     return "OK", 200
 
 
-def run_web_server():
+def run_flask():
+    logger.info(f"Starting web server on port {PORT}")
+
     app.run(
         host="0.0.0.0",
         port=PORT,
@@ -65,25 +69,24 @@ def run_web_server():
 # =========================================================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "🔥 أهلاً بك في Abosaraj Bot\n\n"
-        "البوت شغال بنجاح.\n"
-        "أرسل لي فكرتك ونبني عليها الخطوة القادمة."
-    )
+
+    if update.message:
+        await update.message.reply_text(
+            "🔥 أهلاً بك في Abosaraj Bot!\n\n"
+            "البوت يعمل الآن بنجاح.\n\n"
+            "استخدم /help لمعرفة الأوامر."
+        )
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "الأوامر المتاحة:\n\n"
-        "/start - تشغيل البوت\n"
-        "/help - المساعدة"
-    )
 
-
-async def unknown_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "الأمر غير معروف. استخدم /help"
-    )
+    if update.message:
+        await update.message.reply_text(
+            "🤖 أوامر Abosaraj:\n\n"
+            "/start - تشغيل البوت\n"
+            "/help - المساعدة\n\n"
+            "🚧 نظام صناعة الفيديو سيتم تركيبه هنا."
+        )
 
 
 # =========================================================
@@ -92,13 +95,18 @@ async def unknown_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def run_bot():
 
+    logger.info("Creating Telegram application...")
+
     application = (
         Application.builder()
         .token(TELEGRAM_TOKEN)
         .build()
     )
 
-    # Commands
+    # -------------------------
+    # COMMANDS
+    # -------------------------
+
     application.add_handler(
         CommandHandler("start", start)
     )
@@ -107,34 +115,50 @@ async def run_bot():
         CommandHandler("help", help_command)
     )
 
-    # Unknown commands
-    application.add_handler(
-        CommandHandler(None, unknown_command)
-    )
+    # -------------------------
+    # START BOT
+    # -------------------------
+
+    logger.info("Initializing Telegram bot...")
+
+    await application.initialize()
 
     logger.info("Starting Telegram bot...")
 
-    await application.initialize()
     await application.start()
 
-    # Start polling
+    logger.info("Starting Telegram polling...")
+
     await application.updater.start_polling(
         drop_pending_updates=True
     )
 
-    logger.info("Telegram bot is running!")
+    logger.info("===================================")
+    logger.info("      ABOSARAJ BOT IS ONLINE")
+    logger.info("===================================")
 
-    # Keep the asyncio loop alive
+    # Keep bot alive
     try:
+
         while True:
             await asyncio.sleep(3600)
 
     except asyncio.CancelledError:
+
         logger.info("Bot cancellation received.")
 
     finally:
+
+        logger.info("Stopping Telegram polling...")
+
         await application.updater.stop()
+
+        logger.info("Stopping Telegram application...")
+
         await application.stop()
+
+        logger.info("Shutting down Telegram application...")
+
         await application.shutdown()
 
 
@@ -144,21 +168,49 @@ async def run_bot():
 
 def main():
 
-    # Start Flask in another thread
-    web_thread = threading.Thread(
-        target=run_web_server,
-        daemon=True
+    logger.info("===================================")
+    logger.info("        STARTING ABOSARAJ")
+    logger.info("===================================")
+
+    # -----------------------------------------------------
+    # Start Flask in background thread
+    # -----------------------------------------------------
+
+    flask_thread = threading.Thread(
+        target=run_flask,
+        daemon=True,
     )
 
-    web_thread.start()
+    flask_thread.start()
 
     logger.info(
-        f"Web server started on port {PORT}"
+        f"Flask web server started on port {PORT}"
     )
 
+    # -----------------------------------------------------
     # Start Telegram bot
-    asyncio.run(run_bot())
+    # -----------------------------------------------------
 
+    try:
+
+        asyncio.run(run_bot())
+
+    except KeyboardInterrupt:
+
+        logger.info("Abosaraj stopped.")
+
+    except Exception as e:
+
+        logger.exception(
+            f"Fatal bot error: {e}"
+        )
+
+        raise
+
+
+# =========================================================
+# ENTRY POINT
+# =========================================================
 
 if __name__ == "__main__":
     main()
