@@ -11,9 +11,9 @@ import requests
 from flask import Flask
 from gtts import gTTS
 from groq import Groq
-import fal_client
+from huggingface_hub import InferenceClient
 
-from telegram import Update
+from telegram import Update, BotCommand
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -24,26 +24,38 @@ from telegram.ext import (
 
 
 # =========================================================
-# CONFIG
+# LOGGING
+# =========================================================
+
+logging.basicConfig(
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    level=logging.INFO,
+)
+
+logger = logging.getLogger(__name__)
+
+
+# =========================================================
+# ENVIRONMENT VARIABLES
 # =========================================================
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-FAL_KEY = os.getenv("FAL_KEY")
+HF_TOKEN = os.getenv("HF_TOKEN")
 
 GROQ_MODEL = os.getenv(
     "GROQ_MODEL",
-    "llama-3.3-70b-versatile"
+    "openai/gpt-oss-120b"
 )
 
-FAL_MODEL = os.getenv(
-    "FAL_MODEL",
-    "fal-ai/hunyuan-image/v3/text-to-image"
+HF_IMAGE_MODEL = os.getenv(
+    "HF_IMAGE_MODEL",
+    "black-forest-labs/FLUX.1-schnell"
 )
 
 
 # =========================================================
-# CHECK ENVIRONMENT VARIABLES
+# CHECK REQUIRED VARIABLES
 # =========================================================
 
 if not BOT_TOKEN:
@@ -52,24 +64,26 @@ if not BOT_TOKEN:
 if not GROQ_API_KEY:
     raise RuntimeError("GROQ_API_KEY is missing")
 
-if not FAL_KEY:
-    raise RuntimeError("FAL_KEY is missing")
+if not HF_TOKEN:
+    raise RuntimeError("HF_TOKEN is missing")
 
 
 # =========================================================
-# LOGGING
+# CLIENTS
 # =========================================================
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s"
+groq_client = Groq(
+    api_key=GROQ_API_KEY
 )
 
-logger = logging.getLogger("Abosaraj")
+hf_client = InferenceClient(
+    api_key=HF_TOKEN,
+    provider="auto"
+)
 
 
 # =========================================================
-# FLASK
+# FLASK HEALTH SERVER
 # =========================================================
 
 app = Flask(__name__)
@@ -77,7 +91,7 @@ app = Flask(__name__)
 
 @app.route("/")
 def home():
-    return "Abosaraj Bot is running."
+    return "Abosaraj Bot is running!"
 
 
 @app.route("/health")
@@ -86,7 +100,7 @@ def health():
 
 
 def run_flask():
-    port = int(os.environ.get("PORT", 10000))
+    port = int(os.getenv("PORT", "10000"))
 
     app.run(
         host="0.0.0.0",
@@ -97,7 +111,7 @@ def run_flask():
 
 
 # =========================================================
-# TELEGRAM LOOP
+# TELEGRAM GLOBALS
 # =========================================================
 
 telegram_loop = None
@@ -109,43 +123,33 @@ application = None
 # =========================================================
 
 def send_async_message(chat_id, text):
-
     global telegram_loop
 
     if telegram_loop is None:
-        logger.error("Telegram event loop is not available")
+        logger.error("Telegram loop is not available")
         return
 
+    future = asyncio.run_coroutine_threadsafe(
+        application.bot.send_message(
+            chat_id=chat_id,
+            text=text
+        ),
+        telegram_loop
+    )
+
     try:
-
-        future = asyncio.run_coroutine_threadsafe(
-            application.bot.send_message(
-                chat_id=chat_id,
-                text=text
-            ),
-            telegram_loop
-        )
-
         future.result(timeout=60)
-
     except Exception as e:
-
-        logger.exception(
-            "Could not send Telegram message: %s",
-            e
-        )
+        logger.error(f"Failed to send message: {e}")
 
 
 # =========================================================
-# /START
+# START COMMAND
 # =========================================================
 
-async def start(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
-    await update.message.reply_text(
+    text = (
         "🔥 أهلاً بك في Abosaraj Bot!\n\n"
         "🎬 أنا جاهز لتحويل قصتك إلى فيديو.\n\n"
         "📖 أرسل لي قصة أو فكرة، وسأقوم بـ:\n\n"
@@ -156,104 +160,69 @@ async def start(
         "⏱️ مدة الفيديو حوالي دقيقة أو أكثر."
     )
 
+    await update.message.reply_text(text)
+
 
 # =========================================================
-# /HELP
+# HELP COMMAND
 # =========================================================
 
-async def help_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(
-        "📚 طريقة الاستخدام:\n\n"
-        "فقط أرسل القصة التي تريد تحويلها إلى فيديو.\n\n"
-        "مثال:\n\n"
-        "رجل فقير وجد حقيبة مليئة بالمال، "
-        "وعندما فتحها وجد رسالة غامضة غيرت حياته بالكامل."
+        "📖 أرسل لي أي قصة أو فكرة وسأحولها إلى فيديو قصصي."
     )
 
 
 # =========================================================
-# GROQ - CREATE STORY SCENES
+# CREATE 8 SCENES WITH GROQ
 # =========================================================
 
 def create_scenes(story):
 
     logger.info("Starting Groq story processing...")
 
-    client = Groq(
-        api_key=GROQ_API_KEY
-    )
-
     system_prompt = """
-أنت كاتب ومخرج محترف لفيديوهات القصص القصيرة.
+You are a professional short-video story director.
 
-مهمتك تحويل القصة إلى 8 مشاهد سينمائية مترابطة.
+Your job is to transform the user's Arabic story into exactly 8 cinematic scenes.
 
-يجب أن يكون الناتج JSON فقط بدون أي كلام إضافي.
+Return ONLY valid JSON.
 
-يجب أن يحتوي JSON على:
+The JSON format must be exactly:
 
 {
   "scenes": [
     {
       "scene": 1,
-      "narration": "...",
-      "image_prompt": "..."
+      "narration": "Arabic narration",
+      "image_prompt": "Detailed English cinematic image prompt"
     }
   ]
 }
 
-الشروط:
+Rules:
 
-1. يجب إنشاء 8 مشاهد بالضبط.
-
-2. narration يجب أن يكون باللغة العربية.
-
-3. narration يجب أن يكون مناسباً للتعليق الصوتي.
-
-4. image_prompt يجب أن يكون باللغة الإنجليزية.
-
-5. image_prompt يجب أن يكون وصفاً سينمائياً مفصلاً.
-
-6. وصف الصورة يجب أن يذكر:
-- الشخصيات
-- العمر التقريبي
-- الملابس
-- المكان
-- الإضاءة
-- الوقت
-- المشاعر
-- البيئة
-- زاوية التصوير
-- الأسلوب السينمائي
-
-7. حافظ على شكل الشخصيات ثابتاً بين المشاهد.
-
-8. لا تضع أي كتابة أو نص داخل الصور.
-
-9. اجعل القصة تبدأ بمقدمة قوية.
-
-10. اجعل الأحداث تتطور تدريجياً.
-
-11. اجعل المشهد الثامن نهاية واضحة ومؤثرة.
-
-12. لا تكتب أي شيء خارج JSON.
-
-كل مشهد يجب أن يكون مناسباً لفيديو قصير مدته حوالي 7 إلى 8 ثوانٍ.
+1. Exactly 8 scenes.
+2. The story must progress logically from scene 1 to scene 8.
+3. Narration must be in Arabic.
+4. Image prompts must be in English.
+5. Each image prompt should describe:
+   - characters
+   - location
+   - emotions
+   - lighting
+   - camera composition
+   - cinematic atmosphere
+6. Keep the same character appearance throughout the story.
+7. Make the scenes visually interesting.
+8. Do not include markdown.
+9. Do not include ```json.
+10. Return JSON only.
 """
 
-    user_prompt = f"""
-حوّل القصة التالية إلى 8 مشاهد:
-
-{story}
-"""
-
-    response = client.chat.completions.create(
+    response = groq_client.chat.completions.create(
         model=GROQ_MODEL,
-        temperature=0.8,
         messages=[
             {
                 "role": "system",
@@ -261,163 +230,88 @@ def create_scenes(story):
             },
             {
                 "role": "user",
-                "content": user_prompt
+                "content": story
             }
-        ]
+        ],
+        temperature=0.7,
+        max_tokens=5000,
+        response_format={
+            "type": "json_object"
+        }
     )
 
-    content = response.choices[0].message.content.strip()
+    logger.info("Groq response received")
 
-    logger.info(
-        "Groq response received"
-    )
+    content = response.choices[0].message.content
 
-    # إزالة Markdown إذا رجعه Groq
-    if content.startswith("```"):
+    data = json.loads(content)
 
-        content = content.replace(
-            "```json",
-            ""
-        )
-
-        content = content.replace(
-            "```",
-            ""
-        )
-
-        content = content.strip()
-
-    try:
-
-        data = json.loads(content)
-
-    except Exception as e:
-
-        logger.error(
-            "Could not parse Groq JSON:"
-        )
-
-        logger.error(content)
-
-        raise RuntimeError(
-            f"Groq returned invalid JSON: {e}"
-        )
-
-    scenes = data.get(
-        "scenes",
-        []
-    )
+    scenes = data.get("scenes", [])
 
     if not scenes:
+        raise RuntimeError("Groq returned no scenes")
 
-        raise RuntimeError(
-            "Groq returned no scenes"
-        )
-
-    # إذا رجع أقل من 8 مشاهد
+    # If fewer than 8 scenes, repeat the last one
     while len(scenes) < 8:
+        last_scene = dict(scenes[-1])
+        last_scene["scene"] = len(scenes) + 1
+        scenes.append(last_scene)
 
-        last_scene = dict(
-            scenes[-1]
-        )
-
-        last_scene["scene"] = (
-            len(scenes) + 1
-        )
-
-        scenes.append(
-            last_scene
-        )
-
-    # نأخذ أول 8 فقط
     scenes = scenes[:8]
 
-    logger.info(
-        "Created %s scenes",
-        len(scenes)
-    )
+    logger.info(f"Created {len(scenes)} scenes")
 
     return scenes
 
 
 # =========================================================
-# FAL - GENERATE IMAGE
+# GENERATE IMAGE USING HUGGING FACE
 # =========================================================
 
-def generate_image(prompt):
+def generate_image(prompt, output_path):
 
-    logger.info(
-        "Generating image with FAL..."
+    logger.info("Generating image with Hugging Face...")
+    logger.info(f"Image model: {HF_IMAGE_MODEL}")
+
+    enhanced_prompt = f"""
+Cinematic vertical story scene.
+
+{prompt}
+
+High quality cinematic photography,
+dramatic lighting,
+realistic characters,
+detailed environment,
+strong composition,
+emotional storytelling,
+movie still,
+professional film production,
+no text,
+no watermark.
+"""
+
+    image = hf_client.text_to_image(
+        prompt=enhanced_prompt,
+        model=HF_IMAGE_MODEL,
+        width=768,
+        height=1024,
+        num_inference_steps=4
     )
 
-    result = fal_client.subscribe(
-        FAL_MODEL,
-        arguments={
-            "prompt": prompt,
-            "image_size": "portrait_16_9",
-            "num_images": 1
-        },
-        with_logs=False
-    )
+    image.save(output_path)
 
-    logger.info(
-        "FAL result received"
-    )
+    logger.info(f"Image saved: {output_path}")
 
-    data = result
-
-    if hasattr(result, "model_dump"):
-
-        data = result.model_dump()
-
-    elif hasattr(result, "dict"):
-
-        data = result.dict()
-
-    elif hasattr(result, "data"):
-
-        data = result.data
-
-    if isinstance(data, str):
-
-        data = json.loads(data)
-
-    images = data.get(
-        "images",
-        []
-    )
-
-    if not images:
-
-        raise RuntimeError(
-            f"FAL did not return an image. Result: {data}"
-        )
-
-    image_url = images[0].get(
-        "url"
-    )
-
-    if not image_url:
-
-        raise RuntimeError(
-            "FAL image URL is missing"
-        )
-
-    return image_url
+    return output_path
 
 
 # =========================================================
-# DOWNLOAD IMAGE
+# DOWNLOAD FILE
 # =========================================================
 
-def download_file(
-    url,
-    path
-):
+def download_file(url, output_path):
 
-    logger.info(
-        "Downloading image..."
-    )
+    logger.info(f"Downloading file: {url}")
 
     response = requests.get(
         url,
@@ -426,28 +320,19 @@ def download_file(
 
     response.raise_for_status()
 
-    with open(
-        path,
-        "wb"
-    ) as f:
+    with open(output_path, "wb") as f:
+        f.write(response.content)
 
-        f.write(
-            response.content
-        )
+    return output_path
 
 
 # =========================================================
-# TEXT TO SPEECH
+# CREATE ARABIC VOICE
 # =========================================================
 
-def create_voice(
-    text,
-    output_path
-):
+def create_voice(text, output_path):
 
-    logger.info(
-        "Creating Arabic voice..."
-    )
+    logger.info("Creating Arabic voice...")
 
     tts = gTTS(
         text=text,
@@ -455,46 +340,35 @@ def create_voice(
         slow=False
     )
 
-    tts.save(
-        output_path
-    )
+    tts.save(output_path)
+
+    logger.info(f"Voice saved: {output_path}")
+
+    return output_path
 
 
 # =========================================================
-# FFMPEG CHECK
+# CHECK FFMPEG
 # =========================================================
 
 def check_ffmpeg():
 
-    logger.info(
-        "Checking FFmpeg..."
-    )
-
     result = subprocess.run(
-        [
-            "ffmpeg",
-            "-version"
-        ],
-        capture_output=True,
+        ["ffmpeg", "-version"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         text=True
     )
 
     if result.returncode != 0:
-
-        raise RuntimeError(
-            "FFmpeg is not available"
-        )
-
-    logger.info(
-        "FFmpeg is ready"
-    )
+        raise RuntimeError("FFmpeg is not available")
 
 
 # =========================================================
-# GET VIDEO DURATION
+# GET AUDIO DURATION
 # =========================================================
 
-def get_duration(path):
+def get_duration(file_path):
 
     result = subprocess.run(
         [
@@ -505,29 +379,24 @@ def get_duration(path):
             "format=duration",
             "-of",
             "default=noprint_wrappers=1:nokey=1",
-            path
+            file_path
         ],
-        capture_output=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         text=True
     )
 
     if result.returncode != 0:
-
-        return 0
+        return 8.0
 
     try:
-
-        return float(
-            result.stdout.strip()
-        )
-
+        return float(result.stdout.strip())
     except Exception:
-
-        return 0
+        return 8.0
 
 
 # =========================================================
-# CREATE VIDEO SCENE
+# CREATE SCENE VIDEO
 # =========================================================
 
 def create_scene_video(
@@ -536,12 +405,14 @@ def create_scene_video(
     output_path
 ):
 
-    logger.info(
-        "Creating video scene..."
-    )
+    logger.info("Creating scene video...")
+
+    duration = get_duration(audio_path)
+
+    # Minimum 8 seconds per scene
+    duration = max(duration, 8.0)
 
     command = [
-
         "ffmpeg",
         "-y",
 
@@ -555,16 +426,14 @@ def create_scene_video(
         audio_path,
 
         "-vf",
-
         (
             "scale=720:1280:"
             "force_original_aspect_ratio=increase,"
-            "crop=720:1280,"
-            "setsar=1"
+            "crop=720:1280"
         ),
 
         "-t",
-        "8",
+        str(duration),
 
         "-r",
         "30",
@@ -604,57 +473,50 @@ def create_scene_video(
 
     result = subprocess.run(
         command,
-        capture_output=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         text=True
     )
 
     if result.returncode != 0:
 
-        logger.error(
-            "FFmpeg scene error:"
-        )
-
-        logger.error(
-            result.stderr[-5000:]
-        )
+        logger.error(result.stderr)
 
         raise RuntimeError(
-            "FFmpeg failed while creating scene"
+            "FFmpeg scene creation failed"
         )
 
-
-# =========================================================
-# CONCAT VIDEOS
-# =========================================================
-
-def concat_videos(
-    video_files,
-    output_path
-):
-
-    concat_file = (
-        output_path +
-        ".txt"
+    logger.info(
+        f"Scene video created: {output_path}"
     )
 
-    with open(
-        concat_file,
-        "w",
-        encoding="utf-8"
-    ) as f:
+    return output_path
+
+
+# =========================================================
+# CONCAT SCENE VIDEOS
+# =========================================================
+
+def concat_videos(video_files, output_path):
+
+    logger.info("Combining scene videos...")
+
+    list_file = output_path + "_list.txt"
+
+    with open(list_file, "w", encoding="utf-8") as f:
 
         for video in video_files:
 
-            absolute = os.path.abspath(
-                video
+            safe_path = os.path.abspath(video).replace(
+                "'",
+                "'\\''"
             )
 
             f.write(
-                f"file '{absolute}'\n"
+                f"file '{safe_path}'\n"
             )
 
     command = [
-
         "ffmpeg",
         "-y",
 
@@ -665,7 +527,7 @@ def concat_videos(
         "0",
 
         "-i",
-        concat_file,
+        list_file,
 
         "-c",
         "copy",
@@ -673,105 +535,73 @@ def concat_videos(
         output_path
     ]
 
-    logger.info(
-        "Combining all scenes..."
-    )
-
     result = subprocess.run(
         command,
-        capture_output=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         text=True
     )
 
+    try:
+        os.remove(list_file)
+    except Exception:
+        pass
+
     if result.returncode != 0:
 
-        logger.error(
-            "Concat error:"
-        )
-
-        logger.error(
-            result.stderr[-5000:]
-        )
+        logger.error(result.stderr)
 
         raise RuntimeError(
             "FFmpeg concat failed"
         )
 
-    try:
+    logger.info(
+        f"Final video created: {output_path}"
+    )
 
-        os.remove(
-            concat_file
-        )
-
-    except Exception:
-        pass
+    return output_path
 
 
 # =========================================================
 # SEND FINAL VIDEO
 # =========================================================
 
-def send_final_video(
+async def send_final_video(
     chat_id,
     video_path
 ):
 
-    global telegram_loop
+    logger.info("Sending final video to Telegram...")
 
-    if telegram_loop is None:
+    with open(video_path, "rb") as video:
 
-        raise RuntimeError(
-            "Telegram loop unavailable"
+        await application.bot.send_video(
+            chat_id=chat_id,
+            video=video,
+            caption=(
+                "🎬 تم إنشاء الفيديو بنجاح!\n\n"
+                "🔥 Abosaraj"
+            ),
+            supports_streaming=True
         )
 
-    async def send():
-
-        with open(
-            video_path,
-            "rb"
-        ) as video:
-
-            await application.bot.send_video(
-                chat_id=chat_id,
-                video=video,
-                caption=(
-                    "🎬 تم إنشاء الفيديو بنجاح!\n\n"
-                    "🔥 Abosaraj"
-                ),
-                supports_streaming=True
-            )
-
-    future = asyncio.run_coroutine_threadsafe(
-        send(),
-        telegram_loop
-    )
-
-    future.result(
-        timeout=600
-    )
+    logger.info("Final video sent")
 
 
 # =========================================================
-# SEND PROGRESS
+# PROGRESS MESSAGE
 # =========================================================
 
-def progress(
-    chat_id,
-    message
-):
-
-    logger.info(
-        message
-    )
+def progress(chat_id, text):
 
     send_async_message(
         chat_id,
-        message
+        text
     )
 
 
 # =========================================================
-# COMPLETE VIDEO GENERATION
+# GENERATE VIDEO
 # =========================================================
 
 def generate_video_for_user(
@@ -779,30 +609,30 @@ def generate_video_for_user(
     story
 ):
 
-    work_dir = tempfile.mkdtemp(
+    temp_dir = tempfile.mkdtemp(
         prefix="abosaraj_"
     )
 
     try:
 
-        # -----------------------------------------
-        # STEP 1
-        # -----------------------------------------
+        check_ffmpeg()
+
+        # ---------------------------------------------
+        # STORY
+        # ---------------------------------------------
 
         progress(
             chat_id,
             "🧠 أقرأ القصة وأقسمها إلى 8 مشاهد..."
         )
 
-        scenes = create_scenes(
-            story
-        )
+        scenes = create_scenes(story)
 
-        # -----------------------------------------
-        # STEP 2
-        # -----------------------------------------
+        scene_videos = []
 
-        video_files = []
+        # ---------------------------------------------
+        # SCENES
+        # ---------------------------------------------
 
         for index, scene in enumerate(
             scenes,
@@ -811,47 +641,17 @@ def generate_video_for_user(
 
             progress(
                 chat_id,
-                f"🎨 المشهد {index}/8\n"
-                f"جاري إنشاء الصورة..."
-            )
-
-            image_prompt = scene.get(
-                "image_prompt",
-                ""
-            )
-
-            narration = scene.get(
-                "narration",
-                ""
-            )
-
-            if not image_prompt:
-
-                raise RuntimeError(
-                    f"Scene {index} has no image prompt"
-                )
-
-            if not narration:
-
-                raise RuntimeError(
-                    f"Scene {index} has no narration"
-                )
-
-            # -----------------------------------------
-            # IMAGE
-            # -----------------------------------------
-
-            image_url = generate_image(
-                image_prompt
+                f"🎨 المشهد {index}/8\n\n"
+                "جاري إنشاء الصورة..."
             )
 
             image_path = os.path.join(
-                work_dir,
-                f"image_{index}.jpg"
+                temp_dir,
+                f"scene_{index}.png"
             )
 
-            download_file(
-                image_url,
+            generate_image(
+                scene["image_prompt"],
                 image_path
             )
 
@@ -862,16 +662,16 @@ def generate_video_for_user(
             progress(
                 chat_id,
                 f"🎙️ المشهد {index}/8\n"
-                f"جاري إنشاء الصوت..."
+                "جاري إنشاء التعليق الصوتي..."
             )
 
             audio_path = os.path.join(
-                work_dir,
-                f"audio_{index}.mp3"
+                temp_dir,
+                f"scene_{index}.mp3"
             )
 
             create_voice(
-                narration,
+                scene["narration"],
                 audio_path
             )
 
@@ -882,104 +682,95 @@ def generate_video_for_user(
             progress(
                 chat_id,
                 f"🎬 المشهد {index}/8\n"
-                f"جاري تجهيز الفيديو..."
+                "جاري تركيب الفيديو..."
             )
 
-            scene_video = os.path.join(
-                work_dir,
+            video_path = os.path.join(
+                temp_dir,
                 f"scene_{index}.mp4"
             )
 
             create_scene_video(
                 image_path,
                 audio_path,
-                scene_video
+                video_path
             )
 
-            video_files.append(
-                scene_video
+            scene_videos.append(
+                video_path
             )
 
-        # -----------------------------------------
-        # STEP 3
-        # -----------------------------------------
+        # ---------------------------------------------
+        # CONCAT
+        # ---------------------------------------------
 
         progress(
             chat_id,
-            "🔥 كل المشاهد جاهزة!\n\n"
-            "🎬 جاري تجميع الفيديو النهائي..."
+            "🎬 جمّعت المشاهد كلها...\n"
+            "جاري تجهيز الفيديو النهائي."
         )
 
         final_video = os.path.join(
-            work_dir,
+            temp_dir,
             "abosaraj_final.mp4"
         )
 
         concat_videos(
-            video_files,
+            scene_videos,
             final_video
         )
 
-        # -----------------------------------------
-        # STEP 4
-        # -----------------------------------------
-
-        duration = get_duration(
-            final_video
-        )
-
-        logger.info(
-            "Final video duration: %.2f seconds",
-            duration
-        )
+        # ---------------------------------------------
+        # SEND
+        # ---------------------------------------------
 
         progress(
             chat_id,
-            f"✅ الفيديو جاهز!\n"
-            f"⏱️ المدة: {duration:.1f} ثانية\n\n"
-            f"📤 جاري إرسال الفيديو..."
+            "📤 الفيديو جاهز!\n"
+            "جاري إرساله إليك..."
         )
 
-        # -----------------------------------------
-        # STEP 5
-        # -----------------------------------------
+        future = asyncio.run_coroutine_threadsafe(
+            send_final_video(
+                chat_id,
+                final_video
+            ),
+            telegram_loop
+        )
 
-        send_final_video(
-            chat_id,
-            final_video
+        future.result(
+            timeout=300
         )
 
         logger.info(
-            "Video sent successfully"
+            "Video generation completed successfully"
         )
 
     except Exception as e:
 
         logger.exception(
-            "VIDEO GENERATION FAILED"
+            "Video generation failed"
         )
 
-        send_async_message(
+        progress(
             chat_id,
             "❌ حصل خطأ أثناء إنشاء الفيديو.\n\n"
-            f"الخطأ:\n{str(e)[:3000]}"
+            f"الخطأ:\n{str(e)}"
         )
 
     finally:
 
         try:
-
             shutil.rmtree(
-                work_dir,
+                temp_dir,
                 ignore_errors=True
             )
-
         except Exception:
             pass
 
 
 # =========================================================
-# STORY MESSAGE
+# STORY HANDLER
 # =========================================================
 
 async def story_handler(
@@ -998,27 +789,10 @@ async def story_handler(
     if not story:
         return
 
-    if story.startswith("/"):
-        return
-
     chat_id = update.effective_chat.id
 
     logger.info(
-        "===================================="
-    )
-
-    logger.info(
-        "Received story from chat %s",
-        chat_id
-    )
-
-    logger.info(
-        "Story length: %s",
-        len(story)
-    )
-
-    logger.info(
-        "===================================="
+        f"Received story from chat {chat_id}"
     )
 
     await update.message.reply_text(
@@ -1030,10 +804,7 @@ async def story_handler(
 
     thread = threading.Thread(
         target=generate_video_for_user,
-        args=(
-            chat_id,
-            story
-        ),
+        args=(chat_id, story),
         daemon=True
     )
 
@@ -1045,13 +816,13 @@ async def story_handler(
 # =========================================================
 
 async def error_handler(
-    update: object,
-    context: ContextTypes.DEFAULT_TYPE
+    update,
+    context
 ):
 
-    logger.error(
-        "Telegram error: %s",
-        context.error
+    logger.exception(
+        "Telegram error:",
+        exc_info=context.error
     )
 
 
@@ -1071,110 +842,37 @@ async def post_init(
         "Telegram event loop initialized"
     )
 
-    try:
-
-        await app_instance.bot.delete_webhook(
-            drop_pending_updates=True
-        )
-
-        logger.info(
-            "Webhook deleted"
-        )
-
-    except Exception as e:
-
-        logger.warning(
-            "Could not delete webhook: %s",
-            e
-        )
-
-    try:
-
-        await app_instance.bot.set_my_commands(
-            [
-                (
-                    "start",
-                    "بدء البوت"
-                ),
-                (
-                    "help",
-                    "طريقة الاستخدام"
-                )
-            ]
-        )
-
-    except Exception as e:
-
-        logger.warning(
-            "Could not set bot commands: %s",
-            e
-        )
-
-
-# =========================================================
-# CREATE TELEGRAM APPLICATION
-# =========================================================
-
-application = (
-    Application.builder()
-    .token(BOT_TOKEN)
-    .post_init(post_init)
-    .build()
-)
-
-
-# =========================================================
-# HANDLERS
-# =========================================================
-
-application.add_handler(
-    CommandHandler(
-        "start",
-        start
+    await app_instance.bot.delete_webhook(
+        drop_pending_updates=True
     )
-)
 
-application.add_handler(
-    CommandHandler(
-        "help",
-        help_command
+    logger.info(
+        "Webhook deleted"
     )
-)
 
-application.add_handler(
-    MessageHandler(
-        filters.TEXT & ~filters.COMMAND,
-        story_handler
+    await app_instance.bot.set_my_commands(
+        [
+            BotCommand(
+                "start",
+                "بدء البوت"
+            ),
+            BotCommand(
+                "help",
+                "المساعدة"
+            )
+        ]
     )
-)
-
-application.add_error_handler(
-    error_handler
-)
 
 
 # =========================================================
 # MAIN
 # =========================================================
 
-if __name__ == "__main__":
+def main():
 
-    logger.info(
-        "===================================="
-    )
+    global application
 
-    logger.info(
-        "🔥 ABOSARAJ BOT STARTING..."
-    )
-
-    logger.info(
-        "===================================="
-    )
-
-    # FFmpeg
-    check_ffmpeg()
-
-    # Flask
+    # Start Flask
     flask_thread = threading.Thread(
         target=run_flask,
         daemon=True
@@ -1182,16 +880,50 @@ if __name__ == "__main__":
 
     flask_thread.start()
 
-    logger.info(
-        "Flask server started"
+    # Telegram Application
+    application = (
+        Application
+        .builder()
+        .token(BOT_TOKEN)
+        .post_init(post_init)
+        .build()
     )
 
-    # Telegram
+    # Handlers
+    application.add_handler(
+        CommandHandler(
+            "start",
+            start_command
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "help",
+            help_command
+        )
+    )
+
+    application.add_handler(
+        MessageHandler(
+            filters.TEXT & ~filters.COMMAND,
+            story_handler
+        )
+    )
+
+    application.add_error_handler(
+        error_handler
+    )
+
     logger.info(
-        "Starting Telegram polling..."
+        "Starting Abosaraj Telegram bot..."
     )
 
     application.run_polling(
         drop_pending_updates=True,
         allowed_updates=Update.ALL_TYPES
     )
+
+
+if __name__ == "__main__":
+    main()
