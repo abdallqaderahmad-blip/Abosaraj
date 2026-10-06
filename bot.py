@@ -2,18 +2,28 @@ import os
 import re
 import json
 import uuid
-import time
 import asyncio
 import logging
 import subprocess
+import threading
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 
 import requests
 import edge_tts
+import fal_client
+
 from flask import Flask
 from groq import Groq
-from gradio_client import Client
+
+from telegram import Update
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    MessageHandler,
+    ContextTypes,
+    filters,
+)
 
 
 # =========================================================
@@ -22,41 +32,56 @@ from gradio_client import Client
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-GROQ_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
-HF_TOKEN = os.getenv("HF_TOKEN")
+GROQ_MODEL = os.getenv(
+    "GROQ_MODEL",
+    "openai/gpt-oss-120b"
+)
 
-HF_SPACE = "Lightricks/ltx-video-distilled"
+FAL_KEY = os.getenv("FAL_KEY")
 
-WORK_DIR = Path("/tmp/abosaraj")
-WORK_DIR.mkdir(parents=True, exist_ok=True)
-
-VIDEO_WIDTH = 704
-VIDEO_HEIGHT = 512
-
-FINAL_WIDTH = 720
-FINAL_HEIGHT = 1280
-
-FPS = 30
+# Wan 3 Text-to-Video
+FAL_MODEL = "alibaba/wan-3.0/text-to-video"
 
 # كل لقطة AI
-CLIP_SECONDS = 5.0
+CLIP_SECONDS = 5
 
-# عدد اللقطات AI
+# عدد اللقطات
 AI_SCENES = 4
 
-# الناتج النهائي
+# مدة الفيديو النهائي
 FINAL_SECONDS = 60
 
+# الفيديو النهائي
+FINAL_WIDTH = 720
+FINAL_HEIGHT = 1280
+FPS = 30
+
+# صوت عربي
 VOICE = "ar-SA-HamedNeural"
+
+# ملفات العمل
+WORK_DIR = Path("/tmp/abosaraj")
+WORK_DIR.mkdir(
+    parents=True,
+    exist_ok=True
+)
+
+# لا نشغل أكثر من فيديو بنفس الوقت
+executor = ThreadPoolExecutor(
+    max_workers=1
+)
+
+
+# =========================================================
+# LOGGING
+# =========================================================
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(message)s"
 )
 
-logger = logging.getLogger("abosaraj")
-
-executor = ThreadPoolExecutor(max_workers=2)
+logger = logging.getLogger("Abosaraj")
 
 
 # =========================================================
@@ -68,19 +93,23 @@ app = Flask(__name__)
 
 @app.route("/")
 def home():
-    return "Abosaraj V2 is alive"
+    return "Abosaraj V3 is alive"
 
 
 @app.route("/health")
 def health():
     return {
         "status": "ok",
-        "bot": "Abosaraj V2"
+        "version": "3",
+        "video_engine": "Wan 3"
     }
 
 
 def run_flask():
-    port = int(os.getenv("PORT", "10000"))
+    port = int(
+        os.getenv("PORT", "10000")
+    )
+
     app.run(
         host="0.0.0.0",
         port=port,
@@ -89,7 +118,7 @@ def run_flask():
 
 
 # =========================================================
-# CHECK ENV
+# ENVIRONMENT
 # =========================================================
 
 def check_environment():
@@ -102,14 +131,17 @@ def check_environment():
     if not GROQ_API_KEY:
         missing.append("GROQ_API_KEY")
 
-    if not HF_TOKEN:
-        missing.append("HF_TOKEN")
+    if not FAL_KEY:
+        missing.append("FAL_KEY")
 
     if missing:
         raise RuntimeError(
             "Missing environment variables: "
             + ", ".join(missing)
         )
+
+    # fal-client يستخدم FAL_KEY
+    os.environ["FAL_KEY"] = FAL_KEY
 
 
 # =========================================================
@@ -124,6 +156,7 @@ def get_groq():
     global groq_client
 
     if groq_client is None:
+
         groq_client = Groq(
             api_key=GROQ_API_KEY
         )
@@ -131,49 +164,77 @@ def get_groq():
     return groq_client
 
 
+# =========================================================
+# AI STORY DIRECTOR
+# =========================================================
+
 def create_scenes(story):
 
     prompt = f"""
-You are a professional Arabic short-video director.
+أنت مخرج محترف لفيديوهات TikTok وInstagram Reels وYouTube Shorts.
 
-Turn the user's story into exactly 4 cinematic scenes.
+حوّل القصة التالية إلى فيديو قصير سينمائي.
 
-The final video will be around 60 seconds.
+أريد بالضبط 4 مشاهد.
 
-Return ONLY valid JSON.
+كل مشهد مدته حوالي 5 ثواني.
 
-Format:
+الفيديو النهائي سيكون حوالي دقيقة، لذلك اجعل المشاهد الأربعة قوية ويمكن تكرار اللقطات أثناء المونتاج بدون أن تبدو كصور ثابتة.
+
+أرجع JSON فقط.
+
+الشكل:
 
 {{
-  "title": "short Arabic title",
-  "hook": "very short Arabic hook",
+  "title": "عنوان عربي قصير وقوي",
+  "hook": "جملة افتتاحية تشد المشاهد",
   "scenes": [
     {{
-      "narration": "Arabic narration",
-      "screen_text": "short Arabic caption",
+      "narration": "جملة أو جمل عربية للمشهد",
+      "screen_text": "كلمات عربية قصيرة",
+      "video_prompt": "English cinematic video prompt"
+    }},
+    {{
+      "narration": "جملة أو جمل عربية للمشهد",
+      "screen_text": "كلمات عربية قصيرة",
+      "video_prompt": "English cinematic video prompt"
+    }},
+    {{
+      "narration": "جملة أو جمل عربية للمشهد",
+      "screen_text": "كلمات عربية قصيرة",
+      "video_prompt": "English cinematic video prompt"
+    }},
+    {{
+      "narration": "جملة أو جمل عربية للمشهد",
+      "screen_text": "كلمات عربية قصيرة",
       "video_prompt": "English cinematic video prompt"
     }}
   ]
 }}
 
-Rules:
+القواعد المهمة:
 
-- Exactly 4 scenes.
-- Arabic narration.
-- Arabic screen_text.
-- video_prompt MUST be English.
-- Make the video prompts describe REAL MOTION.
-- Do NOT ask for text inside the generated video.
-- Cinematic realistic style.
-- Vertical-video composition.
-- Dark dramatic lighting when suitable.
-- Each scene should be visually different.
-- Avoid static images.
-- Describe camera movement and subject movement.
-- The story must remain coherent.
-- Make narration suitable for approximately 50-60 seconds total.
+- بالضبط 4 مشاهد.
+- narration باللغة العربية.
+- video_prompt باللغة الإنجليزية فقط.
+- لا تضع أي كتابة أو subtitles داخل video_prompt.
+- الفيديو يجب أن يكون REALISTIC وCINEMATIC.
+- يجب أن يكون هناك حركة حقيقية في كل مشهد.
+- اذكر حركة الشخص أو الأشياء.
+- اذكر حركة الكاميرا.
+- لا تجعل المشهد يبدو كصورة ثابتة.
+- كل مشهد يجب أن يكون مختلفًا بصريًا.
+- حافظ على نفس الشخصيات والمنطق البصري للقصة قدر الإمكان.
+- استخدم إضاءة سينمائية.
+- استخدم عمق ميدان واقعي.
+- استخدم حركة كاميرا مثل tracking shot أو handheld أو slow push-in أو orbit عندما تناسب المشهد.
+- لا تستخدم الدماء أو العنف الدموي الصريح.
+- مناسب لفيديوهات الرعب والغموض والقصص المثيرة.
+- اجعل القصة مشوقة من أول ثانية.
+- narration الكامل للمشاهد الأربعة يجب أن يكون تقريبًا 100 إلى 140 كلمة.
+- screen_text قصير جدًا.
 
-USER STORY:
+القصة:
 
 {story}
 """
@@ -182,11 +243,15 @@ USER STORY:
 
     response = client.chat.completions.create(
         model=GROQ_MODEL,
-        temperature=0.8,
+        temperature=0.85,
         messages=[
             {
                 "role": "system",
-                "content": "Return valid JSON only."
+                "content": (
+                    "You are an expert Arabic "
+                    "short-form video director. "
+                    "Return valid JSON only."
+                )
             },
             {
                 "role": "user",
@@ -195,9 +260,13 @@ USER STORY:
         ]
     )
 
-    content = response.choices[0].message.content.strip()
+    content = (
+        response.choices[0]
+        .message.content
+        .strip()
+    )
 
-    # تنظيف Markdown لو رجع ```json
+    # إزالة ```json إذا أرسلها Groq
     content = re.sub(
         r"^```json\s*",
         "",
@@ -211,46 +280,38 @@ USER STORY:
         content
     )
 
-    data = json.loads(content)
+    try:
+        data = json.loads(content)
 
-    scenes = data.get("scenes", [])
+    except json.JSONDecodeError as e:
 
-    if len(scenes) != 4:
+        logger.error(
+            "Groq returned invalid JSON: %s",
+            content
+        )
+
         raise RuntimeError(
-            f"Groq returned {len(scenes)} scenes instead of 4."
+            "Groq returned invalid JSON: "
+            + str(e)
+        )
+
+    scenes = data.get(
+        "scenes",
+        []
+    )
+
+    if len(scenes) != AI_SCENES:
+
+        raise RuntimeError(
+            f"Groq returned {len(scenes)} "
+            f"scenes instead of {AI_SCENES}."
         )
 
     return data
 
 
 # =========================================================
-# HF CLIENT
-# =========================================================
-
-hf_client = None
-
-
-def get_hf_client():
-
-    global hf_client
-
-    if hf_client is None:
-
-        logger.info(
-            "Connecting to Hugging Face Space: %s",
-            HF_SPACE
-        )
-
-        hf_client = Client(
-            HF_SPACE,
-            hf_token=HF_TOKEN
-        )
-
-    return hf_client
-
-
-# =========================================================
-# VIDEO GENERATION
+# WAN 3 VIDEO GENERATION
 # =========================================================
 
 def generate_ai_clip(
@@ -259,167 +320,155 @@ def generate_ai_clip(
     seed
 ):
 
-    client = get_hf_client()
-
-    negative_prompt = (
-        "worst quality, blurry, distorted, "
-        "jittery motion, inconsistent anatomy, "
-        "duplicate objects, text, subtitles, watermark"
+    logger.info(
+        "Starting Wan 3 generation..."
     )
+
+    try:
+
+        result = fal_client.subscribe(
+            FAL_MODEL,
+            arguments={
+                "prompt": prompt,
+
+                "resolution": "720p",
+
+                "aspect_ratio": "9:16",
+
+                "duration": CLIP_SECONDS,
+
+                "audio": True,
+
+                "enable_prompt_expansion": True,
+
+                "seed": int(seed)
+            }
+        )
+
+    except Exception as e:
+
+        error = str(e)
+
+        logger.exception(
+            "Wan 3 generation failed"
+        )
+
+        if (
+            "402" in error
+            or "credit" in error.lower()
+            or "insufficient" in error.lower()
+            or "balance" in error.lower()
+        ):
+
+            raise RuntimeError(
+                "❌ fal.ai رفض التوليد بسبب الرصيد "
+                "أو عدم وجود رصيد API كافي."
+            )
+
+        if (
+            "401" in error
+            or "unauthorized" in error.lower()
+            or "authentication" in error.lower()
+        ):
+
+            raise RuntimeError(
+                "❌ FAL_KEY غير صحيح أو غير موجود."
+            )
+
+        raise RuntimeError(
+            "❌ Wan 3 generation failed: "
+            + error
+        )
 
     logger.info(
-        "Generating AI video clip..."
+        "Wan 3 result received."
     )
 
-    # Current LTX Space uses:
-    #
-    # prompt
-    # negative_prompt
-    # input_image
-    # input_video
-    # height
-    # width
-    # mode
-    # duration
-    # frames_to_use
-    # seed
-    # randomize_seed
-    # guidance
-    # improve_texture
-    #
-    # We try the current API name first.
-    # A fallback is kept because HF/Gradio can expose
-    # the endpoint with or without the leading slash.
+    # =====================================================
+    # استخراج رابط الفيديو
+    # =====================================================
 
-    args = [
-        prompt,
-        negative_prompt,
-        None,
-        None,
-        VIDEO_HEIGHT,
-        VIDEO_WIDTH,
-        "text-to-video",
-        CLIP_SECONDS,
-        9,
-        int(seed),
-        False,
-        3.0,
-        False
-    ]
+    video_url = None
 
-    result = None
-    last_error = None
+    if isinstance(result, dict):
 
-    for api_name in [
-        "text_to_video",
-        "/text_to_video"
-    ]:
+        video = result.get(
+            "video"
+        )
 
-        try:
+        if isinstance(video, dict):
 
-            logger.info(
-                "Trying Hugging Face API: %s",
-                api_name
+            video_url = (
+                video.get("url")
+                or video.get("video_url")
             )
 
-            result = client.predict(
-                *args,
-                api_name=api_name
+        elif isinstance(video, str):
+
+            video_url = video
+
+        if not video_url:
+
+            video_url = (
+                result.get("video_url")
+                or result.get("url")
             )
 
-            if result:
-                break
+    if not video_url:
 
-        except Exception as e:
+        logger.error(
+            "Unexpected Wan response: %s",
+            result
+        )
 
-            last_error = e
-
-            logger.warning(
-                "API %s failed: %s",
-                api_name,
-                e
-            )
-
-    if not result:
         raise RuntimeError(
-            "Hugging Face video generation failed: "
-            + str(last_error)
+            "Wan 3 returned no video URL."
         )
 
-    # Gradio may return a filepath or dict
-    video_file = None
-
-    if isinstance(result, str):
-        video_file = result
-
-    elif isinstance(result, dict):
-
-        video_file = (
-            result.get("video")
-            or result.get("path")
-            or result.get("value")
-        )
-
-    elif isinstance(result, (list, tuple)):
-
-        for item in result:
-
-            if isinstance(item, str):
-                video_file = item
-                break
-
-            if isinstance(item, dict):
-
-                video_file = (
-                    item.get("video")
-                    or item.get("path")
-                    or item.get("value")
-                )
-
-                if video_file:
-                    break
-
-    if not video_file:
-        raise RuntimeError(
-            "Hugging Face returned an unknown video result."
-        )
-
-    video_file = str(video_file)
+    # =====================================================
+    # تحميل الفيديو
+    # =====================================================
 
     logger.info(
-        "HF video result: %s",
-        video_file
+        "Downloading Wan 3 video..."
     )
 
-    # If local path
-    if os.path.exists(video_file):
+    response = requests.get(
+        video_url,
+        timeout=300
+    )
 
-        subprocess.run(
-            [
-                "cp",
-                video_file,
-                str(output_path)
-            ],
-            check=True
+    response.raise_for_status()
+
+    with open(
+        output_path,
+        "wb"
+    ) as f:
+
+        f.write(
+            response.content
         )
-
-    else:
-
-        # Sometimes Gradio returns a URL
-        response = requests.get(
-            video_file,
-            timeout=180
-        )
-
-        response.raise_for_status()
-
-        with open(output_path, "wb") as f:
-            f.write(response.content)
 
     if not output_path.exists():
+
         raise RuntimeError(
-            "AI video file was not created."
+            "Wan 3 video file was not created."
         )
+
+    file_size = (
+        output_path.stat().st_size
+    )
+
+    if file_size < 1000:
+
+        raise RuntimeError(
+            "Downloaded video file is too small."
+        )
+
+    logger.info(
+        "Wan 3 clip saved: %s bytes",
+        file_size
+    )
 
     return str(output_path)
 
@@ -436,7 +485,7 @@ async def generate_voice_async(
     communicate = edge_tts.Communicate(
         text=text,
         voice=VOICE,
-        rate="+0%",
+        rate="-3%",
         volume="+0%"
     )
 
@@ -458,8 +507,9 @@ def generate_voice(
     )
 
     if not output_path.exists():
+
         raise RuntimeError(
-            "Voice file was not created."
+            "Arabic voice was not created."
         )
 
     return str(output_path)
@@ -487,13 +537,18 @@ def get_duration(path):
     )
 
     try:
-        return float(result.stdout.strip())
+
+        return float(
+            result.stdout.strip()
+        )
+
     except Exception:
+
         return 0.0
 
 
 # =========================================================
-# MAKE VERTICAL CLIP
+# PREPARE CLIP
 # =========================================================
 
 def prepare_clip(
@@ -506,29 +561,38 @@ def prepare_clip(
         "force_original_aspect_ratio=increase,"
         f"crop={FINAL_WIDTH}:{FINAL_HEIGHT},"
         "setsar=1,"
-        "fps=30"
+        f"fps={FPS}"
     )
 
     subprocess.run(
         [
             "ffmpeg",
             "-y",
+
             "-i",
             str(input_video),
+
             "-vf",
             filter_complex,
+
             "-an",
+
             "-c:v",
             "libx264",
+
             "-preset",
             "veryfast",
+
             "-crf",
             "25",
+
             "-pix_fmt",
             "yuv420p",
+
             str(output_video)
         ],
         check=True,
+
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL
     )
@@ -545,17 +609,22 @@ def concat_clips(
     output_path
 ):
 
-    concat_file = WORK_DIR / (
+    concat_file = (
+        WORK_DIR /
         f"concat_{uuid.uuid4().hex}.txt"
     )
 
-    with open(concat_file, "w", encoding="utf-8") as f:
+    with open(
+        concat_file,
+        "w",
+        encoding="utf-8"
+    ) as f:
 
         for clip in clips:
 
-            safe_path = str(clip).replace(
-                "'",
-                "'\\''"
+            safe_path = (
+                str(clip)
+                .replace("'", "'\\''")
             )
 
             f.write(
@@ -566,17 +635,23 @@ def concat_clips(
         [
             "ffmpeg",
             "-y",
+
             "-f",
             "concat",
+
             "-safe",
             "0",
+
             "-i",
             str(concat_file),
+
             "-c",
             "copy",
+
             str(output_path)
         ],
         check=True,
+
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL
     )
@@ -585,7 +660,7 @@ def concat_clips(
 
 
 # =========================================================
-# CREATE CAPTIONS ASSUMPTION
+# SUBTITLES
 # =========================================================
 
 def create_caption_file(
@@ -597,9 +672,9 @@ def create_caption_file(
     words = narration.split()
 
     if not words:
+
         return None
 
-    # تقسيم النص إلى جمل قصيرة
     chunks = []
 
     current = []
@@ -610,7 +685,15 @@ def create_caption_file(
 
         if (
             len(current) >= 6
-            or word.endswith(("،", ".", "!", "؟", ":"))
+            or word.endswith(
+                (
+                    "،",
+                    ".",
+                    "!",
+                    "؟",
+                    ":"
+                )
+            )
         ):
 
             chunks.append(
@@ -620,24 +703,32 @@ def create_caption_file(
             current = []
 
     if current:
+
         chunks.append(
             " ".join(current)
         )
 
     if not chunks:
+
         return None
 
-    chunk_duration = duration / len(chunks)
+    chunk_duration = (
+        duration / len(chunks)
+    )
 
     def ass_time(seconds):
 
-        h = int(seconds // 3600)
+        h = int(
+            seconds // 3600
+        )
 
         m = int(
             (seconds % 3600) // 60
         )
 
-        s = int(seconds % 60)
+        s = int(
+            seconds % 60
+        )
 
         cs = int(
             (seconds - int(seconds)) * 100
@@ -658,7 +749,15 @@ def create_caption_file(
         )
 
         f.write(
-            "ScriptType: v4.00+\n\n"
+            "ScriptType: v4.00+\n"
+        )
+
+        f.write(
+            "PlayResX: 720\n"
+        )
+
+        f.write(
+            "PlayResY: 1280\n\n"
         )
 
         f.write(
@@ -676,10 +775,10 @@ def create_caption_file(
         )
 
         f.write(
-            "Style: Default,Noto Sans Arabic,28,"
+            "Style: Default,Noto Sans Arabic,30,"
             "&H00FFFFFF,&H00FFFFFF,&H00000000,"
-            "&H80000000,1,0,0,0,100,100,0,0,"
-            "1,2,1,2,40,40,100,1\n\n"
+            "&H90000000,1,0,0,0,100,100,0,0,"
+            "1,3,1,2,40,40,100,1\n\n"
         )
 
         f.write(
@@ -694,31 +793,53 @@ def create_caption_file(
 
         for i, chunk in enumerate(chunks):
 
-            start = i * chunk_duration
+            start = (
+                i * chunk_duration
+            )
 
             end = min(
                 duration,
                 (i + 1) * chunk_duration
             )
 
-            # ASS يحتاج escape
-            text = chunk.replace(
-                "{",
-                "\\{"
-            ).replace(
-                "}",
-                "\\}"
+            text = (
+                chunk
+                .replace(
+                    "{",
+                    "\\{"
+                )
+                .replace(
+                    "}",
+                    "\\}"
+                )
             )
 
             f.write(
-                f"Dialogue: 0,"
+                "Dialogue: 0,"
                 f"{ass_time(start)},"
                 f"{ass_time(end)},"
-                f"Default,,0,0,0,,"
+                "Default,,0,0,0,,"
                 f"{text}\n"
             )
 
     return str(output_path)
+
+
+# =========================================================
+# ESCAPE DRAW TEXT
+# =========================================================
+
+def escape_drawtext(text):
+
+    return (
+        str(text)
+        .replace("\\", "\\\\")
+        .replace(":", "\\:")
+        .replace("'", "\\'")
+        .replace(",", "\\,")
+        .replace("[", "\")
+        .replace("]", "\")
+    )
 
 
 # =========================================================
@@ -728,12 +849,17 @@ def create_caption_file(
 def make_final_video(
     clips,
     narration,
+    title,
     output_path
 ):
 
+    # -----------------------------------------------------
+    # 1. دمج اللقطات
+    # -----------------------------------------------------
+
     combined = (
-        WORK_DIR /
-        f"combined_{uuid.uuid4().hex}.mp4"
+        output_path.parent /
+        "combined.mp4"
     )
 
     concat_clips(
@@ -746,13 +872,18 @@ def make_final_video(
     )
 
     if combined_duration <= 0:
+
         raise RuntimeError(
             "Could not read combined video duration."
         )
 
+    # -----------------------------------------------------
+    # 2. الصوت
+    # -----------------------------------------------------
+
     voice_file = (
-        WORK_DIR /
-        f"voice_{uuid.uuid4().hex}.mp3"
+        output_path.parent /
+        "voice.mp3"
     )
 
     generate_voice(
@@ -764,14 +895,28 @@ def make_final_video(
         voice_file
     )
 
+    if voice_duration <= 0:
+
+        raise RuntimeError(
+            "Could not read voice duration."
+        )
+
+    # -----------------------------------------------------
+    # 3. مدة الفيديو
+    # -----------------------------------------------------
+
     target_duration = max(
         FINAL_SECONDS,
-        voice_duration + 2
+        voice_duration + 1
     )
 
+    # -----------------------------------------------------
+    # 4. Captions
+    # -----------------------------------------------------
+
     captions = (
-        WORK_DIR /
-        f"captions_{uuid.uuid4().hex}.ass"
+        output_path.parent /
+        "captions.ass"
     )
 
     create_caption_file(
@@ -780,84 +925,154 @@ def make_final_video(
         captions
     )
 
-    # نكرر الفيديوهات المتحركة حتى طول الصوت
+    # -----------------------------------------------------
+    # 5. تمديد الفيديو
+    # -----------------------------------------------------
+
     video_looped = (
-        WORK_DIR /
-        f"looped_{uuid.uuid4().hex}.mp4"
+        output_path.parent /
+        "looped.mp4"
+    )
+
+    video_filter = (
+        f"scale={FINAL_WIDTH}:{FINAL_HEIGHT}:"
+        "force_original_aspect_ratio=increase,"
+        f"crop={FINAL_WIDTH}:{FINAL_HEIGHT},"
+        "setsar=1,"
+        f"fps={FPS}"
     )
 
     subprocess.run(
         [
             "ffmpeg",
             "-y",
+
             "-stream_loop",
             "-1",
+
             "-i",
             str(combined),
+
             "-t",
             str(target_duration),
+
             "-vf",
-            (
-                f"scale={FINAL_WIDTH}:{FINAL_HEIGHT}:"
-                "force_original_aspect_ratio=increase,"
-                f"crop={FINAL_WIDTH}:{FINAL_HEIGHT},"
-                "setsar=1,"
-                "fps=30"
-            ),
+            video_filter,
+
             "-an",
+
             "-c:v",
             "libx264",
+
             "-preset",
             "veryfast",
+
             "-crf",
             "24",
+
             "-pix_fmt",
             "yuv420p",
+
             str(video_looped)
         ],
         check=True,
+
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL
     )
 
-    # النصوص + الصوت
-    subtitles_path = str(captions)
+    # -----------------------------------------------------
+    # 6. العنوان
+    # -----------------------------------------------------
+
+    safe_title = escape_drawtext(
+        title
+    )
+
+    title_filter = (
+        "drawtext="
+        "fontfile=/usr/share/fonts/truetype/"
+        "noto/NotoSansArabic-Regular.ttf:"
+        f"text='{safe_title}':"
+        "fontcolor=white:"
+        "fontsize=38:"
+        "borderw=3:"
+        "bordercolor=black:"
+        "x=(w-text_w)/2:"
+        "y=90:"
+        "enable='between(t,0,3)'"
+    )
+
+    # -----------------------------------------------------
+    # 7. Captions + title + الصوت
+    # -----------------------------------------------------
+
+    subtitle_filter = (
+        f"ass={captions}"
+    )
+
+    final_filter = (
+        f"{subtitle_filter},"
+        f"{title_filter}"
+    )
 
     subprocess.run(
         [
             "ffmpeg",
             "-y",
+
             "-i",
             str(video_looped),
+
             "-i",
             str(voice_file),
+
             "-vf",
-            f"ass={subtitles_path}",
+            final_filter,
+
             "-map",
             "0:v:0",
+
             "-map",
             "1:a:0",
+
             "-t",
             str(target_duration),
+
             "-c:v",
             "libx264",
+
             "-preset",
             "veryfast",
+
             "-crf",
             "25",
+
+            "-pix_fmt",
+            "yuv420p",
+
             "-c:a",
             "aac",
+
             "-b:a",
             "128k",
-            "-shortest",
+
             "-movflags",
             "+faststart",
+
             str(output_path)
         ],
         check=True,
+
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL
     )
+
+    if not output_path.exists():
+
+        raise RuntimeError(
+            "Final video was not created."
+        )
 
     return str(output_path)
 
@@ -871,7 +1086,8 @@ def process_story(story):
     job_id = uuid.uuid4().hex
 
     job_dir = (
-        WORK_DIR / job_id
+        WORK_DIR /
+        job_id
     )
 
     job_dir.mkdir(
@@ -884,9 +1100,9 @@ def process_story(story):
         job_id
     )
 
-    # -------------------------
-    # 1. AI STORY DIRECTOR
-    # -------------------------
+    # -----------------------------------------------------
+    # 1. Groq
+    # -----------------------------------------------------
 
     data = create_scenes(
         story
@@ -899,20 +1115,24 @@ def process_story(story):
 
     scenes = data["scenes"]
 
-    # -------------------------
-    # 2. NARRATION
-    # -------------------------
+    # -----------------------------------------------------
+    # 2. Narration
+    # -----------------------------------------------------
 
     narration_parts = []
 
     for scene in scenes:
 
-        narration = scene.get(
-            "narration",
-            ""
-        ).strip()
+        narration = (
+            scene.get(
+                "narration",
+                ""
+            )
+            .strip()
+        )
 
         if narration:
+
             narration_parts.append(
                 narration
             )
@@ -921,9 +1141,15 @@ def process_story(story):
         narration_parts
     )
 
-    # -------------------------
-    # 3. GENERATE AI VIDEOS
-    # -------------------------
+    if len(narration) < 30:
+
+        raise RuntimeError(
+            "Narration generated by Groq is too short."
+        )
+
+    # -----------------------------------------------------
+    # 3. Generate 4 AI clips
+    # -----------------------------------------------------
 
     clips = []
 
@@ -932,17 +1158,28 @@ def process_story(story):
         start=1
     ):
 
-        prompt = scene.get(
-            "video_prompt",
-            ""
+        prompt = (
+            scene.get(
+                "video_prompt",
+                ""
+            )
+            .strip()
         )
 
         if not prompt:
+
             prompt = (
-                "cinematic realistic scene, "
-                "dramatic lighting, "
-                "natural human movement, "
-                "slow camera movement"
+                "A realistic cinematic "
+                "mysterious night scene, "
+                "a person walking slowly "
+                "through a dark environment, "
+                "wind moving clothing and trees, "
+                "subtle handheld camera movement, "
+                "slow cinematic push-in, "
+                "realistic lighting, "
+                "photorealistic motion, "
+                "vertical 9:16 composition, "
+                "no text, no subtitles, no watermark."
             )
 
         raw_clip = (
@@ -956,8 +1193,9 @@ def process_story(story):
         )
 
         logger.info(
-            "Generating scene %s/4",
-            index
+            "Generating Wan 3 scene %s/%s",
+            index,
+            AI_SCENES
         )
 
         generate_ai_clip(
@@ -975,9 +1213,9 @@ def process_story(story):
             final_clip
         )
 
-    # -------------------------
-    # 4. FINAL EDIT
-    # -------------------------
+    # -----------------------------------------------------
+    # 4. Final montage
+    # -----------------------------------------------------
 
     final_video = (
         job_dir /
@@ -987,11 +1225,12 @@ def process_story(story):
     make_final_video(
         clips,
         narration,
+        title,
         final_video
     )
 
     logger.info(
-        "Job %s completed",
+        "Job %s completed successfully",
         job_id
     )
 
@@ -1006,30 +1245,21 @@ def process_story(story):
 # TELEGRAM
 # =========================================================
 
-from telegram import Update
-from telegram.ext import (
-    Application,
-    CommandHandler,
-    MessageHandler,
-    ContextTypes,
-    filters
-)
-
-
 async def start_command(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
 ):
 
     await update.message.reply_text(
-        "🎬 أهلاً في Abosaraj V2\n\n"
-        "ابعتلي قصة، وأنا أحولها إلى:\n\n"
-        "🎥 فيديو متحرك\n"
+        "🎬 أهلاً في Abosaraj V3\n\n"
+        "ابعتلي أي قصة وأنا أحولها إلى:\n\n"
+        "🎥 فيديو AI متحرك\n"
         "🎙️ صوت عربي\n"
-        "📝 كتابة عربية\n"
-        "🎞️ مونتاج 9:16\n"
-        "📱 جاهز للـReels وShorts\n\n"
-        "⏳ التوليد يحتاج بعض الوقت."
+        "📝 Captions عربية\n"
+        "🎞️ مونتاج\n"
+        "📱 9:16\n"
+        "🔥 جاهز للـReels وShorts\n\n"
+        "ابعت القصة 👇"
     )
 
 
@@ -1044,23 +1274,26 @@ async def handle_story(
     ).strip()
 
     if not story:
+
         return
 
     if len(story) < 20:
 
         await update.message.reply_text(
-            "اكتبلي قصة أطول شوي 😄"
+            "اكتب قصة أطول شوي حتى أقدر "
+            "أعمل منها فيديو قوي 🎬"
         )
 
         return
 
     await update.message.reply_text(
         "🎬 وصلت القصة.\n\n"
-        "🧠 عم ببني المشاهد...\n"
-        "🎥 عم أعمل لقطات فيديو حقيقية...\n"
-        "🎙️ بعدها الصوت...\n"
-        "📝 وبعدها الكتابة والمونتاج.\n\n"
-        "⏳ استنى شوي..."
+        "🧠 عم ببني السيناريو...\n"
+        "🎥 عم أعمل 4 لقطات AI حقيقية...\n"
+        "🎙️ بعدها الصوت العربي...\n"
+        "📝 بعدها الـCaptions...\n"
+        "🎞️ وبالأخير المونتاج 9:16.\n\n"
+        "⏳ استنى شوي وما تبعت قصة ثانية."
     )
 
     loop = asyncio.get_running_loop()
@@ -1078,12 +1311,12 @@ async def handle_story(
         title = result["title"]
 
         await update.message.reply_text(
-            f"✅ خلص الفيديو!\n\n"
+            "✅ خلص الفيديو!\n\n"
             f"🎬 {title}\n"
-            f"📱 9:16\n"
-            f"🎙️ صوت عربي\n"
-            f"📝 Captions\n"
-            f"🎞️ مونتاج"
+            "🎥 AI Video\n"
+            "🎙️ صوت عربي\n"
+            "📝 Captions\n"
+            "📱 9:16"
         )
 
         with open(
@@ -1093,10 +1326,13 @@ async def handle_story(
 
             await update.message.reply_video(
                 video=video_file,
+
                 caption=(
-                    "🔥 جاهز للنشر\n"
-                    "#قصص #رعب #غموض #shorts #reels"
+                    "🔥 جاهز للنشر\n\n"
+                    "#قصص #رعب #غموض "
+                    "#shorts #reels"
                 ),
+
                 supports_streaming=True
             )
 
@@ -1108,16 +1344,15 @@ async def handle_story(
 
         error_text = str(e)
 
-        # اختصار أخطاء Hugging Face الطويلة
-        if len(error_text) > 1500:
+        if len(error_text) > 1800:
+
             error_text = (
-                error_text[:1500]
+                error_text[:1800]
                 + "\n..."
             )
 
         await update.message.reply_text(
             "❌ صار خطأ أثناء إنشاء الفيديو.\n\n"
-            "التفاصيل:\n"
             + error_text
         )
 
@@ -1131,7 +1366,7 @@ def main():
     check_environment()
 
     logger.info(
-        "Starting Abosaraj V2..."
+        "Starting Abosaraj V3..."
     )
 
     application = (
@@ -1170,8 +1405,6 @@ def main():
 
 if __name__ == "__main__":
 
-    import threading
-
     flask_thread = threading.Thread(
         target=run_flask,
         daemon=True
@@ -1180,6 +1413,7 @@ if __name__ == "__main__":
     flask_thread.start()
 
     try:
+
         main()
 
     except Exception:
