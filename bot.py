@@ -1,27 +1,62 @@
 import os
-import asyncio
-import threading
+import json
+import re
+import uuid
+import shutil
 import logging
+import threading
+import subprocess
+from pathlib import Path
+
+import requests
+import fal_client
 
 from flask import Flask
+from gtts import gTTS
+
 from telegram import Update
+from telegram.constants import ChatAction
 from telegram.ext import (
     Application,
     CommandHandler,
+    MessageHandler,
     ContextTypes,
+    filters,
 )
+
+from groq import Groq
+
 
 # =========================================================
 # CONFIG
 # =========================================================
 
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+BOT_TOKEN = os.getenv("BOT_TOKEN") or os.getenv("TELEGRAM_TOKEN")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+FAL_KEY = os.getenv("FAL_KEY")
+
 PORT = int(os.getenv("PORT", "10000"))
 
-if not TELEGRAM_TOKEN:
-    raise RuntimeError(
-        "ERROR: TELEGRAM_TOKEN is not set in Render Environment Variables."
-    )
+# Groq model
+GROQ_MODEL = os.getenv(
+    "GROQ_MODEL",
+    "llama-3.3-70b-versatile"
+)
+
+# FAL image model
+FAL_MODEL = os.getenv(
+    "FAL_MODEL",
+    "fal-ai/hunyuan-image/v3/text-to-image"
+)
+
+# Video settings
+SCENE_COUNT = 8
+SCENE_DURATION = 8
+VIDEO_WIDTH = 720
+VIDEO_HEIGHT = 1280
+
+BASE_DIR = Path("/tmp/abosaraj")
+BASE_DIR.mkdir(parents=True, exist_ok=True)
 
 
 # =========================================================
@@ -37,7 +72,7 @@ logger = logging.getLogger("Abosaraj")
 
 
 # =========================================================
-# FLASK WEB SERVER
+# FLASK SERVER
 # =========================================================
 
 app = Flask(__name__)
@@ -45,172 +80,202 @@ app = Flask(__name__)
 
 @app.route("/")
 def home():
-    return "Abosaraj Bot is running!", 200
+    return """
+    <html>
+        <head>
+            <title>Abosaraj Bot</title>
+        </head>
+        <body>
+            <h1>🔥 ABOSARAJ BOT IS ONLINE</h1>
+            <p>Video generation system is running.</p>
+        </body>
+    </html>
+    """
 
 
 @app.route("/health")
 def health():
-    return "OK", 200
+    return {
+        "status": "ok",
+        "bot": "Abosaraj",
+        "video_system": "online"
+    }
 
 
-def run_flask():
-    logger.info(f"Starting web server on port {PORT}")
-
+def run_web_server():
     app.run(
         host="0.0.0.0",
         port=PORT,
-        debug=False,
-        use_reloader=False,
+        threaded=True,
+        use_reloader=False
     )
 
 
 # =========================================================
-# TELEGRAM COMMANDS
+# VALIDATION
 # =========================================================
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def validate_environment():
+    missing = []
 
-    if update.message:
-        await update.message.reply_text(
-            "🔥 أهلاً بك في Abosaraj Bot!\n\n"
-            "البوت يعمل الآن بنجاح.\n\n"
-            "استخدم /help لمعرفة الأوامر."
+    if not BOT_TOKEN:
+        missing.append("BOT_TOKEN")
+
+    if not GROQ_API_KEY:
+        missing.append("GROQ_API_KEY")
+
+    if not FAL_KEY:
+        missing.append("FAL_KEY")
+
+    if missing:
+        raise RuntimeError(
+            "Missing environment variables: "
+            + ", ".join(missing)
         )
 
-
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    if update.message:
-        await update.message.reply_text(
-            "🤖 أوامر Abosaraj:\n\n"
-            "/start - تشغيل البوت\n"
-            "/help - المساعدة\n\n"
-            "🚧 نظام صناعة الفيديو سيتم تركيبه هنا."
-        )
+    os.environ["FAL_KEY"] = FAL_KEY
 
 
 # =========================================================
-# TELEGRAM BOT
+# COMMANDS
 # =========================================================
 
-async def run_bot():
+async def start_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
 
-    logger.info("Creating Telegram application...")
-
-    application = (
-        Application.builder()
-        .token(TELEGRAM_TOKEN)
-        .build()
+    await update.message.reply_text(
+        "🔥 أهلاً بك في Abosaraj Bot!\n\n"
+        "أنا أحول القصة التي ترسلها إلى فيديو قصصي 🎬\n\n"
+        "أرسل لي القصة مباشرة، وسأبدأ صناعة الفيديو.\n\n"
+        "الأفضل أن تكون القصة واضحة ومليئة بالتفاصيل.\n\n"
+        "الأوامر:\n"
+        "/start - تشغيل البوت\n"
+        "/help - المساعدة"
     )
 
-    # -------------------------
-    # COMMANDS
-    # -------------------------
 
-    application.add_handler(
-        CommandHandler("start", start)
+async def help_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    await update.message.reply_text(
+        "🤖 أوامر Abosaraj:\n\n"
+        "/start - تشغيل البوت\n"
+        "/help - المساعدة\n\n"
+        "🎬 صناعة الفيديو:\n"
+        "أرسل أي قصة أو فكرة، وسأحولها إلى فيديو عمودي."
     )
 
-    application.add_handler(
-        CommandHandler("help", help_command)
+
+# =========================================================
+# GROQ - CREATE SCENES
+# =========================================================
+
+def create_scenes(story: str):
+
+    client = Groq(api_key=GROQ_API_KEY)
+
+    system_prompt = f"""
+أنت كاتب ومخرج فيديوهات قصيرة محترف.
+
+مهمتك تحويل القصة التي يعطيك إياها المستخدم إلى {SCENE_COUNT}
+مشاهد سينمائية مترابطة.
+
+الفيديو النهائي سيكون عمودي 9:16 ومدته حوالي دقيقة أو أكثر.
+
+مهم جدًا:
+
+- لا تغير جوهر القصة.
+- حافظ على الشخصيات.
+- حافظ على تسلسل الأحداث.
+- اجعل كل مشهد واضح بصريًا.
+- اجعل المشاهد مناسبة لتوليد الصور بالذكاء الاصطناعي.
+- كل مشهد مدته حوالي {SCENE_DURATION} ثوانٍ.
+- يجب أن يكون لدينا {SCENE_COUNT} مشاهد.
+- اكتب narration باللغة العربية.
+- اكتب image_prompt باللغة الإنجليزية.
+- لا تستخدم أسماء علامات تجارية أو مشاهير حقيقيين.
+- لا تضع نصوصًا داخل الصور.
+- اجعل الصورة سينمائية وواقعية.
+- حافظ على مظهر الشخصيات بين المشاهد.
+
+أخرج JSON فقط بهذا الشكل:
+
+{{
+  "title": "عنوان قصير",
+  "scenes": [
+    {{
+      "scene": 1,
+      "narration": "النص العربي الذي سيتم قراءته",
+      "image_prompt": "Detailed cinematic image prompt in English"
+    }}
+  ]
+}}
+"""
+
+    user_prompt = f"""
+القصة:
+
+{story}
+
+حوّل هذه القصة إلى {SCENE_COUNT} مشاهد مترابطة.
+"""
+
+    response = client.chat.completions.create(
+        model=GROQ_MODEL,
+        messages=[
+            {
+                "role": "system",
+                "content": system_prompt
+            },
+            {
+                "role": "user",
+                "content": user_prompt
+            }
+        ],
+        temperature=0.8,
+        max_tokens=7000,
     )
 
-    # -------------------------
-    # START BOT
-    # -------------------------
+    text = response.choices[0].message.content.strip()
 
-    logger.info("Initializing Telegram bot...")
-
-    await application.initialize()
-
-    logger.info("Starting Telegram bot...")
-
-    await application.start()
-
-    logger.info("Starting Telegram polling...")
-
-    await application.updater.start_polling(
-        drop_pending_updates=True
+    # Remove markdown JSON fences if model adds them
+    text = re.sub(
+        r"^```json\s*",
+        "",
+        text,
+        flags=re.IGNORECASE
     )
 
-    logger.info("===================================")
-    logger.info("      ABOSARAJ BOT IS ONLINE")
-    logger.info("===================================")
+    text = re.sub(
+        r"^```\s*",
+        "",
+        text
+    )
 
-    # Keep bot alive
+    text = re.sub(
+        r"\s*```$",
+        "",
+        text
+    )
+
     try:
-
-        while True:
-            await asyncio.sleep(3600)
-
-    except asyncio.CancelledError:
-
-        logger.info("Bot cancellation received.")
-
-    finally:
-
-        logger.info("Stopping Telegram polling...")
-
-        await application.updater.stop()
-
-        logger.info("Stopping Telegram application...")
-
-        await application.stop()
-
-        logger.info("Shutting down Telegram application...")
-
-        await application.shutdown()
-
-
-# =========================================================
-# MAIN
-# =========================================================
-
-def main():
-
-    logger.info("===================================")
-    logger.info("        STARTING ABOSARAJ")
-    logger.info("===================================")
-
-    # -----------------------------------------------------
-    # Start Flask in background thread
-    # -----------------------------------------------------
-
-    flask_thread = threading.Thread(
-        target=run_flask,
-        daemon=True,
-    )
-
-    flask_thread.start()
-
-    logger.info(
-        f"Flask web server started on port {PORT}"
-    )
-
-    # -----------------------------------------------------
-    # Start Telegram bot
-    # -----------------------------------------------------
-
-    try:
-
-        asyncio.run(run_bot())
-
-    except KeyboardInterrupt:
-
-        logger.info("Abosaraj stopped.")
-
+        data = json.loads(text)
     except Exception as e:
-
-        logger.exception(
-            f"Fatal bot error: {e}"
+        logger.error("Groq returned invalid JSON: %s", text)
+        raise RuntimeError(
+            f"Could not parse AI scenes: {e}"
         )
 
-        raise
+    scenes = data.get("scenes", [])
 
+    if not scenes:
+        raise RuntimeError("AI did not generate scenes.")
 
-# =========================================================
-# ENTRY POINT
-# =========================================================
+    # Force maximum 8 scenes
+    scenes = scenes[:SCENE_COUNT]
 
-if __name__ == "__main__":
-    main()
+    # If fewer than 8, duplicate last scene
