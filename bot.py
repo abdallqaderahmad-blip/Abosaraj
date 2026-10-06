@@ -6,7 +6,9 @@ import shutil
 import logging
 import threading
 import subprocess
+import asyncio
 from pathlib import Path
+from urllib.parse import urlparse
 
 import requests
 import fal_client
@@ -15,7 +17,6 @@ from flask import Flask
 from gtts import gTTS
 
 from telegram import Update
-from telegram.constants import ChatAction
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -37,23 +38,27 @@ FAL_KEY = os.getenv("FAL_KEY")
 
 PORT = int(os.getenv("PORT", "10000"))
 
-# Groq model
 GROQ_MODEL = os.getenv(
     "GROQ_MODEL",
     "llama-3.3-70b-versatile"
 )
 
-# FAL image model
 FAL_MODEL = os.getenv(
     "FAL_MODEL",
     "fal-ai/hunyuan-image/v3/text-to-image"
 )
 
-# Video settings
+# ---------------------------------------------------------
+# VIDEO
+# ---------------------------------------------------------
+
 SCENE_COUNT = 8
 SCENE_DURATION = 8
+
 VIDEO_WIDTH = 720
 VIDEO_HEIGHT = 1280
+
+VIDEO_FPS = 30
 
 BASE_DIR = Path("/tmp/abosaraj")
 BASE_DIR.mkdir(parents=True, exist_ok=True)
@@ -64,15 +69,15 @@ BASE_DIR.mkdir(parents=True, exist_ok=True)
 # =========================================================
 
 logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 
 logger = logging.getLogger("Abosaraj")
 
 
 # =========================================================
-# FLASK SERVER
+# FLASK
 # =========================================================
 
 app = Flask(__name__)
@@ -103,6 +108,8 @@ def health():
 
 
 def run_web_server():
+    logger.info("Starting Flask server on port %s", PORT)
+
     app.run(
         host="0.0.0.0",
         port=PORT,
@@ -135,9 +142,33 @@ def validate_environment():
 
     os.environ["FAL_KEY"] = FAL_KEY
 
+    logger.info("Environment variables OK")
+
+
+def check_ffmpeg():
+    try:
+        result = subprocess.run(
+            ["ffmpeg", "-version"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=10,
+        )
+
+        if result.returncode != 0:
+            raise RuntimeError("FFmpeg is not working.")
+
+        first_line = result.stdout.splitlines()[0]
+        logger.info("FFmpeg OK: %s", first_line)
+
+    except FileNotFoundError:
+        raise RuntimeError(
+            "FFmpeg was not found inside the Docker container."
+        )
+
 
 # =========================================================
-# COMMANDS
+# TELEGRAM COMMANDS
 # =========================================================
 
 async def start_command(
@@ -148,8 +179,8 @@ async def start_command(
     await update.message.reply_text(
         "🔥 أهلاً بك في Abosaraj Bot!\n\n"
         "أنا أحول القصة التي ترسلها إلى فيديو قصصي 🎬\n\n"
-        "أرسل لي القصة مباشرة، وسأبدأ صناعة الفيديو.\n\n"
-        "الأفضل أن تكون القصة واضحة ومليئة بالتفاصيل.\n\n"
+        "أرسل القصة مباشرة وسأبدأ العمل عليها.\n\n"
+        "الفيديو سيكون عمودي 9:16 ومدته حوالي دقيقة.\n\n"
         "الأوامر:\n"
         "/start - تشغيل البوت\n"
         "/help - المساعدة"
@@ -162,11 +193,14 @@ async def help_command(
 ):
 
     await update.message.reply_text(
-        "🤖 أوامر Abosaraj:\n\n"
+        "🤖 Abosaraj Bot\n\n"
+        "🎬 أرسل لي أي قصة وسأحولها إلى فيديو قصصي.\n\n"
+        "الفيديو يتكون من عدة مشاهد مع:\n"
+        "🎨 صور مولدة بالذكاء الاصطناعي\n"
+        "🔊 تعليق صوتي عربي\n"
+        "🎬 مونتاج تلقائي\n\n"
         "/start - تشغيل البوت\n"
-        "/help - المساعدة\n\n"
-        "🎬 صناعة الفيديو:\n"
-        "أرسل أي قصة أو فكرة، وسأحولها إلى فيديو عمودي."
+        "/help - المساعدة"
     )
 
 
@@ -176,106 +210,17 @@ async def help_command(
 
 def create_scenes(story: str):
 
+    logger.info("Starting Groq scene generation")
+
     client = Groq(api_key=GROQ_API_KEY)
 
     system_prompt = f"""
-أنت كاتب ومخرج فيديوهات قصيرة محترف.
+أنت كاتب ومخرج فيديوهات قصصية قصيرة محترف.
 
-مهمتك تحويل القصة التي يعطيك إياها المستخدم إلى {SCENE_COUNT}
+حوّل القصة التي يعطيك إياها المستخدم إلى {SCENE_COUNT}
 مشاهد سينمائية مترابطة.
 
-الفيديو النهائي سيكون عمودي 9:16 ومدته حوالي دقيقة أو أكثر.
+المطلوب:
 
-مهم جدًا:
-
-- لا تغير جوهر القصة.
-- حافظ على الشخصيات.
-- حافظ على تسلسل الأحداث.
-- اجعل كل مشهد واضح بصريًا.
-- اجعل المشاهد مناسبة لتوليد الصور بالذكاء الاصطناعي.
-- كل مشهد مدته حوالي {SCENE_DURATION} ثوانٍ.
-- يجب أن يكون لدينا {SCENE_COUNT} مشاهد.
-- اكتب narration باللغة العربية.
-- اكتب image_prompt باللغة الإنجليزية.
-- لا تستخدم أسماء علامات تجارية أو مشاهير حقيقيين.
-- لا تضع نصوصًا داخل الصور.
-- اجعل الصورة سينمائية وواقعية.
-- حافظ على مظهر الشخصيات بين المشاهد.
-
-أخرج JSON فقط بهذا الشكل:
-
-{{
-  "title": "عنوان قصير",
-  "scenes": [
-    {{
-      "scene": 1,
-      "narration": "النص العربي الذي سيتم قراءته",
-      "image_prompt": "Detailed cinematic image prompt in English"
-    }}
-  ]
-}}
-"""
-
-    user_prompt = f"""
-القصة:
-
-{story}
-
-حوّل هذه القصة إلى {SCENE_COUNT} مشاهد مترابطة.
-"""
-
-    response = client.chat.completions.create(
-        model=GROQ_MODEL,
-        messages=[
-            {
-                "role": "system",
-                "content": system_prompt
-            },
-            {
-                "role": "user",
-                "content": user_prompt
-            }
-        ],
-        temperature=0.8,
-        max_tokens=7000,
-    )
-
-    text = response.choices[0].message.content.strip()
-
-    # Remove markdown JSON fences if model adds them
-    text = re.sub(
-        r"^```json\s*",
-        "",
-        text,
-        flags=re.IGNORECASE
-    )
-
-    text = re.sub(
-        r"^```\s*",
-        "",
-        text
-    )
-
-    text = re.sub(
-        r"\s*```$",
-        "",
-        text
-    )
-
-    try:
-        data = json.loads(text)
-    except Exception as e:
-        logger.error("Groq returned invalid JSON: %s", text)
-        raise RuntimeError(
-            f"Could not parse AI scenes: {e}"
-        )
-
-    scenes = data.get("scenes", [])
-
-    if not scenes:
-        raise RuntimeError("AI did not generate scenes.")
-
-    # Force maximum 8 scenes
-    scenes = scenes[:SCENE_COUNT]
-
-    # If fewer than 8, duplicate last scene
+- الحفاظ على جوهر القصة.
+- عدم
