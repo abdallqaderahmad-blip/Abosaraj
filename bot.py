@@ -6,8 +6,8 @@ import threading
 import subprocess
 import tempfile
 import shutil
+import textwrap
 
-import requests
 from flask import Flask
 from gtts import gTTS
 from groq import Groq
@@ -53,6 +53,9 @@ HF_IMAGE_MODEL = os.getenv(
     "black-forest-labs/FLUX.1-schnell"
 )
 
+# Arabic font inside Docker
+ARABIC_FONT = "/usr/share/fonts/truetype/noto/NotoNaskhArabic-Regular.ttf"
+
 
 # =========================================================
 # CHECK REQUIRED VARIABLES
@@ -83,7 +86,7 @@ hf_client = InferenceClient(
 
 
 # =========================================================
-# FLASK HEALTH SERVER
+# FLASK
 # =========================================================
 
 app = Flask(__name__)
@@ -100,7 +103,10 @@ def health():
 
 
 def run_flask():
-    port = int(os.getenv("PORT", "10000"))
+
+    port = int(
+        os.getenv("PORT", "10000")
+    )
 
     app.run(
         host="0.0.0.0",
@@ -119,14 +125,20 @@ application = None
 
 
 # =========================================================
-# SEND MESSAGE FROM BACKGROUND THREAD
+# SEND MESSAGE FROM BACKGROUND
 # =========================================================
 
-def send_async_message(chat_id, text):
+def send_async_message(
+    chat_id,
+    text
+):
+
     global telegram_loop
 
     if telegram_loop is None:
-        logger.error("Telegram loop is not available")
+        logger.error(
+            "Telegram loop is not available"
+        )
         return
 
     future = asyncio.run_coroutine_threadsafe(
@@ -138,58 +150,77 @@ def send_async_message(chat_id, text):
     )
 
     try:
-        future.result(timeout=60)
+
+        future.result(
+            timeout=60
+        )
+
     except Exception as e:
-        logger.error(f"Failed to send message: {e}")
+
+        logger.error(
+            f"Failed to send message: {e}"
+        )
 
 
 # =========================================================
-# START COMMAND
+# START
 # =========================================================
 
-async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def start_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
 
     text = (
         "🔥 أهلاً بك في Abosaraj Bot!\n\n"
-        "🎬 أنا جاهز لتحويل قصتك إلى فيديو.\n\n"
-        "📖 أرسل لي قصة أو فكرة، وسأقوم بـ:\n\n"
-        "🧠 تقسيم القصة إلى مشاهد\n"
-        "🎨 إنشاء صور للمشاهد\n"
+        "🎬 أحول قصتك إلى فيديو قصصي سينمائي.\n\n"
+        "📖 أرسل القصة وسأقوم بـ:\n\n"
+        "🧠 تقسيمها إلى 8 مشاهد\n"
+        "🎨 إنشاء صور سينمائية\n"
+        "🎥 تحريك الصور بالكاميرا\n"
+        "📝 إضافة النص على الفيديو\n"
         "🎙️ إنشاء تعليق صوتي عربي\n"
-        "🎬 تركيب الفيديو\n\n"
-        "⏱️ مدة الفيديو حوالي دقيقة أو أكثر."
+        "🎬 تركيب الفيديو النهائي\n\n"
+        "⏱️ الفيديو حوالي دقيقة أو أكثر."
     )
-
-    await update.message.reply_text(text)
-
-
-# =========================================================
-# HELP COMMAND
-# =========================================================
-
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(
-        "📖 أرسل لي أي قصة أو فكرة وسأحولها إلى فيديو قصصي."
+        text
     )
 
 
 # =========================================================
-# CREATE 8 SCENES WITH GROQ
+# HELP
+# =========================================================
+
+async def help_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    await update.message.reply_text(
+        "📖 أرسل لي أي قصة أو فكرة وسأحولها إلى فيديو قصصي سينمائي."
+    )
+
+
+# =========================================================
+# CREATE SCENES
 # =========================================================
 
 def create_scenes(story):
 
-    logger.info("Starting Groq story processing...")
+    logger.info(
+        "Starting Groq story processing..."
+    )
 
     system_prompt = """
 You are a professional short-video story director.
 
-Your job is to transform the user's Arabic story into exactly 8 cinematic scenes.
+Transform the user's Arabic story into exactly 8 cinematic scenes.
 
 Return ONLY valid JSON.
 
-The JSON format must be exactly:
+Format:
 
 {
   "scenes": [
@@ -204,25 +235,21 @@ The JSON format must be exactly:
 Rules:
 
 1. Exactly 8 scenes.
-2. The story must progress logically from scene 1 to scene 8.
-3. Narration must be in Arabic.
-4. Image prompts must be in English.
-5. Each image prompt should describe:
-   - characters
-   - location
-   - emotions
-   - lighting
-   - camera composition
-   - cinematic atmosphere
-6. Keep the same character appearance throughout the story.
-7. Make the scenes visually interesting.
-8. Do not include markdown.
-9. Do not include ```json.
-10. Return JSON only.
+2. The story must progress logically.
+3. Narration must be Arabic.
+4. Narration should sound natural when spoken aloud.
+5. Each narration should be approximately 15-25 Arabic words.
+6. Image prompts must be English.
+7. Describe characters, clothing, location, emotions, lighting, camera angle and atmosphere.
+8. Keep character appearance consistent.
+9. Make every scene visually different.
+10. Do not include text inside image prompts.
+11. Return JSON only.
 """
 
     response = groq_client.chat.completions.create(
         model=GROQ_MODEL,
+
         messages=[
             {
                 "role": "system",
@@ -233,61 +260,89 @@ Rules:
                 "content": story
             }
         ],
+
         temperature=0.7,
         max_tokens=5000,
+
         response_format={
             "type": "json_object"
         }
     )
 
-    logger.info("Groq response received")
-
     content = response.choices[0].message.content
 
-    data = json.loads(content)
+    data = json.loads(
+        content
+    )
 
-    scenes = data.get("scenes", [])
+    scenes = data.get(
+        "scenes",
+        []
+    )
 
     if not scenes:
-        raise RuntimeError("Groq returned no scenes")
+        raise RuntimeError(
+            "Groq returned no scenes"
+        )
 
-    # If fewer than 8 scenes, repeat the last one
     while len(scenes) < 8:
-        last_scene = dict(scenes[-1])
-        last_scene["scene"] = len(scenes) + 1
-        scenes.append(last_scene)
+
+        last_scene = dict(
+            scenes[-1]
+        )
+
+        last_scene["scene"] = (
+            len(scenes) + 1
+        )
+
+        scenes.append(
+            last_scene
+        )
 
     scenes = scenes[:8]
 
-    logger.info(f"Created {len(scenes)} scenes")
+    logger.info(
+        f"Created {len(scenes)} scenes"
+    )
 
     return scenes
 
 
 # =========================================================
-# GENERATE IMAGE USING HUGGING FACE
+# GENERATE IMAGE
 # =========================================================
 
-def generate_image(prompt, output_path):
+def generate_image(
+    prompt,
+    output_path
+):
 
-    logger.info("Generating image with Hugging Face...")
-    logger.info(f"Image model: {HF_IMAGE_MODEL}")
+    logger.info(
+        "Generating image with Hugging Face..."
+    )
 
     enhanced_prompt = f"""
-Cinematic vertical story scene.
+Cinematic vertical movie scene.
 
 {prompt}
 
-High quality cinematic photography,
-dramatic lighting,
-realistic characters,
-detailed environment,
-strong composition,
+Vertical 9:16 composition.
+
+Ultra detailed cinematic photography,
+realistic human characters,
+natural skin,
+dramatic movie lighting,
+depth of field,
+professional cinematography,
 emotional storytelling,
-movie still,
-professional film production,
-no text,
-no watermark.
+high detail,
+film still.
+
+NO TEXT.
+NO LETTERS.
+NO WORDS.
+NO LOGOS.
+NO WATERMARK.
 """
 
     image = hf_client.text_to_image(
@@ -298,30 +353,13 @@ no watermark.
         num_inference_steps=4
     )
 
-    image.save(output_path)
-
-    logger.info(f"Image saved: {output_path}")
-
-    return output_path
-
-
-# =========================================================
-# DOWNLOAD FILE
-# =========================================================
-
-def download_file(url, output_path):
-
-    logger.info(f"Downloading file: {url}")
-
-    response = requests.get(
-        url,
-        timeout=120
+    image.save(
+        output_path
     )
 
-    response.raise_for_status()
-
-    with open(output_path, "wb") as f:
-        f.write(response.content)
+    logger.info(
+        f"Image saved: {output_path}"
+    )
 
     return output_path
 
@@ -330,9 +368,14 @@ def download_file(url, output_path):
 # CREATE ARABIC VOICE
 # =========================================================
 
-def create_voice(text, output_path):
+def create_voice(
+    text,
+    output_path
+):
 
-    logger.info("Creating Arabic voice...")
+    logger.info(
+        "Creating Arabic voice..."
+    )
 
     tts = gTTS(
         text=text,
@@ -340,35 +383,43 @@ def create_voice(text, output_path):
         slow=False
     )
 
-    tts.save(output_path)
-
-    logger.info(f"Voice saved: {output_path}")
+    tts.save(
+        output_path
+    )
 
     return output_path
 
 
 # =========================================================
-# CHECK FFMPEG
+# FFMPEG CHECK
 # =========================================================
 
 def check_ffmpeg():
 
     result = subprocess.run(
-        ["ffmpeg", "-version"],
+        [
+            "ffmpeg",
+            "-version"
+        ],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True
     )
 
     if result.returncode != 0:
-        raise RuntimeError("FFmpeg is not available")
+
+        raise RuntimeError(
+            "FFmpeg is not available"
+        )
 
 
 # =========================================================
-# GET AUDIO DURATION
+# AUDIO DURATION
 # =========================================================
 
-def get_duration(file_path):
+def get_duration(
+    file_path
+):
 
     result = subprocess.run(
         [
@@ -390,9 +441,100 @@ def get_duration(file_path):
         return 8.0
 
     try:
-        return float(result.stdout.strip())
+
+        return float(
+            result.stdout.strip()
+        )
+
     except Exception:
+
         return 8.0
+
+
+# =========================================================
+# ESCAPE TEXT FOR FFMPEG
+# =========================================================
+
+def escape_drawtext(text):
+
+    text = text.replace(
+        "\\",
+        "\\\\"
+    )
+
+    text = text.replace(
+        "'",
+        "\\'"
+    )
+
+    text = text.replace(
+        ":",
+        "\\:"
+    )
+
+    text = text.replace(
+        "%",
+        "\\%"
+    )
+
+    return text
+
+
+# =========================================================
+# CREATE TEXT FILE
+# =========================================================
+
+def create_text_file(
+    text,
+    path
+):
+
+    # Wrap Arabic text into shorter lines.
+    # This makes the subtitle look cleaner.
+    words = text.split()
+
+    lines = []
+    current = ""
+
+    for word in words:
+
+        test = (
+            current + " " + word
+        ).strip()
+
+        if len(test) > 32:
+
+            if current:
+                lines.append(
+                    current
+                )
+
+            current = word
+
+        else:
+
+            current = test
+
+    if current:
+        lines.append(
+            current
+        )
+
+    final_text = "\n".join(
+        lines
+    )
+
+    with open(
+        path,
+        "w",
+        encoding="utf-8"
+    ) as f:
+
+        f.write(
+            final_text
+        )
+
+    return path
 
 
 # =========================================================
@@ -402,15 +544,96 @@ def get_duration(file_path):
 def create_scene_video(
     image_path,
     audio_path,
-    output_path
+    narration,
+    output_path,
+    temp_dir,
+    scene_number
 ):
 
-    logger.info("Creating scene video...")
+    logger.info(
+        f"Creating cinematic scene {scene_number}..."
+    )
 
-    duration = get_duration(audio_path)
+    duration = get_duration(
+        audio_path
+    )
 
-    # Minimum 8 seconds per scene
-    duration = max(duration, 8.0)
+    duration = max(
+        duration,
+        8.0
+    )
+
+    # ---------------------------------------------
+    # TEXT FILE
+    # ---------------------------------------------
+
+    text_file = os.path.join(
+        temp_dir,
+        f"text_{scene_number}.txt"
+    )
+
+    create_text_file(
+        narration,
+        text_file
+    )
+
+    # ---------------------------------------------
+    # CAMERA MOTION
+    # ---------------------------------------------
+
+    if scene_number % 2 == 0:
+
+        zoom_filter = (
+            "zoompan="
+            "z='min(zoom+0.0008,1.12)':"
+            "x='iw/2-(iw/zoom/2)':"
+            "y='ih/2-(ih/zoom/2)':"
+            "d=1:"
+            "s=720x1280:"
+            "fps=30"
+        )
+
+    else:
+
+        zoom_filter = (
+            "zoompan="
+            "z='if(lte(zoom,1.0),1.0,max(zoom-0.0008,1.0))':"
+            "x='iw/2-(iw/zoom/2)':"
+            "y='ih/2-(ih/zoom/2)':"
+            "d=1:"
+            "s=720x1280:"
+            "fps=30"
+        )
+
+    # ---------------------------------------------
+    # SUBTITLE / STORY TEXT
+    # ---------------------------------------------
+
+    subtitle_filter = (
+        f"drawtext="
+        f"fontfile={ARABIC_FONT}:"
+        f"textfile={text_file}:"
+        f"fontcolor=white:"
+        f"fontsize=42:"
+        f"line_spacing=12:"
+        f"borderw=3:"
+        f"bordercolor=black:"
+        f"shadowx=2:"
+        f"shadowy=2:"
+        f"shadowcolor=black:"
+        f"x=(w-text_w)/2:"
+        f"y=h-text_h-120:"
+        f"enable='between(t,0,{duration})'"
+    )
+
+    vf = (
+        "scale=720:1280:"
+        "force_original_aspect_ratio=increase,"
+        "crop=720:1280,"
+        + zoom_filter
+        + ","
+        + subtitle_filter
+    )
 
     command = [
         "ffmpeg",
@@ -426,11 +649,7 @@ def create_scene_video(
         audio_path,
 
         "-vf",
-        (
-            "scale=720:1280:"
-            "force_original_aspect_ratio=increase,"
-            "crop=720:1280"
-        ),
+        vf,
 
         "-t",
         str(duration),
@@ -445,7 +664,7 @@ def create_scene_video(
         "veryfast",
 
         "-crf",
-        "25",
+        "24",
 
         "-pix_fmt",
         "yuv420p",
@@ -462,11 +681,7 @@ def create_scene_video(
         "-ac",
         "2",
 
-        "-map",
-        "0:v:0",
-
-        "-map",
-        "1:a:0",
+        "-shortest",
 
         output_path
     ]
@@ -480,36 +695,53 @@ def create_scene_video(
 
     if result.returncode != 0:
 
-        logger.error(result.stderr)
+        logger.error(
+            result.stderr
+        )
 
         raise RuntimeError(
             "FFmpeg scene creation failed"
         )
 
     logger.info(
-        f"Scene video created: {output_path}"
+        f"Scene {scene_number} created"
     )
 
     return output_path
 
 
 # =========================================================
-# CONCAT SCENE VIDEOS
+# CONCAT VIDEOS
 # =========================================================
 
-def concat_videos(video_files, output_path):
+def concat_videos(
+    video_files,
+    output_path
+):
 
-    logger.info("Combining scene videos...")
+    logger.info(
+        "Combining scene videos..."
+    )
 
-    list_file = output_path + "_list.txt"
+    list_file = (
+        output_path +
+        "_list.txt"
+    )
 
-    with open(list_file, "w", encoding="utf-8") as f:
+    with open(
+        list_file,
+        "w",
+        encoding="utf-8"
+    ) as f:
 
         for video in video_files:
 
-            safe_path = os.path.abspath(video).replace(
-                "'",
-                "'\\''"
+            safe_path = (
+                os.path.abspath(video)
+                .replace(
+                    "'",
+                    "'\\''"
+                )
             )
 
             f.write(
@@ -543,27 +775,29 @@ def concat_videos(video_files, output_path):
     )
 
     try:
-        os.remove(list_file)
+
+        os.remove(
+            list_file
+        )
+
     except Exception:
         pass
 
     if result.returncode != 0:
 
-        logger.error(result.stderr)
+        logger.error(
+            result.stderr
+        )
 
         raise RuntimeError(
             "FFmpeg concat failed"
         )
 
-    logger.info(
-        f"Final video created: {output_path}"
-    )
-
     return output_path
 
 
 # =========================================================
-# SEND FINAL VIDEO
+# SEND VIDEO
 # =========================================================
 
 async def send_final_video(
@@ -571,9 +805,14 @@ async def send_final_video(
     video_path
 ):
 
-    logger.info("Sending final video to Telegram...")
+    logger.info(
+        "Sending final video..."
+    )
 
-    with open(video_path, "rb") as video:
+    with open(
+        video_path,
+        "rb"
+    ) as video:
 
         await application.bot.send_video(
             chat_id=chat_id,
@@ -585,14 +824,15 @@ async def send_final_video(
             supports_streaming=True
         )
 
-    logger.info("Final video sent")
-
 
 # =========================================================
-# PROGRESS MESSAGE
+# PROGRESS
 # =========================================================
 
-def progress(chat_id, text):
+def progress(
+    chat_id,
+    text
+):
 
     send_async_message(
         chat_id,
@@ -626,7 +866,9 @@ def generate_video_for_user(
             "🧠 أقرأ القصة وأقسمها إلى 8 مشاهد..."
         )
 
-        scenes = create_scenes(story)
+        scenes = create_scenes(
+            story
+        )
 
         scene_videos = []
 
@@ -641,8 +883,8 @@ def generate_video_for_user(
 
             progress(
                 chat_id,
-                f"🎨 المشهد {index}/8\n\n"
-                "جاري إنشاء الصورة..."
+                f"🎬 المشهد {index}/8\n\n"
+                "🎨 إنشاء الصورة..."
             )
 
             image_path = os.path.join(
@@ -662,7 +904,7 @@ def generate_video_for_user(
             progress(
                 chat_id,
                 f"🎙️ المشهد {index}/8\n"
-                "جاري إنشاء التعليق الصوتي..."
+                "إنشاء الصوت..."
             )
 
             audio_path = os.path.join(
@@ -681,8 +923,8 @@ def generate_video_for_user(
 
             progress(
                 chat_id,
-                f"🎬 المشهد {index}/8\n"
-                "جاري تركيب الفيديو..."
+                f"🎥 المشهد {index}/8\n"
+                "تحريك الصورة وإضافة الكتابة..."
             )
 
             video_path = os.path.join(
@@ -693,7 +935,10 @@ def generate_video_for_user(
             create_scene_video(
                 image_path,
                 audio_path,
-                video_path
+                scene["narration"],
+                video_path,
+                temp_dir,
+                index
             )
 
             scene_videos.append(
@@ -760,13 +1005,10 @@ def generate_video_for_user(
 
     finally:
 
-        try:
-            shutil.rmtree(
-                temp_dir,
-                ignore_errors=True
-            )
-        except Exception:
-            pass
+        shutil.rmtree(
+            temp_dir,
+            ignore_errors=True
+        )
 
 
 # =========================================================
@@ -791,15 +1033,13 @@ async def story_handler(
 
     chat_id = update.effective_chat.id
 
-    logger.info(
-        f"Received story from chat {chat_id}"
-    )
-
     await update.message.reply_text(
         "📖 وصلت القصة!\n\n"
-        "🧠 بدأت الآن تحويلها إلى فيديو...\n\n"
-        "⏳ العملية قد تستغرق عدة دقائق.\n"
-        "لا ترسل قصة ثانية حتى ينتهي الفيديو."
+        "🧠 بدأت تحويلها إلى فيديو سينمائي...\n\n"
+        "🎥 الصور ستكون متحركة\n"
+        "📝 وسيظهر النص على الفيديو\n"
+        "🎙️ مع تعليق صوتي عربي.\n\n"
+        "⏳ انتظر حتى يكتمل الفيديو."
     )
 
     thread = threading.Thread(
@@ -836,18 +1076,12 @@ async def post_init(
 
     global telegram_loop
 
-    telegram_loop = asyncio.get_running_loop()
-
-    logger.info(
-        "Telegram event loop initialized"
+    telegram_loop = (
+        asyncio.get_running_loop()
     )
 
     await app_instance.bot.delete_webhook(
         drop_pending_updates=True
-    )
-
-    logger.info(
-        "Webhook deleted"
     )
 
     await app_instance.bot.set_my_commands(
@@ -872,7 +1106,10 @@ def main():
 
     global application
 
-    # Start Flask
+    # ---------------------------------------------
+    # FLASK
+    # ---------------------------------------------
+
     flask_thread = threading.Thread(
         target=run_flask,
         daemon=True
@@ -880,7 +1117,10 @@ def main():
 
     flask_thread.start()
 
-    # Telegram Application
+    # ---------------------------------------------
+    # TELEGRAM
+    # ---------------------------------------------
+
     application = (
         Application
         .builder()
@@ -889,7 +1129,10 @@ def main():
         .build()
     )
 
-    # Handlers
+    # ---------------------------------------------
+    # HANDLERS
+    # ---------------------------------------------
+
     application.add_handler(
         CommandHandler(
             "start",
@@ -924,6 +1167,10 @@ def main():
         allowed_updates=Update.ALL_TYPES
     )
 
+
+# =========================================================
+# RUN
+# =========================================================
 
 if __name__ == "__main__":
     main()
