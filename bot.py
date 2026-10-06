@@ -36,14 +36,15 @@ GROQ_MODEL = os.environ.get(
 
 REPLICATE_API_TOKEN = os.environ.get("REPLICATE_API_TOKEN")
 
-# Current Replicate video model
-REPLICATE_MODEL = "wan-video/wan-2.1-1.3b"
+# NEW MODEL
+REPLICATE_MODEL = "wan-video/wan-2.2-5b-fast"
 
 VOICE = "ar-SA-HamedNeural"
 
 WIDTH = 720
 HEIGHT = 1280
 
+# 12 × 5 seconds ≈ 1 minute
 SCENES_COUNT = 12
 
 logging.basicConfig(
@@ -54,7 +55,7 @@ logging.basicConfig(
 logger = logging.getLogger("Abosaraj")
 
 # =========================================================
-# CHECK ENV
+# ENV CHECK
 # =========================================================
 
 if not BOT_TOKEN:
@@ -69,7 +70,7 @@ if not REPLICATE_API_TOKEN:
 groq_client = Groq(api_key=GROQ_API_KEY)
 
 # =========================================================
-# FLASK HEALTH SERVER
+# FLASK
 # =========================================================
 
 app = Flask(__name__)
@@ -77,7 +78,7 @@ app = Flask(__name__)
 
 @app.route("/")
 def home():
-    return "Abosaraj Video Bot is running!"
+    return "Abosaraj AI Video Bot is running!"
 
 
 @app.route("/health")
@@ -87,6 +88,7 @@ def health():
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
+
     app.run(
         host="0.0.0.0",
         port=port,
@@ -96,7 +98,7 @@ def run_flask():
 
 
 # =========================================================
-# GROQ - CREATE STORY
+# CREATE STORY
 # =========================================================
 
 def create_story(user_story):
@@ -104,28 +106,30 @@ def create_story(user_story):
     logger.info("Creating story with Groq...")
 
     prompt = f"""
-أنت كاتب سيناريو محترف لمحتوى Reels وYouTube Shorts.
+أنت كاتب سيناريو محترف لفيديوهات الرعب والغموض
+على Instagram Reels وYouTube Shorts.
 
-حوّل القصة التالية إلى فيديو رعب/غموض سينمائي قصير.
+حوّل القصة التالية إلى فيديو سينمائي مدته حوالي دقيقة:
 
 القصة:
 {user_story}
 
-المطلوب:
+أنشئ بالضبط {SCENES_COUNT} مشهداً.
 
-أنشئ بالضبط {SCENES_COUNT} مشهد.
+كل مشهد يجب أن يكون تقريباً 5 ثوانٍ.
 
-كل مشهد يجب أن يكون مناسباً لفيديو مدته حوالي 5 ثوانٍ.
+مهم جداً:
 
-أريد:
-- مشاهد بصرية قوية.
-- حركة حقيقية داخل المشهد.
-- أجواء سينمائية.
-- رعب وغموض.
-- لا تستخدم لقطات ثابتة.
-- لا تجعل الشخصيات تتحدث أمام الكاميرا.
-- لا تضع أي كتابة داخل الفيديو الذي سيولده الذكاء الاصطناعي.
-- النص سيضاف لاحقاً بواسطة البرنامج.
+- الفيديو يجب أن يكون مرعباً وسينمائياً.
+- لا تستخدم صوراً ثابتة.
+- يجب أن يكون هناك حركة واضحة في كل مشهد.
+- الشخصيات تتحرك.
+- الكاميرا تتحرك.
+- الإضاءة والظلال تتحرك.
+- الرياح أو المطر أو الدخان يتحرك عند الحاجة.
+- لا يوجد أي نص مكتوب داخل الفيديو الذي سيولد بالذكاء الاصطناعي.
+- الكتابة ستضاف لاحقاً بواسطة البرنامج.
+- حافظ على شكل الشخصيات بين المشاهد قدر الإمكان.
 
 لكل مشهد أعطني:
 
@@ -133,18 +137,24 @@ narration:
 جملة عربية قصيرة جداً تناسب حوالي 5 ثوانٍ.
 
 screen_text:
-كلمات قليلة تظهر على الشاشة.
+كلمات قليلة ومخيفة تظهر على الشاشة.
 
 video_prompt:
-وصف إنجليزي تفصيلي للفيديو المطلوب توليده بالذكاء الاصطناعي.
-يجب أن يحتوي على حركة واضحة مثل:
-walking, slowly turning, camera movement, wind, flickering lights,
-rain, shadows moving, cinematic motion.
+وصف إنجليزي سينمائي مفصل جداً للفيديو.
+يجب أن يصف الحركة وليس صورة ثابتة.
 
-مهم:
-اجعل كل مشهد مختلفاً بصرياً عن السابق مع المحافظة على نفس الشخصيات والجو العام.
+مثال على الحركة:
+slow camera movement,
+character walking,
+character suddenly turns,
+flickering light,
+moving shadows,
+wind moving clothes,
+rain falling,
+cinematic handheld camera,
+slow push in.
 
-أرجع JSON فقط بهذا الشكل:
+أرجع JSON فقط:
 
 {{
   "title": "عنوان القصة",
@@ -164,7 +174,10 @@ rain, shadows moving, cinematic motion.
         messages=[
             {
                 "role": "system",
-                "content": "أنت كاتب سيناريو محترف. أرجع JSON صحيح فقط."
+                "content": (
+                    "أنت كاتب سيناريو محترف. "
+                    "أرجع JSON صحيح فقط بدون أي كلام إضافي."
+                )
             },
             {
                 "role": "user",
@@ -175,13 +188,11 @@ rain, shadows moving, cinematic motion.
 
     content = response.choices[0].message.content.strip()
 
-    # إزالة markdown إن وُجد
     if content.startswith("```"):
         content = content.replace("```json", "")
         content = content.replace("```", "")
         content = content.strip()
 
-    # استخراج JSON لو Groq أضاف كلام
     start = content.find("{")
     end = content.rfind("}")
 
@@ -196,22 +207,22 @@ rain, shadows moving, cinematic motion.
 
     if len(scenes) < SCENES_COUNT:
         raise ValueError(
-            f"Expected {SCENES_COUNT} scenes, got {len(scenes)}"
+            f"Groq returned only {len(scenes)} scenes"
         )
 
     return data
 
 
 # =========================================================
-# REPLICATE VIDEO
+# REPLICATE VIDEO GENERATION
 # =========================================================
 
 def create_replicate_video(prompt, output_path):
 
-    logger.info("Generating AI video...")
-    logger.info("Prompt: %s", prompt[:200])
+    logger.info("Generating Wan 2.2 Fast video...")
+    logger.info("Prompt: %s", prompt[:300])
 
-    url = (
+    api_url = (
         "https://api.replicate.com/v1/models/"
         f"{REPLICATE_MODEL}/predictions"
     )
@@ -219,111 +230,157 @@ def create_replicate_video(prompt, output_path):
     headers = {
         "Authorization": f"Bearer {REPLICATE_API_TOKEN}",
         "Content-Type": "application/json",
-        "Prefer": "wait=60",
-        "Cancel-After": "5m",
+        "Prefer": "wait=60"
     }
 
     payload = {
         "input": {
             "prompt": prompt,
-            "frame_num": 81,
+
+            # 81 frames ≈ 5 seconds at 16fps
+            "num_frames": 81,
+
+            # Cheaper resolution
             "resolution": "480p",
+
+            # Vertical
             "aspect_ratio": "9:16",
-            "sample_shift": 8,
-            "sample_steps": 30,
-            "sample_guide_scale": 6
+
+            # Fast mode
+            "go_fast": True,
+
+            # Model default / good quality
+            "sample_shift": 12,
+
+            # 16 FPS = approximately 5 seconds
+            "frames_per_second": 16
         }
     }
 
     response = requests.post(
-        url,
+        api_url,
         headers=headers,
         json=payload,
         timeout=90
     )
 
     if response.status_code not in (200, 201):
+
         raise RuntimeError(
             f"Replicate error {response.status_code}: "
-            f"{response.text[:1000]}"
+            f"{response.text[:1500]}"
         )
 
     prediction = response.json()
 
-    prediction_url = prediction.get("urls", {}).get("get")
+    prediction_url = (
+        prediction
+        .get("urls", {})
+        .get("get")
+    )
 
     if not prediction_url:
+
         prediction_id = prediction.get("id")
 
         if not prediction_id:
             raise RuntimeError(
-                f"Replicate did not return prediction ID: {prediction}"
+                f"No prediction ID returned: {prediction}"
             )
 
         prediction_url = (
-            f"https://api.replicate.com/v1/predictions/"
+            "https://api.replicate.com/v1/predictions/"
             f"{prediction_id}"
         )
 
-    # Poll
+    # =====================================================
+    # WAIT
+    # =====================================================
+
     while True:
 
         status_response = requests.get(
             prediction_url,
             headers={
-                "Authorization": f"Bearer {REPLICATE_API_TOKEN}"
+                "Authorization":
+                f"Bearer {REPLICATE_API_TOKEN}"
             },
             timeout=30
         )
 
         if status_response.status_code != 200:
+
             raise RuntimeError(
-                f"Replicate status error: "
-                f"{status_response.text[:1000]}"
+                "Replicate status error: "
+                f"{status_response.text[:1500]}"
             )
 
         prediction = status_response.json()
 
         status = prediction.get("status")
 
-        logger.info("Replicate status: %s", status)
+        logger.info(
+            "Replicate status: %s",
+            status
+        )
 
         if status == "succeeded":
             break
 
-        if status in ("failed", "canceled"):
-            error = prediction.get("error", "Unknown error")
+        if status in (
+            "failed",
+            "canceled"
+        ):
+
+            error = prediction.get(
+                "error",
+                "Unknown Replicate error"
+            )
+
             raise RuntimeError(
                 f"Video generation failed: {error}"
             )
 
         time.sleep(3)
 
+    # =====================================================
+    # OUTPUT
+    # =====================================================
+
     output = prediction.get("output")
 
     if not output:
-        raise RuntimeError("Replicate returned no video output")
+        raise RuntimeError(
+            "Replicate returned no video"
+        )
 
     if isinstance(output, list):
         video_url = output[0]
     else:
         video_url = output
 
-    logger.info("Downloading generated video...")
+    logger.info(
+        "Downloading generated video..."
+    )
 
     video_response = requests.get(
         video_url,
-        timeout=120
+        timeout=180
     )
 
     if video_response.status_code != 200:
+
         raise RuntimeError(
-            f"Could not download generated video: "
+            "Failed downloading video: "
             f"{video_response.status_code}"
         )
 
     with open(output_path, "wb") as f:
         f.write(video_response.content)
+
+    logger.info(
+        "Video downloaded successfully."
+    )
 
     return output_path
 
@@ -334,7 +391,9 @@ def create_replicate_video(prompt, output_path):
 
 def create_voice(text, output_path):
 
-    logger.info("Creating Arabic neural voice...")
+    logger.info(
+        "Creating Arabic neural voice..."
+    )
 
     async def generate():
 
@@ -346,7 +405,9 @@ def create_voice(text, output_path):
             volume="+0%"
         )
 
-        await communicator.save(output_path)
+        await communicator.save(
+            output_path
+        )
 
     asyncio.run(generate())
 
@@ -359,14 +420,19 @@ def create_voice(text, output_path):
 
 def create_caption_file(text, path):
 
-    with open(path, "w", encoding="utf-8") as f:
+    with open(
+        path,
+        "w",
+        encoding="utf-8"
+    ) as f:
+
         f.write(text)
 
     return path
 
 
 # =========================================================
-# PROCESS ONE SCENE
+# PROCESS SCENE
 # =========================================================
 
 def process_scene(
@@ -375,41 +441,56 @@ def process_scene(
     workdir
 ):
 
-    raw_video = workdir / f"raw_{index}.mp4"
-    voice_file = workdir / f"voice_{index}.mp3"
-    caption_file = workdir / f"caption_{index}.txt"
-    final_scene = workdir / f"scene_{index}.mp4"
+    raw_video = (
+        workdir /
+        f"raw_{index}.mp4"
+    )
 
-    # -----------------------------------------
-    # VIDEO
-    # -----------------------------------------
+    voice_file = (
+        workdir /
+        f"voice_{index}.mp3"
+    )
+
+    caption_file = (
+        workdir /
+        f"caption_{index}.txt"
+    )
+
+    final_scene = (
+        workdir /
+        f"scene_{index}.mp4"
+    )
+
+    # =====================================================
+    # AI VIDEO
+    # =====================================================
 
     create_replicate_video(
         scene["video_prompt"],
         raw_video
     )
 
-    # -----------------------------------------
+    # =====================================================
     # VOICE
-    # -----------------------------------------
+    # =====================================================
 
     create_voice(
         scene["narration"],
         voice_file
     )
 
-    # -----------------------------------------
+    # =====================================================
     # CAPTION
-    # -----------------------------------------
+    # =====================================================
 
     create_caption_file(
         scene["screen_text"],
         caption_file
     )
 
-    # -----------------------------------------
-    # VIDEO + AUDIO + TEXT
-    # -----------------------------------------
+    # =====================================================
+    # FFMPEG
+    # =====================================================
 
     font_path = (
         "/usr/share/fonts/truetype/noto/"
@@ -418,7 +499,8 @@ def process_scene(
 
     filter_complex = (
         f"[0:v]"
-        f"scale={WIDTH}:{HEIGHT}:force_original_aspect_ratio=increase,"
+        f"scale={WIDTH}:{HEIGHT}:"
+        f"force_original_aspect_ratio=increase,"
         f"crop={WIDTH}:{HEIGHT},"
         f"fps=30,"
         f"format=yuv420p,"
@@ -479,7 +561,10 @@ def process_scene(
         str(final_scene)
     ]
 
-    logger.info("Combining scene %s...", index)
+    logger.info(
+        "Combining scene %s...",
+        index
+    )
 
     result = subprocess.run(
         command,
@@ -489,31 +574,49 @@ def process_scene(
 
     if result.returncode != 0:
 
-        logger.error(result.stderr[-4000:])
+        logger.error(
+            result.stderr[-4000:]
+        )
 
         raise RuntimeError(
-            f"FFmpeg scene error {index}"
+            f"FFmpeg error on scene {index}"
         )
 
     return final_scene
 
 
 # =========================================================
-# CONCATENATE ALL SCENES
+# COMBINE SCENES
 # =========================================================
 
-def combine_scenes(scene_files, output_path, workdir):
+def combine_scenes(
+    scene_files,
+    output_path,
+    workdir
+):
 
-    concat_file = workdir / "concat.txt"
+    concat_file = (
+        workdir /
+        "concat.txt"
+    )
 
-    with open(concat_file, "w", encoding="utf-8") as f:
+    with open(
+        concat_file,
+        "w",
+        encoding="utf-8"
+    ) as f:
 
         for scene_file in scene_files:
 
-            safe_path = str(scene_file).replace("'", "'\\''")
+            path = str(
+                scene_file
+            ).replace(
+                "'",
+                "'\\''"
+            )
 
             f.write(
-                f"file '{safe_path}'\n"
+                f"file '{path}'\n"
             )
 
     command = [
@@ -538,7 +641,9 @@ def combine_scenes(scene_files, output_path, workdir):
         str(output_path)
     ]
 
-    logger.info("Combining all scenes...")
+    logger.info(
+        "Combining final video..."
+    )
 
     result = subprocess.run(
         command,
@@ -548,7 +653,9 @@ def combine_scenes(scene_files, output_path, workdir):
 
     if result.returncode != 0:
 
-        logger.error(result.stderr[-5000:])
+        logger.error(
+            result.stderr[-5000:]
+        )
 
         raise RuntimeError(
             "Final video combination failed"
@@ -558,14 +665,17 @@ def combine_scenes(scene_files, output_path, workdir):
 
 
 # =========================================================
-# CREATE COMPLETE VIDEO
+# COMPLETE VIDEO
 # =========================================================
 
 def create_complete_video(story):
 
     job_id = uuid.uuid4().hex[:10]
 
-    workdir = Path("/tmp") / f"abosaraj_{job_id}"
+    workdir = (
+        Path("/tmp") /
+        f"abosaraj_{job_id}"
+    )
 
     workdir.mkdir(
         parents=True,
@@ -579,27 +689,28 @@ def create_complete_video(story):
             job_id
         )
 
-        # -----------------------------------------
-        # STORY
-        # -----------------------------------------
-
-        data = create_story(story)
+        # Story
+        data = create_story(
+            story
+        )
 
         title = data.get(
             "title",
             "قصة غامضة"
         )
 
-        scenes = data["scenes"][:SCENES_COUNT]
+        scenes = data["scenes"][
+            :SCENES_COUNT
+        ]
 
         logger.info(
-            "Story title: %s",
+            "Title: %s",
             title
         )
 
-        # -----------------------------------------
-        # PROCESS SCENES
-        # -----------------------------------------
+        # =================================================
+        # PROCESS ALL SCENES
+        # =================================================
 
         scene_files = []
 
@@ -620,13 +731,18 @@ def create_complete_video(story):
                 workdir
             )
 
-            scene_files.append(scene_file)
+            scene_files.append(
+                scene_file
+            )
 
-        # -----------------------------------------
-        # FINAL VIDEO
-        # -----------------------------------------
+        # =================================================
+        # FINAL
+        # =================================================
 
-        final_video = workdir / "Abosaraj_Final.mp4"
+        final_video = (
+            workdir /
+            "Abosaraj_Final.mp4"
+        )
 
         combine_scenes(
             scene_files,
@@ -635,8 +751,7 @@ def create_complete_video(story):
         )
 
         logger.info(
-            "FINAL VIDEO READY: %s",
-            final_video
+            "FINAL VIDEO READY!"
         )
 
         return final_video, title
@@ -654,20 +769,20 @@ def create_complete_video(story):
 # TELEGRAM
 # =========================================================
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def start(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
 
     await update.message.reply_text(
         "🔥 Abosaraj AI Video\n\n"
-        "ابعتلي أي قصة أو فكرة.\n\n"
+        "ابعتلي قصة أو فكرة.\n\n"
         "وأنا أحولها إلى:\n"
-        "🎬 فيديوهات AI متحركة\n"
-        "🎙️ صوت عربي عصبي\n"
+        "🎬 فيديو AI متحرك\n"
+        "🎙️ صوت عربي\n"
         "📝 كتابة على الشاشة\n"
-        "📱 مقاس 9:16\n"
-        "🔥 مناسب لـ Reels وShorts\n\n"
-        "مثال:\n"
-        "كان رجل يمشي وحده في شارع مهجور، "
-        "وفجأة سمع صوت طفل يناديه من خلفه..."
+        "📱 9:16\n"
+        "🔥 Reels / Shorts"
     )
 
 
@@ -687,37 +802,44 @@ async def handle_message(
     if len(story) < 20:
 
         await update.message.reply_text(
-            "✍️ ابعتلي قصة أطول شوي، "
-            "عشان أقدر أبني عليها فيديو كامل."
+            "✍️ ابعت قصة أطول شوي."
         )
 
         return
 
-    processing_message = await update.message.reply_text(
-        "🎬 وصلت القصة.\n\n"
-        "🧠 بكتب السيناريو...\n"
-        "🎥 بعدها ببدأ توليد الفيديوهات الحقيقية...\n"
-        "🎙️ وبعدها الصوت والمونتاج.\n\n"
-        "⏳ العملية ممكن تاخذ عدة دقائق."
+    processing_message = (
+        await update.message.reply_text(
+            "🎬 وصلت القصة.\n\n"
+            "🧠 بكتب السيناريو...\n"
+            "🎥 بجهز فيديوهات AI حقيقية...\n"
+            "🎙️ بعمل الصوت...\n"
+            "🎞️ وبجمعهم بفيديو واحد.\n\n"
+            "⏳ اصبر عليّ شوي..."
+        )
     )
 
     try:
 
         loop = asyncio.get_running_loop()
 
-        video_path, title = await loop.run_in_executor(
-            None,
-            create_complete_video,
-            story
+        video_path, title = (
+            await loop.run_in_executor(
+                None,
+                create_complete_video,
+                story
+            )
         )
 
         await processing_message.edit_text(
             "🔥 الفيديو خلص!\n\n"
             f"🎬 {title}\n"
-            "📤 جاري إرساله..."
+            "📤 جاري الإرسال..."
         )
 
-        with open(video_path, "rb") as video:
+        with open(
+            video_path,
+            "rb"
+        ) as video:
 
             await update.message.reply_video(
                 video=video,
@@ -744,7 +866,8 @@ async def handle_message(
 
         await processing_message.edit_text(
             "❌ صار خطأ أثناء إنشاء الفيديو.\n\n"
-            f"التفاصيل:\n{error_text}"
+            "التفاصيل:\n"
+            f"{error_text}"
         )
 
 
@@ -755,10 +878,9 @@ async def handle_message(
 def main():
 
     logger.info(
-        "Starting Abosaraj Video Bot..."
+        "Starting Abosaraj..."
     )
 
-    # Flask for Render
     flask_thread = threading.Thread(
         target=run_flask,
         daemon=True
@@ -766,7 +888,6 @@ def main():
 
     flask_thread.start()
 
-    # Telegram
     application = (
         Application.builder()
         .token(BOT_TOKEN)
@@ -782,7 +903,8 @@ def main():
 
     application.add_handler(
         MessageHandler(
-            filters.TEXT & ~filters.COMMAND,
+            filters.TEXT &
+            ~filters.COMMAND,
             handle_message
         )
     )
