@@ -1,6 +1,10 @@
 from flask import Flask
 import threading, os
+import asyncio
+from telegram import Update
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
+# --- 1. سيرفر وهمي مشان Render ما يعمل Timeout ---
 app = Flask(__name__)
 @app.route('/')
 def home():
@@ -10,21 +14,4 @@ def run_web():
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
 
-threading.Thread(target=run_web, daemon=True).start()
-
-# ↓↓↓↓ من هون وتحت لازم يكون كود البوت القديم تبعك كلو ↓↓↓↓
-
-import fal_client
-from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
-# ... باقي الكود تبعك ...
-
-TOKEN = os.getenv("TELEGRAM_TOKEN")
-
-async def start(...):
-    ...
-
-# ....
-
-if __name__ == "__main__":
-    app
+threading
