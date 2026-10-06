@@ -41,7 +41,6 @@ HF_SPACE = "Lightricks/ltx-video-distilled"
 
 VOICE = "ar-SA-HamedNeural"
 
-# LTX video generation
 VIDEO_WIDTH = 704
 VIDEO_HEIGHT = 512
 
@@ -142,7 +141,6 @@ def get_hf_client():
                 "HF_TOKEN is missing from Render environment variables."
             )
 
-        # gradio_client 1.x uses hf_token
         _hf_client = Client(
             HF_SPACE,
             hf_token=HF_TOKEN
@@ -232,7 +230,6 @@ Rules:
 - No watermark.
 """
 
-
     user_prompt = f"""
 Create exactly 4 cinematic scenes from this Arabic story:
 
@@ -257,7 +254,6 @@ Create exactly 4 cinematic scenes from this Arabic story:
 
     content = response.choices[0].message.content.strip()
 
-    # Remove accidental markdown fences
     if content.startswith("```"):
         content = content.replace(
             "```json",
@@ -321,7 +317,7 @@ def generate_ai_clip(prompt, output_path):
             True,
             3.0,
             False,
-            api_name="text_to_video"
+            api_name="/text_to_video"
         )
 
         logger.info(
@@ -339,9 +335,9 @@ def generate_ai_clip(prompt, output_path):
             f"Hugging Face video generation failed: {e}"
         )
 
-    # -----------------------------------------------------
-    # Find video path from result
-    # -----------------------------------------------------
+    # =====================================================
+    # FIND VIDEO PATH
+    # =====================================================
 
     video_source = None
 
@@ -397,6 +393,7 @@ def generate_ai_clip(prompt, output_path):
                 break
 
     if not video_source:
+
         raise RuntimeError(
             f"Could not find video file in Hugging Face result: {result}"
         )
@@ -406,14 +403,13 @@ def generate_ai_clip(prompt, output_path):
         video_source
     )
 
-    # -----------------------------------------------------
-    # Copy local file
-    # -----------------------------------------------------
+    # =====================================================
+    # LOCAL VIDEO
+    # =====================================================
 
-    if video_source.startswith(
-        "/tmp/"
-    ) or video_source.startswith(
-        "/home/"
+    if (
+        video_source.startswith("/tmp/")
+        or video_source.startswith("/home/")
     ):
 
         if not os.path.exists(video_source):
@@ -429,14 +425,13 @@ def generate_ai_clip(prompt, output_path):
 
         return output_path
 
-    # -----------------------------------------------------
-    # Download URL
-    # -----------------------------------------------------
+    # =====================================================
+    # DOWNLOAD VIDEO
+    # =====================================================
 
-    if video_source.startswith(
-        "http://"
-    ) or video_source.startswith(
-        "https://"
+    if (
+        video_source.startswith("http://")
+        or video_source.startswith("https://")
     ):
 
         response = requests.get(
@@ -491,9 +486,7 @@ async def create_voice(
 # FFMPEG
 # =========================================================
 
-def run_ffmpeg(
-    command
-):
+def run_ffmpeg(command):
 
     logger.info(
         "Running FFmpeg..."
@@ -544,18 +537,18 @@ def process_scene(
         f"scene_{scene_index}_final.mp4"
     )
 
-    # -----------------------------------------------------
-    # Generate AI video
-    # -----------------------------------------------------
+    # =====================================================
+    # AI VIDEO
+    # =====================================================
 
     generate_ai_clip(
         scene["video_prompt"],
         raw_video
     )
 
-    # -----------------------------------------------------
-    # Generate Arabic voice
-    # -----------------------------------------------------
+    # =====================================================
+    # VOICE
+    # =====================================================
 
     asyncio.run(
         create_voice(
@@ -564,9 +557,9 @@ def process_scene(
         )
     )
 
-    # -----------------------------------------------------
-    # Arabic text
-    # -----------------------------------------------------
+    # =====================================================
+    # TEXT
+    # =====================================================
 
     screen_text = (
         scene.get(
@@ -595,9 +588,34 @@ def process_scene(
         )
     )
 
-    # -----------------------------------------------------
-    # Convert video to vertical 9:16
-    # -----------------------------------------------------
+    # =====================================================
+    # VIDEO
+    # =====================================================
+
+    video_filter = (
+        "scale=720:1280:"
+        "force_original_aspect_ratio=increase,"
+        "crop=720:1280,"
+        "fps=30,"
+        "format=yuv420p"
+    )
+
+    if screen_text.strip():
+
+        drawtext = (
+            "drawtext="
+            "fontfile=/usr/share/fonts/truetype/noto/"
+            "NotoSansArabic-Regular.ttf:"
+            f"text='{screen_text}':"
+            "fontcolor=white:"
+            "fontsize=42:"
+            "borderw=3:"
+            "bordercolor=black:"
+            "x=(w-text_w)/2:"
+            "y=h-180"
+        )
+
+        video_filter += "," + drawtext
 
     command = [
         "ffmpeg",
@@ -610,13 +628,7 @@ def process_scene(
         str(voice_file),
 
         "-vf",
-        (
-            "scale=720:1280:"
-            "force_original_aspect_ratio=increase,"
-            "crop=720:1280,"
-            "fps=30,"
-            "format=yuv420p"
-        ),
+        video_filter,
 
         "-map",
         "0:v:0",
@@ -639,47 +651,10 @@ def process_scene(
         "-b:a",
         "128k",
 
-        "-shortest"
-    ]
+        "-shortest",
 
-    # -----------------------------------------------------
-    # Add Arabic captions
-    # -----------------------------------------------------
-
-    if screen_text.strip():
-
-        drawtext = (
-            "drawtext="
-            "fontfile=/usr/share/fonts/truetype/noto/"
-            "NotoSansArabic-Regular.ttf:"
-            f"text='{screen_text}':"
-            "fontcolor=white:"
-            "fontsize=42:"
-            "borderw=3:"
-            "bordercolor=black:"
-            "x=(w-text_w)/2:"
-            "y=h-180"
-        )
-
-        command.extend([
-            "-vf",
-            (
-                "scale=720:1280:"
-                "force_original_aspect_ratio=increase,"
-                "crop=720:1280,"
-                "fps=30,"
-                + drawtext
-                + ",format=yuv420p"
-            )
-        ])
-
-    command.extend([
         str(final_scene)
-    ])
-
-    # -----------------------------------------------------
-    # Execute
-    # -----------------------------------------------------
+    ]
 
     run_ffmpeg(
         command
@@ -689,7 +664,7 @@ def process_scene(
 
 
 # =========================================================
-# CONCATENATE SCENES
+# CONCATENATE
 # =========================================================
 
 def concatenate_scenes(
@@ -746,7 +721,7 @@ def concatenate_scenes(
 
 
 # =========================================================
-# MAKE FINAL 60 SECOND VIDEO
+# FINAL 60 SECONDS
 # =========================================================
 
 def make_final_60_seconds(
@@ -809,12 +784,10 @@ def make_final_60_seconds(
 
 
 # =========================================================
-# COMPLETE VIDEO GENERATION
+# GENERATE COMPLETE VIDEO
 # =========================================================
 
-def generate_video(
-    story
-):
+def generate_video(story):
 
     job_id = uuid.uuid4().hex
 
@@ -836,7 +809,7 @@ def generate_video(
         )
 
         # -------------------------------------------------
-        # STEP 1: Groq
+        # GROQ
         # -------------------------------------------------
 
         logger.info(
@@ -852,7 +825,7 @@ def generate_video(
         )
 
         # -------------------------------------------------
-        # STEP 2: Generate clips
+        # AI CLIPS
         # -------------------------------------------------
 
         scene_files = []
@@ -878,7 +851,7 @@ def generate_video(
             )
 
         # -------------------------------------------------
-        # STEP 3: Concatenate
+        # CONCAT
         # -------------------------------------------------
 
         combined = (
@@ -892,7 +865,7 @@ def generate_video(
         )
 
         # -------------------------------------------------
-        # STEP 4: Final 60 seconds
+        # 60 SEC
         # -------------------------------------------------
 
         final_video = (
@@ -922,7 +895,7 @@ def generate_video(
 
 
 # =========================================================
-# TELEGRAM
+# TELEGRAM START
 # =========================================================
 
 async def start_command(
@@ -940,7 +913,7 @@ async def start_command(
 
 
 # =========================================================
-# MESSAGE HANDLER
+# TELEGRAM MESSAGE
 # =========================================================
 
 async def handle_message(
@@ -985,8 +958,7 @@ async def handle_message(
         )
 
         await update.message.reply_text(
-            "✅ الفيديو جاهز 🎬\n\n"
-            "👇"
+            "✅ الفيديو جاهز 🎬\n\n👇"
         )
 
         with open(
