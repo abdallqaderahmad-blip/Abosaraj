@@ -6,7 +6,6 @@ import threading
 import subprocess
 import tempfile
 import shutil
-from pathlib import Path
 
 import requests
 from flask import Flask
@@ -22,6 +21,7 @@ from telegram.ext import (
     ContextTypes,
     filters,
 )
+
 
 # =========================================================
 # CONFIG
@@ -41,5 +41,13 @@ FAL_MODEL = os.getenv(
     "fal-ai/hunyuan-image/v3/text-to-image"
 )
 
+
+# =========================================================
+# CHECK ENVIRONMENT VARIABLES
+# =========================================================
+
 if not BOT_TOKEN:
-    raise Runtime
+    raise RuntimeError("BOT_TOKEN is missing")
+
+if not GROQ_API_KEY:
+    raise RuntimeError("GROQ_API_KEY is missing
