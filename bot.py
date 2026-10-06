@@ -7,12 +7,10 @@ import subprocess
 import tempfile
 import shutil
 import textwrap
-import time
 
 from flask import Flask
 from groq import Groq
 import edge_tts
-
 from huggingface_hub import InferenceClient
 
 from telegram import Update, BotCommand
@@ -30,7 +28,7 @@ from telegram.ext import (
 # =========================================================
 
 logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    format="%(asctime)s - %(levelname)s - %(message)s",
     level=logging.INFO,
 )
 
@@ -43,25 +41,29 @@ logger = logging.getLogger(__name__)
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+HF_TOKEN = os.getenv("HF_TOKEN")
 
 GROQ_MODEL = os.getenv(
     "GROQ_MODEL",
     "openai/gpt-oss-120b"
 )
 
-HF_TOKEN = os.getenv("HF_TOKEN")
-
 HF_IMAGE_MODEL = os.getenv(
     "HF_IMAGE_MODEL",
-    "black-forest-labs/FLUX.1-schnell"
+    "stabilityai/stable-diffusion-3-medium-diffusers"
 )
 
 
 # =========================================================
-# SETTINGS
+# VOICE
 # =========================================================
 
 VOICE = "ar-SA-HamedNeural"
+
+
+# =========================================================
+# FONT
+# =========================================================
 
 ARABIC_FONT = (
     "/usr/share/fonts/truetype/"
@@ -106,7 +108,7 @@ app = Flask(__name__)
 
 @app.route("/")
 def home():
-    return "Abosaraj Bot is running."
+    return "Abosaraj Bot is running!"
 
 
 @app.route("/health")
@@ -115,16 +117,19 @@ def health():
 
 
 def run_flask():
+
     port = int(
-        os.environ.get(
+        os.getenv(
             "PORT",
-            10000
+            "10000"
         )
     )
 
     app.run(
         host="0.0.0.0",
-        port=port
+        port=port,
+        debug=False,
+        use_reloader=False
     )
 
 
@@ -132,125 +137,153 @@ def run_flask():
 # STORY GENERATION
 # =========================================================
 
-def generate_story():
+def create_scenes(user_story):
+
+    logger.info(
+        "Creating story scenes..."
+    )
 
     system_prompt = """
-أنت كاتب محترف لقصص الفيديو القصيرة على Instagram Reels وYouTube Shorts.
+You are a professional Arabic short-form video director.
 
-نحن نبني قناة عربية اسمها "بعد منتصف الليل".
+Transform the user's story into exactly 8 cinematic scenes.
 
-اكتب قصة أصلية بالكامل من نوع:
-رعب / غموض / تشويق / نهاية صادمة.
+The content is for:
+Instagram Reels
+YouTube Shorts
+TikTok
+Facebook Reels
 
-القصة يجب أن تكون مناسبة لفيديو عمودي قصير.
+Genre:
+Horror
+Mystery
+Suspense
+Psychological thriller
 
-ممنوع:
-- نسخ قصص مشهورة.
-- استخدام أسماء مشاهير.
-- مقدمات طويلة.
-- حشو.
-- شرح خارج القصة.
+Return ONLY valid JSON.
 
-نريد:
-- Hook قوي جدًا في أول مشهد.
-- تصاعد مستمر.
-- غموض.
-- جمل مناسبة للسرد الصوتي.
-- نهايتها مفاجئة.
-- إمكانية عمل Part 2 إذا كان ذلك مناسبًا.
-
-قسّم القصة إلى 8 مشاهد.
-
-كل مشهد يجب أن يحتوي:
-1. narration:
-النص العربي الذي سيقرأه الراوي.
-استخدم علامات الترقيم والوقفات بشكل طبيعي.
-
-2. image_prompt:
-وصف بصري باللغة الإنجليزية فقط.
-الوصف يجب أن يكون سينمائيًا ومفصلًا.
-
-3. screen_text:
-جملة عربية قصيرة تظهر على الشاشة.
-
-مهم جدًا:
-النص الصوتي يجب أن يكون طبيعيًا عند القراءة.
-
-استخدم:
-...
-لخلق وقفة قصيرة.
-
-واستخدم:
-—
-لخلق وقفة درامية.
-
-لا تجعل narration طويلًا جدًا.
-
-كل مشهد تقريبًا 15 إلى 30 كلمة عربية.
-
-أعد JSON فقط بالشكل التالي:
+Format:
 
 {
-  "title": "عنوان القصة",
-  "genre": "horror",
-  "hook": "الجملة الأقوى في القصة",
+  "title": "Arabic title",
   "scenes": [
     {
-      "narration": "...",
-      "image_prompt": "...",
-      "screen_text": "..."
+      "scene": 1,
+      "narration": "Arabic narration",
+      "screen_text": "Short Arabic text",
+      "image_prompt": "Detailed English cinematic image prompt"
     }
   ]
 }
-"""
 
-    user_prompt = """
-اكتب قصة عربية أصلية مرعبة ومشوقة جدًا.
+Rules:
 
-ابدأ بجملة تجعل المشاهد يريد معرفة ماذا حدث.
+1. Exactly 8 scenes.
 
-أريد نهاية صادمة وغير متوقعة.
+2. Narration must be Arabic.
 
-عدد المشاهد بالضبط: 8.
+3. Narration must sound natural when spoken.
+
+4. Use short sentences.
+
+5. Use punctuation to create pauses.
+
+6. Each narration should be approximately 15-30 Arabic words.
+
+7. Screen text must be short and powerful.
+
+8. Image prompts must be English.
+
+9. Images must be photorealistic and cinematic.
+
+10. Keep characters visually consistent between scenes.
+
+11. Describe:
+- age
+- gender
+- clothing
+- environment
+- lighting
+- emotion
+- camera angle
+- cinematic atmosphere
+
+12. No text inside generated images.
+
+13. No logos.
+
+14. No watermark.
+
+15. Start with a very strong hook.
+
+16. Increase suspense every scene.
+
+17. Scene 8 must contain a strong twist.
+
+18. Do not explain anything outside JSON.
+
+19. Never use markdown.
+
+20. Return JSON only.
 """
 
     response = groq_client.chat.completions.create(
         model=GROQ_MODEL,
-        temperature=0.9,
-        max_tokens=7000,
         messages=[
             {
                 "role": "system",
-                "content": system_prompt,
+                "content": system_prompt
             },
             {
                 "role": "user",
-                "content": user_prompt,
-            },
+                "content": user_story
+            }
         ],
+        temperature=0.85,
+        max_tokens=7000,
+        response_format={
+            "type": "json_object"
+        }
     )
 
-    content = response.choices[0].message.content.strip()
+    content = (
+        response
+        .choices[0]
+        .message
+        .content
+        .strip()
+    )
 
-    # تنظيف JSON إذا أضاف النموذج markdown
     if content.startswith("```"):
-        content = content.replace("```json", "")
-        content = content.replace("```", "")
+
+        content = content.replace(
+            "```json",
+            ""
+        )
+
+        content = content.replace(
+            "```",
+            ""
+        )
+
         content = content.strip()
 
-    story = json.loads(content)
+    data = json.loads(
+        content
+    )
 
-    if "scenes" not in story:
+    scenes = data.get(
+        "scenes",
+        []
+    )
+
+    if len(scenes) != 8:
+
         raise RuntimeError(
-            "Story JSON does not contain scenes"
+            f"Groq returned {len(scenes)} scenes instead of 8"
         )
 
-    if len(story["scenes"]) != 8:
-        raise RuntimeError(
-            f"Expected 8 scenes, got {len(story['scenes'])}"
-        )
-
-    return story
+    return data
 
 
 # =========================================================
@@ -262,41 +295,63 @@ def generate_image(
     output_path
 ):
 
-    full_prompt = f"""
-Cinematic dark Arabic horror short film scene.
+    logger.info(
+        f"Generating image using {HF_IMAGE_MODEL}"
+    )
+
+    enhanced_prompt = f"""
+Vertical cinematic horror movie scene.
 
 {prompt}
 
-Style:
-photorealistic,
-cinematic lighting,
-dramatic shadows,
-moody atmosphere,
-high detail,
-film still,
-realistic characters,
-realistic environment,
-vertical composition,
-9:16.
+Ultra realistic photography.
 
-NO TEXT.
-NO LETTERS.
-NO WORDS.
-NO LOGOS.
-NO WATERMARK.
+Dark cinematic atmosphere.
+
+Professional horror film cinematography.
+
+Dramatic realistic lighting.
+
+Deep shadows.
+
+Detailed environment.
+
+Realistic human skin.
+
+Realistic facial expressions.
+
+Photorealistic.
+
+High detail.
+
+Strong composition.
+
+Vertical 9:16 composition.
+
+Movie still.
+
+No text.
+
+No letters.
+
+No subtitles.
+
+No logo.
+
+No watermark.
 """
 
-    logger.info(
-        "Generating image..."
-    )
-
     image = hf_client.text_to_image(
-        prompt=full_prompt,
+        prompt=enhanced_prompt,
         model=HF_IMAGE_MODEL,
     )
 
     image.save(
         output_path
+    )
+
+    logger.info(
+        f"Image saved: {output_path}"
     )
 
     return output_path
@@ -312,21 +367,12 @@ def create_voice(
 ):
 
     logger.info(
-        "Creating Arabic neural voice..."
-    )
-
-    # تنظيف بسيط للنص
-    text = text.strip()
-
-    # زيادة طبيعية بسيطة للوقفات
-    text = text.replace(
-        "...",
-        "..."
+        "Creating Arabic Neural voice..."
     )
 
     async def generate():
 
-        communicate = edge_tts.Communicate(
+        communicator = edge_tts.Communicate(
             text=text,
             voice=VOICE,
             rate="-7%",
@@ -334,7 +380,7 @@ def create_voice(
             volume="+0%",
         )
 
-        await communicate.save(
+        await communicator.save(
             output_path
         )
 
@@ -345,12 +391,13 @@ def create_voice(
     if not os.path.exists(
         output_path
     ):
+
         raise RuntimeError(
             "Voice file was not created"
         )
 
     logger.info(
-        "Voice created successfully."
+        "Arabic Neural voice created"
     )
 
     return output_path
@@ -360,31 +407,39 @@ def create_voice(
 # AUDIO DURATION
 # =========================================================
 
-def get_audio_duration(
-    audio_path
+def get_duration(
+    file_path
 ):
 
-    command = [
-        "ffprobe",
-        "-v",
-        "error",
-        "-show_entries",
-        "format=duration",
-        "-of",
-        "default=noprint_wrappers=1:nokey=1",
-        audio_path,
-    ]
-
     result = subprocess.run(
-        command,
-        capture_output=True,
-        text=True,
-        check=True,
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
+            file_path
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True
     )
 
-    return float(
-        result.stdout.strip()
-    )
+    if result.returncode != 0:
+
+        return 8.0
+
+    try:
+
+        return float(
+            result.stdout.strip()
+        )
+
+    except Exception:
+
+        return 8.0
 
 
 # =========================================================
@@ -396,85 +451,114 @@ def create_scene_video(
     audio_path,
     screen_text,
     output_path,
-    scene_number,
+    temp_dir,
+    scene_number
 ):
 
-    audio_duration = get_audio_duration(
+    duration = get_duration(
         audio_path
     )
 
-    # الحد الأدنى لكل مشهد
     duration = max(
-        audio_duration + 0.3,
+        duration,
         7.0
     )
 
-    text_file = output_path + ".txt"
+    frames = int(
+        duration * 30
+    )
+
+    # -----------------------------------------
+    # TEXT FILE
+    # -----------------------------------------
+
+    text_path = os.path.join(
+        temp_dir,
+        f"text_{scene_number}.txt"
+    )
 
     wrapped_text = "\n".join(
         textwrap.wrap(
             screen_text,
             width=24,
             break_long_words=False,
-            replace_whitespace=False,
+            replace_whitespace=False
         )
     )
 
     with open(
-        text_file,
+        text_path,
         "w",
         encoding="utf-8"
     ) as f:
+
         f.write(
             wrapped_text
         )
 
-    # حركة كاميرا مختلفة لكل مشهد
+    # -----------------------------------------
+    # CAMERA MOTION
+    # -----------------------------------------
+
     if scene_number % 2 == 0:
 
-        zoom_expression = (
+        zoom = (
             "min(zoom+0.0008,1.12)"
+        )
+
+        x_position = (
+            "iw/2-(iw/zoom/2)"
         )
 
     else:
 
-        zoom_expression = (
+        zoom = (
             "min(zoom+0.0006,1.10)"
         )
 
-    frames = int(
-        duration * 30
-    )
+        x_position = (
+            "(iw-iw/zoom)*on/"
+            f"{frames}"
+        )
+
+    # -----------------------------------------
+    # FILTER
+    # -----------------------------------------
 
     filter_complex = (
         f"[0:v]"
-        f"scale=800:1422:force_original_aspect_ratio=increase,"
-        f"crop=800:1422,"
+        f"scale=900:1600:"
+        f"force_original_aspect_ratio=increase,"
+        f"crop=900:1600,"
         f"zoompan="
-        f"z='{zoom_expression}':"
-        f"x='iw/2-(iw/zoom/2)':"
-        f"y='ih/2-(ih/zoom/2)':"
+        f"z='{zoom}':"
+        f"x='{x_position}':"
+        f"y='(ih-ih/zoom)/2':"
         f"d={frames}:"
         f"s=720x1280:"
         f"fps=30,"
         f"setsar=1,"
         f"format=yuv420p"
-        f"[v];"
+        f"[base];"
 
-        f"[v]"
+        f"[base]"
         f"drawtext="
         f"fontfile='{ARABIC_FONT}':"
-        f"textfile='{text_file}':"
+        f"textfile='{text_path}':"
         f"fontcolor=white:"
         f"fontsize=42:"
-        f"borderw=3:"
+        f"borderw=4:"
         f"bordercolor=black:"
         f"shadowx=2:"
         f"shadowy=2:"
         f"x=(w-text_w)/2:"
-        f"y=h-text_h-110"
-        f"[vout]"
+        f"y=h-text_h-100"
+        f"[video]"
     )
+
+    # -----------------------------------------
+    # FFMPEG
+    # -----------------------------------------
 
     command = [
         "ffmpeg",
@@ -493,13 +577,16 @@ def create_scene_video(
         filter_complex,
 
         "-map",
-        "[vout]",
+        "[video]",
 
         "-map",
-        "1:a",
+        "1:a:0",
 
         "-t",
         str(duration),
+
+        "-r",
+        "30",
 
         "-c:v",
         "libx264",
@@ -510,35 +597,56 @@ def create_scene_video(
         "-crf",
         "23",
 
+        "-pix_fmt",
+        "yuv420p",
+
         "-c:a",
         "aac",
 
         "-b:a",
         "128k",
 
-        "-pix_fmt",
-        "yuv420p",
+        "-ar",
+        "44100",
+
+        "-ac",
+        "2",
 
         "-movflags",
         "+faststart",
 
-        output_path,
+        output_path
     ]
 
     logger.info(
-        f"Creating scene video {scene_number}..."
+        f"Creating scene video {scene_number}/8..."
     )
 
-    subprocess.run(
+    result = subprocess.run(
         command,
-        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True
     )
+
+    if result.returncode != 0:
+
+        logger.error(
+            result.stderr
+        )
+
+        raise RuntimeError(
+            "FFmpeg scene creation failed"
+        )
 
     try:
+
         os.remove(
-            text_file
+            text_path
         )
+
     except Exception:
+
         pass
 
     return output_path
@@ -549,11 +657,18 @@ def create_scene_video(
 # =========================================================
 
 def concat_videos(
-    video_paths,
+    video_files,
     output_path
 ):
 
-    list_file = output_path + ".txt"
+    logger.info(
+        "Combining videos..."
+    )
+
+    list_file = (
+        output_path +
+        "_list.txt"
+    )
 
     with open(
         list_file,
@@ -561,9 +676,9 @@ def concat_videos(
         encoding="utf-8"
     ) as f:
 
-        for video in video_paths:
+        for video in video_files:
 
-            safe_path = (
+            path = (
                 os.path.abspath(
                     video
                 )
@@ -574,7 +689,7 @@ def concat_videos(
             )
 
             f.write(
-                f"file '{safe_path}'\n"
+                f"file '{path}'\n"
             )
 
     command = [
@@ -596,30 +711,46 @@ def concat_videos(
         "-movflags",
         "+faststart",
 
-        output_path,
+        output_path
     ]
 
-    subprocess.run(
+    result = subprocess.run(
         command,
-        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True
     )
 
+    if result.returncode != 0:
+
+        logger.error(
+            result.stderr
+        )
+
+        raise RuntimeError(
+            "FFmpeg concat failed"
+        )
+
     try:
+
         os.remove(
             list_file
         )
+
     except Exception:
+
         pass
 
     return output_path
 
 
 # =========================================================
-# GENERATE COMPLETE VIDEO
+# VIDEO GENERATION
 # =========================================================
 
-async def generate_video_for_user(
-    update: Update
+async def generate_video(
+    update,
+    story
 ):
 
     temp_dir = tempfile.mkdtemp(
@@ -629,28 +760,30 @@ async def generate_video_for_user(
     try:
 
         await update.message.reply_text(
-            "🎬 تمام... عم بكتب القصة وبجهز المشاهد..."
+            "🧠 عم أحلل القصة وأقسمها إلى 8 مشاهد..."
         )
 
-        story = await asyncio.to_thread(
-            generate_story
+        story_data = await asyncio.to_thread(
+            create_scenes,
+            story
         )
 
-        title = story.get(
+        title = story_data.get(
             "title",
-            "قصة جديدة"
+            "بعد منتصف الليل"
         )
 
-        scenes = story[
+        scenes = story_data[
             "scenes"
         ]
 
         await update.message.reply_text(
-            f"📖 {title}\n\n"
-            "بدأت أصنع الفيديو...\n"
+            f"🌙 {title}\n\n"
             "🎙️ صوت عربي Neural\n"
-            "🎥 حركة سينمائية\n"
-            "📝 كتابة على الشاشة"
+            "🎨 صور سينمائية\n"
+            "🎥 حركة كاميرا\n"
+            "📝 كتابة على الشاشة\n\n"
+            "بدأنا..."
         )
 
         scene_videos = []
@@ -661,7 +794,8 @@ async def generate_video_for_user(
         ):
 
             await update.message.reply_text(
-                f"🎞️ المشهد {index}/8..."
+                f"🎞️ المشهد {index}/8\n"
+                "🎨 جاري إنشاء الصورة..."
             )
 
             image_path = os.path.join(
@@ -669,9 +803,31 @@ async def generate_video_for_user(
                 f"scene_{index}.png"
             )
 
+            await asyncio.to_thread(
+                generate_image,
+                scene["image_prompt"],
+                image_path
+            )
+
+            await update.message.reply_text(
+                f"🎙️ المشهد {index}/8\n"
+                "جاري إنشاء الصوت..."
+            )
+
             audio_path = os.path.join(
                 temp_dir,
                 f"scene_{index}.mp3"
+            )
+
+            await asyncio.to_thread(
+                create_voice,
+                scene["narration"],
+                audio_path
+            )
+
+            await update.message.reply_text(
+                f"🎬 المشهد {index}/8\n"
+                "جاري تحريك الصورة وإضافة الكتابة..."
             )
 
             video_path = os.path.join(
@@ -679,74 +835,53 @@ async def generate_video_for_user(
                 f"scene_{index}.mp4"
             )
 
-            # -------------------------
-            # IMAGE
-            # -------------------------
-
-            await asyncio.to_thread(
-                generate_image,
-                scene["image_prompt"],
-                image_path,
-            )
-
-            # -------------------------
-            # VOICE
-            # -------------------------
-
-            await asyncio.to_thread(
-                create_voice,
-                scene["narration"],
-                audio_path,
-            )
-
-            # -------------------------
-            # VIDEO
-            # -------------------------
-
             await asyncio.to_thread(
                 create_scene_video,
                 image_path,
                 audio_path,
                 scene["screen_text"],
                 video_path,
-                index,
+                temp_dir,
+                index
             )
 
             scene_videos.append(
                 video_path
             )
 
-        final_video = os.path.join(
-            temp_dir,
-            "final_video.mp4"
+        await update.message.reply_text(
+            "🔥 كل المشاهد جاهزة.\n"
+            "جاري تجميع الفيديو النهائي..."
         )
 
-        await update.message.reply_text(
-            "🔥 عم أجمع الفيديو النهائي..."
+        final_video = os.path.join(
+            temp_dir,
+            "abosaraj_final.mp4"
         )
 
         await asyncio.to_thread(
             concat_videos,
             scene_videos,
-            final_video,
+            final_video
         )
 
         await update.message.reply_text(
-            "✅ خلص الفيديو! عم أرسله..."
+            "📤 الفيديو جاهز!\n"
+            "جاري إرساله إليك..."
         )
 
         with open(
             final_video,
             "rb"
-        ) as video_file:
+        ) as video:
 
             await update.message.reply_video(
-                video=video_file,
+                video=video,
                 caption=(
                     f"🌙 {title}\n\n"
-                    "بعد منتصف الليل..."
+                    "🔥 Abosaraj"
                 ),
-                supports_streaming=True,
+                supports_streaming=True
             )
 
     except Exception as e:
@@ -757,7 +892,7 @@ async def generate_video_for_user(
 
         await update.message.reply_text(
             "❌ صار خطأ أثناء صناعة الفيديو.\n\n"
-            f"التفاصيل: {str(e)[:500]}"
+            f"التفاصيل:\n{str(e)[:1000]}"
         )
 
     finally:
@@ -769,51 +904,34 @@ async def generate_video_for_user(
 
 
 # =========================================================
-# BACKGROUND WORKER
+# TELEGRAM
 # =========================================================
 
-def start_video_generation(
-    update
-):
-
-    asyncio.run(
-        generate_video_for_user(
-            update
-        )
-    )
-
-
-# =========================================================
-# TELEGRAM HANDLERS
-# =========================================================
-
-async def start_handler(
+async def start_command(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
 ):
 
     await update.message.reply_text(
-        "🌙 أهلاً في بوت بعد منتصف الليل.\n\n"
-        "ابعتلي أي رسالة، وأنا بحولها لقصة فيديو "
-        "بصوت عربي + صور + حركة + كتابة."
-    )
-
-
-async def help_handler(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
-
-    await update.message.reply_text(
-        "🎬 طريقة الاستخدام:\n\n"
-        "ابعت أي فكرة أو قصة.\n\n"
-        "البوت يحولها إلى:\n"
-        "📖 قصة\n"
+        "🌙 أهلاً بك في Abosaraj!\n\n"
+        "ابعتلي قصة أو حتى فكرة بسيطة.\n\n"
+        "وأنا أحولها إلى:\n\n"
+        "📖 قصة سينمائية\n"
+        "🎨 صور AI\n"
         "🎙️ صوت عربي Neural\n"
-        "🎨 صور سينمائية\n"
         "🎥 حركة كاميرا\n"
-        "📝 نص على الشاشة\n"
-        "📱 فيديو عمودي 9:16"
+        "📝 كتابة على الشاشة\n"
+        "📱 فيديو عمودي"
+    )
+
+
+async def help_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    await update.message.reply_text(
+        "📖 أرسل القصة أو الفكرة فقط."
     )
 
 
@@ -822,17 +940,33 @@ async def story_handler(
     context: ContextTypes.DEFAULT_TYPE
 ):
 
-    thread = threading.Thread(
-        target=start_video_generation,
-        args=(update,),
-        daemon=True,
+    if not update.message:
+        return
+
+    if not update.message.text:
+        return
+
+    story = update.message.text.strip()
+
+    if not story:
+        return
+
+    await update.message.reply_text(
+        "📖 وصلت القصة.\n\n"
+        "🎬 بدأت صناعة الفيديو...\n\n"
+        "اصبر علي شوي 🔥"
     )
 
-    thread.start()
+    asyncio.create_task(
+        generate_video(
+            update,
+            story
+        )
+    )
 
 
 # =========================================================
-# MAIN
+# POST INIT
 # =========================================================
 
 async def post_init(
@@ -843,27 +977,29 @@ async def post_init(
         [
             BotCommand(
                 "start",
-                "تشغيل البوت"
+                "بدء البوت"
             ),
             BotCommand(
                 "help",
                 "المساعدة"
-            ),
+            )
         ]
     )
 
 
+# =========================================================
+# MAIN
+# =========================================================
+
 def main():
 
-    # Flask
     flask_thread = threading.Thread(
         target=run_flask,
-        daemon=True,
+        daemon=True
     )
 
     flask_thread.start()
 
-    # Telegram
     application = (
         Application.builder()
         .token(BOT_TOKEN)
@@ -874,31 +1010,31 @@ def main():
     application.add_handler(
         CommandHandler(
             "start",
-            start_handler
+            start_command
         )
     )
 
     application.add_handler(
         CommandHandler(
             "help",
-            help_handler
+            help_command
         )
     )
 
     application.add_handler(
         MessageHandler(
-            filters.TEXT
-            & ~filters.COMMAND,
+            filters.TEXT & ~filters.COMMAND,
             story_handler
         )
     )
 
     logger.info(
-        "Starting Telegram bot..."
+        "Starting Abosaraj Bot..."
     )
 
     application.run_polling(
-        drop_pending_updates=True
+        drop_pending_updates=True,
+        allowed_updates=Update.ALL_TYPES
     )
 
 
