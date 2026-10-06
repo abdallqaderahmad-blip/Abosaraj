@@ -7,6 +7,7 @@ import logging
 import subprocess
 import threading
 from pathlib import Path
+from datetime import datetime, timezone, timedelta
 from concurrent.futures import ThreadPoolExecutor
 
 import requests
@@ -32,6 +33,7 @@ from telegram.ext import (
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+
 GROQ_MODEL = os.getenv(
     "GROQ_MODEL",
     "openai/gpt-oss-120b"
@@ -39,38 +41,51 @@ GROQ_MODEL = os.getenv(
 
 FAL_KEY = os.getenv("FAL_KEY")
 
-# Wan 3 Text-to-Video
 FAL_MODEL = "alibaba/wan-3.0/text-to-video"
 
-# كل لقطة AI
-CLIP_SECONDS = 5
+# =========================================================
+# DAILY LIMIT
+# =========================================================
 
-# عدد اللقطات
-AI_SCENES = 4
+MAX_DAILY_GENERATIONS = 5
 
-# مدة الفيديو النهائي
+# نستخدم 15 ثانية لكل توليد
+AI_CLIP_SECONDS = 15
+
+# 5 توليدات:
+# فيديو 1 = 2 clips
+# فيديو 2 = 2 clips
+# فيديو 3 = 1 clip
+
+# =========================================================
+# FINAL VIDEO
+# =========================================================
+
 FINAL_SECONDS = 60
 
-# الفيديو النهائي
 FINAL_WIDTH = 720
 FINAL_HEIGHT = 1280
 FPS = 30
 
-# صوت عربي
 VOICE = "ar-SA-HamedNeural"
 
-# ملفات العمل
+# =========================================================
+# WORK DIRECTORY
+# =========================================================
+
 WORK_DIR = Path("/tmp/abosaraj")
 WORK_DIR.mkdir(
     parents=True,
     exist_ok=True
 )
 
-# لا نشغل أكثر من فيديو بنفس الوقت
+# =========================================================
+# THREADING
+# =========================================================
+
 executor = ThreadPoolExecutor(
     max_workers=1
 )
-
 
 # =========================================================
 # LOGGING
@@ -83,7 +98,6 @@ logging.basicConfig(
 
 logger = logging.getLogger("Abosaraj")
 
-
 # =========================================================
 # FLASK
 # =========================================================
@@ -93,21 +107,27 @@ app = Flask(__name__)
 
 @app.route("/")
 def home():
-    return "Abosaraj V3 is alive"
+    return "Abosaraj Daily 5 is alive"
 
 
 @app.route("/health")
 def health():
+
     return {
         "status": "ok",
-        "version": "3",
-        "video_engine": "Wan 3"
+        "version": "daily-5",
+        "video_engine": "Wan 3",
+        "daily_limit": MAX_DAILY_GENERATIONS
     }
 
 
 def run_flask():
+
     port = int(
-        os.getenv("PORT", "10000")
+        os.getenv(
+            "PORT",
+            "10000"
+        )
     )
 
     app.run(
@@ -135,13 +155,77 @@ def check_environment():
         missing.append("FAL_KEY")
 
     if missing:
+
         raise RuntimeError(
             "Missing environment variables: "
             + ", ".join(missing)
         )
 
-    # fal-client يستخدم FAL_KEY
     os.environ["FAL_KEY"] = FAL_KEY
+
+
+# =========================================================
+# DAILY COUNTER
+# =========================================================
+
+counter_lock = threading.Lock()
+
+daily_counter = {
+    "date": None,
+    "used": 0
+}
+
+
+def malaysia_date():
+
+    tz = timezone(
+        timedelta(hours=8)
+    )
+
+    return datetime.now(tz).date().isoformat()
+
+
+def get_daily_usage():
+
+    today = malaysia_date()
+
+    with counter_lock:
+
+        if daily_counter["date"] != today:
+
+            daily_counter["date"] = today
+            daily_counter["used"] = 0
+
+        return daily_counter["used"]
+
+
+def reserve_generation():
+
+    today = malaysia_date()
+
+    with counter_lock:
+
+        if daily_counter["date"] != today:
+
+            daily_counter["date"] = today
+            daily_counter["used"] = 0
+
+        if (
+            daily_counter["used"]
+            >= MAX_DAILY_GENERATIONS
+        ):
+
+            return False
+
+        daily_counter["used"] += 1
+
+        logger.info(
+            "Daily Wan usage: %s/%s",
+            daily_counter["used"],
+            MAX_DAILY_GENERATIONS
+        )
+
+        return True
 
 
 # =========================================================
@@ -165,74 +249,61 @@ def get_groq():
 
 
 # =========================================================
-# AI STORY DIRECTOR
+# STORY DIRECTOR
 # =========================================================
 
-def create_scenes(story):
+def create_story_plan(story):
 
     prompt = f"""
-أنت مخرج محترف لفيديوهات TikTok وInstagram Reels وYouTube Shorts.
+أنت مخرج محترف لفيديوهات Reels وShorts.
 
-حوّل القصة التالية إلى فيديو قصير سينمائي.
+حوّل القصة إلى فيديو قصير جدًا لكنه قوي.
 
-أريد بالضبط 4 مشاهد.
+أريد 2 مشاهد رئيسية فقط.
 
-كل مشهد مدته حوالي 5 ثواني.
+كل مشهد يجب أن يكون مناسبًا لتوليد فيديو AI مدته 15 ثانية.
 
-الفيديو النهائي سيكون حوالي دقيقة، لذلك اجعل المشاهد الأربعة قوية ويمكن تكرار اللقطات أثناء المونتاج بدون أن تبدو كصور ثابتة.
+الفيديو النهائي سيتم بناؤه من هذه المشاهد مع المونتاج والصوت.
 
-أرجع JSON فقط.
-
-الشكل:
+أرجع JSON فقط بهذا الشكل:
 
 {{
-  "title": "عنوان عربي قصير وقوي",
-  "hook": "جملة افتتاحية تشد المشاهد",
+  "title": "عنوان عربي قصير",
+  "hook": "Hook عربي قوي",
+  "narration": "نص الراوي العربي الكامل",
   "scenes": [
     {{
-      "narration": "جملة أو جمل عربية للمشهد",
-      "screen_text": "كلمات عربية قصيرة",
       "video_prompt": "English cinematic video prompt"
     }},
     {{
-      "narration": "جملة أو جمل عربية للمشهد",
-      "screen_text": "كلمات عربية قصيرة",
-      "video_prompt": "English cinematic video prompt"
-    }},
-    {{
-      "narration": "جملة أو جمل عربية للمشهد",
-      "screen_text": "كلمات عربية قصيرة",
-      "video_prompt": "English cinematic video prompt"
-    }},
-    {{
-      "narration": "جملة أو جمل عربية للمشهد",
-      "screen_text": "كلمات عربية قصيرة",
       "video_prompt": "English cinematic video prompt"
     }}
   ]
 }}
 
-القواعد المهمة:
+القواعد:
 
-- بالضبط 4 مشاهد.
-- narration باللغة العربية.
-- video_prompt باللغة الإنجليزية فقط.
-- لا تضع أي كتابة أو subtitles داخل video_prompt.
-- الفيديو يجب أن يكون REALISTIC وCINEMATIC.
-- يجب أن يكون هناك حركة حقيقية في كل مشهد.
-- اذكر حركة الشخص أو الأشياء.
+- narration بين 110 و160 كلمة تقريبًا.
+- القصة يجب أن تبدأ بـ Hook قوي.
+- المشهد الأول يجب أن يجذب الانتباه فورًا.
+- المشهد الثاني يجب أن يكون أقوى وأكثر غموضًا.
+- الفيديو واقعي وسينمائي.
+- الحركة حقيقية وليست صورة ثابتة.
+- اذكر حركة الشخصيات.
+- اذكر حركة البيئة.
 - اذكر حركة الكاميرا.
-- لا تجعل المشهد يبدو كصورة ثابتة.
-- كل مشهد يجب أن يكون مختلفًا بصريًا.
-- حافظ على نفس الشخصيات والمنطق البصري للقصة قدر الإمكان.
-- استخدم إضاءة سينمائية.
-- استخدم عمق ميدان واقعي.
-- استخدم حركة كاميرا مثل tracking shot أو handheld أو slow push-in أو orbit عندما تناسب المشهد.
-- لا تستخدم الدماء أو العنف الدموي الصريح.
-- مناسب لفيديوهات الرعب والغموض والقصص المثيرة.
-- اجعل القصة مشوقة من أول ثانية.
-- narration الكامل للمشاهد الأربعة يجب أن يكون تقريبًا 100 إلى 140 كلمة.
-- screen_text قصير جدًا.
+- استخدم realistic cinematic lighting.
+- استخدم vertical 9:16 composition.
+- لا تضع أي كتابة داخل الفيديو.
+- لا subtitles.
+- لا logos.
+- لا watermark.
+- لا دماء أو gore.
+- لا تستخدم كلمات عربية داخل video_prompt.
+- video_prompt باللغة الإنجليزية فقط.
+- حافظ على نفس الشخصية والمكان قدر الإمكان بين المشهدين.
+- اجعل كل مشهد مختلفًا بصريًا.
+- اجعل النهاية فيها مفاجأة أو سؤال أو twist عندما تناسب القصة.
 
 القصة:
 
@@ -248,9 +319,9 @@ def create_scenes(story):
             {
                 "role": "system",
                 "content": (
-                    "You are an expert Arabic "
+                    "You are a professional "
                     "short-form video director. "
-                    "Return valid JSON only."
+                    "Return JSON only."
                 )
             },
             {
@@ -266,7 +337,6 @@ def create_scenes(story):
         .strip()
     )
 
-    # إزالة ```json إذا أرسلها Groq
     content = re.sub(
         r"^```json\s*",
         "",
@@ -281,18 +351,18 @@ def create_scenes(story):
     )
 
     try:
+
         data = json.loads(content)
 
-    except json.JSONDecodeError as e:
+    except Exception as e:
 
         logger.error(
-            "Groq returned invalid JSON: %s",
+            "Invalid Groq JSON: %s",
             content
         )
 
         raise RuntimeError(
-            "Groq returned invalid JSON: "
-            + str(e)
+            "Groq returned invalid JSON."
         )
 
     scenes = data.get(
@@ -300,34 +370,55 @@ def create_scenes(story):
         []
     )
 
-    if len(scenes) != AI_SCENES:
+    if len(scenes) != 2:
 
         raise RuntimeError(
-            f"Groq returned {len(scenes)} "
-            f"scenes instead of {AI_SCENES}."
+            "Groq did not create exactly 2 scenes."
+        )
+
+    narration = (
+        data.get(
+            "narration",
+            ""
+        )
+        .strip()
+    )
+
+    if len(narration) < 50:
+
+        raise RuntimeError(
+            "Generated narration is too short."
         )
 
     return data
 
 
 # =========================================================
-# WAN 3 VIDEO GENERATION
+# WAN 3
 # =========================================================
 
-def generate_ai_clip(
+def generate_wan_clip(
     prompt,
     output_path,
     seed
 ):
 
+    if not reserve_generation():
+
+        raise RuntimeError(
+            "🛑 وصلنا إلى حد 5 توليدات Wan 3 "
+            "المسموح بها لهذا اليوم."
+        )
+
     logger.info(
-        "Starting Wan 3 generation..."
+        "Generating Wan 3 clip..."
     )
 
     try:
 
         result = fal_client.subscribe(
             FAL_MODEL,
+
             arguments={
                 "prompt": prompt,
 
@@ -335,13 +426,15 @@ def generate_ai_clip(
 
                 "aspect_ratio": "9:16",
 
-                "duration": CLIP_SECONDS,
+                "duration": AI_CLIP_SECONDS,
 
                 "audio": True,
 
                 "enable_prompt_expansion": True,
 
-                "seed": int(seed)
+                "seed": int(seed),
+
+                "enable_safety_checker": True
             }
         )
 
@@ -353,6 +446,13 @@ def generate_ai_clip(
             "Wan 3 generation failed"
         )
 
+        # نرجع العداد لأن التوليد لم يكتمل
+        with counter_lock:
+
+            if daily_counter["used"] > 0:
+
+                daily_counter["used"] -= 1
+
         if (
             "402" in error
             or "credit" in error.lower()
@@ -361,8 +461,8 @@ def generate_ai_clip(
         ):
 
             raise RuntimeError(
-                "❌ fal.ai رفض التوليد بسبب الرصيد "
-                "أو عدم وجود رصيد API كافي."
+                "❌ fal.ai لا يملك رصيد API كافيًا "
+                "لهذا التوليد."
             )
 
         if (
@@ -376,34 +476,35 @@ def generate_ai_clip(
             )
 
         raise RuntimeError(
-            "❌ Wan 3 generation failed: "
+            "❌ Wan 3 error: "
             + error
         )
 
-    logger.info(
-        "Wan 3 result received."
-    )
-
-    # =====================================================
-    # استخراج رابط الفيديو
-    # =====================================================
-
     video_url = None
 
-    if isinstance(result, dict):
+    if isinstance(
+        result,
+        dict
+    ):
 
         video = result.get(
             "video"
         )
 
-        if isinstance(video, dict):
+        if isinstance(
+            video,
+            dict
+        ):
 
             video_url = (
                 video.get("url")
                 or video.get("video_url")
             )
 
-        elif isinstance(video, str):
+        elif isinstance(
+            video,
+            str
+        ):
 
             video_url = video
 
@@ -416,21 +517,12 @@ def generate_ai_clip(
 
     if not video_url:
 
-        logger.error(
-            "Unexpected Wan response: %s",
-            result
-        )
-
         raise RuntimeError(
             "Wan 3 returned no video URL."
         )
 
-    # =====================================================
-    # تحميل الفيديو
-    # =====================================================
-
     logger.info(
-        "Downloading Wan 3 video..."
+        "Downloading Wan 3 clip..."
     )
 
     response = requests.get(
@@ -452,29 +544,20 @@ def generate_ai_clip(
     if not output_path.exists():
 
         raise RuntimeError(
-            "Wan 3 video file was not created."
+            "Video file was not created."
         )
 
-    file_size = (
-        output_path.stat().st_size
-    )
-
-    if file_size < 1000:
+    if output_path.stat().st_size < 1000:
 
         raise RuntimeError(
-            "Downloaded video file is too small."
+            "Downloaded video is invalid."
         )
-
-    logger.info(
-        "Wan 3 clip saved: %s bytes",
-        file_size
-    )
 
     return str(output_path)
 
 
 # =========================================================
-# TEXT TO SPEECH
+# VOICE
 # =========================================================
 
 async def generate_voice_async(
@@ -516,7 +599,7 @@ def generate_voice(
 
 
 # =========================================================
-# FFPROBE
+# DURATION
 # =========================================================
 
 def get_duration(path):
@@ -548,7 +631,7 @@ def get_duration(path):
 
 
 # =========================================================
-# PREPARE CLIP
+# PREPARE VIDEO
 # =========================================================
 
 def prepare_clip(
@@ -556,7 +639,7 @@ def prepare_clip(
     output_video
 ):
 
-    filter_complex = (
+    filter_video = (
         f"scale={FINAL_WIDTH}:{FINAL_HEIGHT}:"
         "force_original_aspect_ratio=increase,"
         f"crop={FINAL_WIDTH}:{FINAL_HEIGHT},"
@@ -573,7 +656,7 @@ def prepare_clip(
             str(input_video),
 
             "-vf",
-            filter_complex,
+            filter_video,
 
             "-an",
 
@@ -601,7 +684,7 @@ def prepare_clip(
 
 
 # =========================================================
-# CONCAT CLIPS
+# CONCAT
 # =========================================================
 
 def concat_clips(
@@ -610,8 +693,8 @@ def concat_clips(
 ):
 
     concat_file = (
-        WORK_DIR /
-        f"concat_{uuid.uuid4().hex}.txt"
+        output_path.parent /
+        "concat.txt"
     )
 
     with open(
@@ -622,13 +705,16 @@ def concat_clips(
 
         for clip in clips:
 
-            safe_path = (
+            path = (
                 str(clip)
-                .replace("'", "'\\''")
+                .replace(
+                    "'",
+                    "'\\''"
+                )
             )
 
             f.write(
-                f"file '{safe_path}'\n"
+                f"file '{path}'\n"
             )
 
     subprocess.run(
@@ -660,10 +746,10 @@ def concat_clips(
 
 
 # =========================================================
-# SUBTITLES
+# CAPTIONS
 # =========================================================
 
-def create_caption_file(
+def create_captions(
     narration,
     duration,
     output_path
@@ -712,8 +798,9 @@ def create_caption_file(
 
         return None
 
-    chunk_duration = (
-        duration / len(chunks)
+    part = (
+        duration /
+        len(chunks)
     )
 
     def ass_time(seconds):
@@ -794,12 +881,12 @@ def create_caption_file(
         for i, chunk in enumerate(chunks):
 
             start = (
-                i * chunk_duration
+                i * part
             )
 
             end = min(
                 duration,
-                (i + 1) * chunk_duration
+                (i + 1) * part
             )
 
             text = (
@@ -826,19 +913,37 @@ def create_caption_file(
 
 
 # =========================================================
-# ESCAPE DRAW TEXT
+# DRAW TEXT ESCAPE
 # =========================================================
 
 def escape_drawtext(text):
 
     return (
         str(text)
-        .replace("\\", "\\\\")
-        .replace(":", "\\:")
-        .replace("'", "\\'")
-        .replace(",", "\\,")
-        .replace("[", "\")
-        .replace("]", "\")
+        .replace(
+            "\\",
+            "\\\\"
+        )
+        .replace(
+            ":",
+            "\\:"
+        )
+        .replace(
+            "'",
+            "\\'"
+        )
+        .replace(
+            ",",
+            "\\,"
+        )
+        .replace(
+            "[",
+            "\\["
+        )
+        .replace(
+            "]",
+            "\\]"
+        )
     )
 
 
@@ -853,10 +958,6 @@ def make_final_video(
     output_path
 ):
 
-    # -----------------------------------------------------
-    # 1. دمج اللقطات
-    # -----------------------------------------------------
-
     combined = (
         output_path.parent /
         "combined.mp4"
@@ -866,20 +967,6 @@ def make_final_video(
         clips,
         combined
     )
-
-    combined_duration = get_duration(
-        combined
-    )
-
-    if combined_duration <= 0:
-
-        raise RuntimeError(
-            "Could not read combined video duration."
-        )
-
-    # -----------------------------------------------------
-    # 2. الصوت
-    # -----------------------------------------------------
 
     voice_file = (
         output_path.parent /
@@ -901,40 +988,32 @@ def make_final_video(
             "Could not read voice duration."
         )
 
-    # -----------------------------------------------------
-    # 3. مدة الفيديو
-    # -----------------------------------------------------
-
     target_duration = max(
         FINAL_SECONDS,
         voice_duration + 1
     )
-
-    # -----------------------------------------------------
-    # 4. Captions
-    # -----------------------------------------------------
 
     captions = (
         output_path.parent /
         "captions.ass"
     )
 
-    create_caption_file(
+    create_captions(
         narration,
         voice_duration,
         captions
     )
 
     # -----------------------------------------------------
-    # 5. تمديد الفيديو
+    # نكرر المشاهد حتى نهاية الصوت
     # -----------------------------------------------------
 
-    video_looped = (
+    looped = (
         output_path.parent /
         "looped.mp4"
     )
 
-    video_filter = (
+    filter_video = (
         f"scale={FINAL_WIDTH}:{FINAL_HEIGHT}:"
         "force_original_aspect_ratio=increase,"
         f"crop={FINAL_WIDTH}:{FINAL_HEIGHT},"
@@ -957,7 +1036,7 @@ def make_final_video(
             str(target_duration),
 
             "-vf",
-            video_filter,
+            filter_video,
 
             "-an",
 
@@ -973,7 +1052,7 @@ def make_final_video(
             "-pix_fmt",
             "yuv420p",
 
-            str(video_looped)
+            str(looped)
         ],
         check=True,
 
@@ -982,7 +1061,7 @@ def make_final_video(
     )
 
     # -----------------------------------------------------
-    # 6. العنوان
+    # العنوان
     # -----------------------------------------------------
 
     safe_title = escape_drawtext(
@@ -991,8 +1070,9 @@ def make_final_video(
 
     title_filter = (
         "drawtext="
-        "fontfile=/usr/share/fonts/truetype/"
-        "noto/NotoSansArabic-Regular.ttf:"
+        "fontfile=/usr/share/fonts/"
+        "truetype/noto/"
+        "NotoSansArabic-Regular.ttf:"
         f"text='{safe_title}':"
         "fontcolor=white:"
         "fontsize=38:"
@@ -1003,10 +1083,6 @@ def make_final_video(
         "enable='between(t,0,3)'"
     )
 
-    # -----------------------------------------------------
-    # 7. Captions + title + الصوت
-    # -----------------------------------------------------
-
     subtitle_filter = (
         f"ass={captions}"
     )
@@ -1016,13 +1092,17 @@ def make_final_video(
         f"{title_filter}"
     )
 
+    # -----------------------------------------------------
+    # Final render
+    # -----------------------------------------------------
+
     subprocess.run(
         [
             "ffmpeg",
             "-y",
 
             "-i",
-            str(video_looped),
+            str(looped),
 
             "-i",
             str(voice_file),
@@ -1078,10 +1158,14 @@ def make_final_video(
 
 
 # =========================================================
-# PROCESS STORY
+# CREATE ONE VIDEO
 # =========================================================
 
-def process_story(story):
+def create_one_video(
+    story,
+    generation_number,
+    clips_allowed
+):
 
     job_id = uuid.uuid4().hex
 
@@ -1096,112 +1180,105 @@ def process_story(story):
     )
 
     logger.info(
-        "Starting job %s",
+        "Starting video job %s",
         job_id
     )
 
     # -----------------------------------------------------
-    # 1. Groq
+    # Groq
     # -----------------------------------------------------
 
-    data = create_scenes(
+    plan = create_story_plan(
         story
     )
 
-    title = data.get(
+    title = plan.get(
         "title",
         "قصة جديدة"
     )
 
-    scenes = data["scenes"]
-
-    # -----------------------------------------------------
-    # 2. Narration
-    # -----------------------------------------------------
-
-    narration_parts = []
-
-    for scene in scenes:
-
-        narration = (
-            scene.get(
-                "narration",
-                ""
-            )
-            .strip()
-        )
-
-        if narration:
-
-            narration_parts.append(
-                narration
-            )
-
-    narration = " ".join(
-        narration_parts
+    narration = plan.get(
+        "narration",
+        ""
     )
 
-    if len(narration) < 30:
-
-        raise RuntimeError(
-            "Narration generated by Groq is too short."
-        )
-
-    # -----------------------------------------------------
-    # 3. Generate 4 AI clips
-    # -----------------------------------------------------
+    scenes = plan.get(
+        "scenes",
+        []
+    )
 
     clips = []
 
-    for index, scene in enumerate(
-        scenes,
-        start=1
+    # -----------------------------------------------------
+    # توليد اللقطات المطلوبة
+    # -----------------------------------------------------
+
+    for index in range(
+        clips_allowed
     ):
 
-        prompt = (
-            scene.get(
-                "video_prompt",
-                ""
+        if index >= len(scenes):
+
+            scene_prompt = (
+                "A cinematic mysterious "
+                "night scene with realistic "
+                "human movement, wind, "
+                "moving environment, "
+                "slow camera push-in, "
+                "dramatic realistic lighting, "
+                "photorealistic, vertical 9:16, "
+                "no text, no subtitles."
             )
-            .strip()
-        )
 
-        if not prompt:
+        else:
 
-            prompt = (
+            scene_prompt = (
+                scenes[index]
+                .get(
+                    "video_prompt",
+                    ""
+                )
+                .strip()
+            )
+
+        if not scene_prompt:
+
+            scene_prompt = (
                 "A realistic cinematic "
-                "mysterious night scene, "
-                "a person walking slowly "
-                "through a dark environment, "
-                "wind moving clothing and trees, "
-                "subtle handheld camera movement, "
-                "slow cinematic push-in, "
-                "realistic lighting, "
-                "photorealistic motion, "
-                "vertical 9:16 composition, "
-                "no text, no subtitles, no watermark."
+                "mystery scene, "
+                "natural human movement, "
+                "moving environment, "
+                "slow tracking camera, "
+                "dramatic lighting, "
+                "vertical 9:16, "
+                "no text."
             )
 
         raw_clip = (
             job_dir /
-            f"scene_{index}_raw.mp4"
+            f"clip_{index + 1}_raw.mp4"
         )
 
         final_clip = (
             job_dir /
-            f"scene_{index}.mp4"
+            f"clip_{index + 1}.mp4"
         )
 
         logger.info(
-            "Generating Wan 3 scene %s/%s",
-            index,
-            AI_SCENES
+            "Video %s: generating clip %s/%s",
+            generation_number,
+            index + 1,
+            clips_allowed
         )
 
-        generate_ai_clip(
-            prompt,
+        generate_wan_clip(
+            scene_prompt,
             raw_clip,
-            seed=1000 + index
+            seed=(
+                5000
+                + generation_number * 100
+                + index
+            )
         )
 
         prepare_clip(
@@ -1214,7 +1291,7 @@ def process_story(story):
         )
 
     # -----------------------------------------------------
-    # 4. Final montage
+    # Final montage
     # -----------------------------------------------------
 
     final_video = (
@@ -1229,11 +1306,6 @@ def process_story(story):
         final_video
     )
 
-    logger.info(
-        "Job %s completed successfully",
-        job_id
-    )
-
     return {
         "video": str(final_video),
         "title": title,
@@ -1242,7 +1314,7 @@ def process_story(story):
 
 
 # =========================================================
-# TELEGRAM
+# TELEGRAM START
 # =========================================================
 
 async def start_command(
@@ -1250,18 +1322,56 @@ async def start_command(
     context: ContextTypes.DEFAULT_TYPE
 ):
 
-    await update.message.reply_text(
-        "🎬 أهلاً في Abosaraj V3\n\n"
-        "ابعتلي أي قصة وأنا أحولها إلى:\n\n"
-        "🎥 فيديو AI متحرك\n"
-        "🎙️ صوت عربي\n"
-        "📝 Captions عربية\n"
-        "🎞️ مونتاج\n"
-        "📱 9:16\n"
-        "🔥 جاهز للـReels وShorts\n\n"
-        "ابعت القصة 👇"
+    used = get_daily_usage()
+
+    remaining = (
+        MAX_DAILY_GENERATIONS
+        - used
     )
 
+    await update.message.reply_text(
+        "🎬 أهلاً في Abosaraj\n\n"
+        "ابعتلي القصة وأنا أحولها إلى "
+        "فيديو Reels/Shorts جاهز.\n\n"
+        "🎥 AI Video\n"
+        "🎙️ صوت عربي\n"
+        "📝 Captions\n"
+        "📱 9:16\n"
+        "🎞️ مونتاج تلقائي\n\n"
+        f"🔥 التوليدات المستخدمة اليوم: "
+        f"{used}/{MAX_DAILY_GENERATIONS}\n"
+        f"🟢 المتبقي: {remaining}"
+    )
+
+
+# =========================================================
+# TELEGRAM STATUS
+# =========================================================
+
+async def status_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    used = get_daily_usage()
+
+    remaining = (
+        MAX_DAILY_GENERATIONS
+        - used
+    )
+
+    await update.message.reply_text(
+        "📊 حالة Abosaraj\n\n"
+        f"🎥 Wan generations: "
+        f"{used}/{MAX_DAILY_GENERATIONS}\n"
+        f"🟢 المتبقي: {remaining}\n\n"
+        "النظام يعمل بنظام حد يومي."
+    )
+
+
+# =========================================================
+# TELEGRAM STORY
+# =========================================================
 
 async def handle_story(
     update: Update,
@@ -1277,7 +1387,7 @@ async def handle_story(
 
         return
 
-    if len(story) < 20:
+    if len(story) < 30:
 
         await update.message.reply_text(
             "اكتب قصة أطول شوي حتى أقدر "
@@ -1286,14 +1396,56 @@ async def handle_story(
 
         return
 
+    used = get_daily_usage()
+
+    remaining = (
+        MAX_DAILY_GENERATIONS
+        - used
+    )
+
+    if remaining <= 0:
+
+        await update.message.reply_text(
+            "🛑 خلصت توليدات Wan لهذا اليوم.\n\n"
+            "استخدم /status لمعرفة الحالة."
+        )
+
+        return
+
+    # -----------------------------------------------------
+    # توزيع التوليدات
+    #
+    # إذا المتبقي 5:
+    # أول فيديو = 2
+    #
+    # إذا المتبقي 3:
+    # ثاني فيديو = 2
+    #
+    # إذا المتبقي 1:
+    # ثالث فيديو = 1
+    # -----------------------------------------------------
+
+    if remaining >= 5:
+
+        clips_for_video = 2
+
+    elif remaining >= 3:
+
+        clips_for_video = 2
+
+    else:
+
+        clips_for_video = 1
+
     await update.message.reply_text(
         "🎬 وصلت القصة.\n\n"
-        "🧠 عم ببني السيناريو...\n"
-        "🎥 عم أعمل 4 لقطات AI حقيقية...\n"
+        "🧠 عم أبني السيناريو...\n"
+        f"🎥 عم أستخدم {clips_for_video} "
+        "توليد AI لهذا الفيديو...\n"
         "🎙️ بعدها الصوت العربي...\n"
         "📝 بعدها الـCaptions...\n"
-        "🎞️ وبالأخير المونتاج 9:16.\n\n"
-        "⏳ استنى شوي وما تبعت قصة ثانية."
+        "🎞️ وبالأخير المونتاج.\n\n"
+        "⏳ استنى شوي..."
     )
 
     loop = asyncio.get_running_loop()
@@ -1302,21 +1454,27 @@ async def handle_story(
 
         result = await loop.run_in_executor(
             executor,
-            process_story,
-            story
+            create_one_video,
+            story,
+            used + 1,
+            clips_for_video
         )
 
         video_path = result["video"]
 
         title = result["title"]
 
+        new_used = get_daily_usage()
+
         await update.message.reply_text(
             "✅ خلص الفيديو!\n\n"
             f"🎬 {title}\n"
-            "🎥 AI Video\n"
+            "🎥 AI Motion\n"
             "🎙️ صوت عربي\n"
             "📝 Captions\n"
-            "📱 9:16"
+            "📱 9:16\n\n"
+            f"📊 الاستخدام اليوم: "
+            f"{new_used}/{MAX_DAILY_GENERATIONS}"
         )
 
         with open(
@@ -1330,7 +1488,7 @@ async def handle_story(
                 caption=(
                     "🔥 جاهز للنشر\n\n"
                     "#قصص #رعب #غموض "
-                    "#shorts #reels"
+                    "#shorts #reels #ai"
                 ),
 
                 supports_streaming=True
@@ -1366,7 +1524,7 @@ def main():
     check_environment()
 
     logger.info(
-        "Starting Abosaraj V3..."
+        "Starting Abosaraj Daily 5..."
     )
 
     application = (
@@ -1379,6 +1537,13 @@ def main():
         CommandHandler(
             "start",
             start_command
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "status",
+            status_command
         )
     )
 
