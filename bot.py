@@ -6,6 +6,7 @@ import asyncio
 import logging
 import subprocess
 import threading
+import shutil
 from pathlib import Path
 
 import requests
@@ -32,31 +33,36 @@ from telegram.ext import (
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
+HF_TOKEN = os.environ.get("HF_TOKEN")
+
 GROQ_MODEL = os.environ.get(
     "GROQ_MODEL",
     "openai/gpt-oss-120b"
 )
 
-HF_TOKEN = os.environ.get("HF_TOKEN")
+HF_SPACE = "Lightricks/ltx-video-distilled"
 
 VOICE = "ar-SA-HamedNeural"
 
-# Hugging Face official LTX Video Space
-HF_SPACE = "Lightricks/ltx-video-distilled"
+# LTX official Space currently works with these dimensions.
+# Portrait 9:16-ish composition.
+VIDEO_WIDTH = 704
+VIDEO_HEIGHT = 512
 
-# Video settings
-WIDTH = 512
-HEIGHT = 896
+# We generate only 4 actual AI clips.
+# This reduces ZeroGPU consumption.
+AI_SCENES = 4
 
-# We generate real moving clips.
-# Final video is assembled from multiple clips.
-SCENES_COUNT = 8
+# Each AI clip can currently be up to 8.5 sec.
+CLIP_SECONDS = 5.0
 
-# Each generated clip is short to reduce ZeroGPU usage.
-CLIP_DURATION = 4.0
+# Final video target.
+FINAL_SECONDS = 60
 
-# Final target
-FINAL_MIN_SECONDS = 60
+
+# ============================================================
+# WORK DIRECTORY
+# ============================================================
 
 WORK_DIR = Path("/tmp/abosaraj")
 WORK_DIR.mkdir(parents=True, exist_ok=True)
@@ -75,7 +81,7 @@ logger = logging.getLogger("Abosaraj")
 
 
 # ============================================================
-# FLASK HEALTH SERVER
+# FLASK
 # ============================================================
 
 app = Flask(__name__)
@@ -93,6 +99,7 @@ def health():
 
 def run_flask():
     port = int(os.environ.get("PORT", "10000"))
+
     app.run(
         host="0.0.0.0",
         port=port,
@@ -102,7 +109,7 @@ def run_flask():
 
 
 # ============================================================
-# CHECK ENV
+# ENVIRONMENT CHECK
 # ============================================================
 
 def check_environment():
@@ -126,57 +133,68 @@ def check_environment():
 
 
 # ============================================================
-# GROQ STORY ENGINE
+# GROQ
 # ============================================================
 
 def create_story(user_story: str):
 
-    client = Groq(api_key=GROQ_API_KEY)
+    client = Groq(
+        api_key=GROQ_API_KEY
+    )
 
     prompt = f"""
-أنت كاتب ومخرج فيديوهات قصيرة احترافية.
+أنت كاتب ومخرج فيديوهات رعب وغموض قصيرة.
 
-حوّل القصة التالية إلى فيديو رعب/غموض قصير مناسب لـ
-Instagram Reels وYouTube Shorts وTikTok.
+حوّل القصة التالية إلى فيديو عربي سينمائي:
 
-القصة:
 {user_story}
 
-أريد بالضبط {SCENES_COUNT} مشاهد.
+نريد فيديو نهائي حوالي دقيقة.
 
-كل مشهد يجب أن يحتوي:
+قسّم القصة إلى بالضبط {AI_SCENES} مشاهد رئيسية.
 
-1. narration:
-النص الذي سيُقرأ بالصوت العربي.
+لكل مشهد:
 
-2. screen_text:
-جملة قصيرة تظهر على الشاشة.
+narration:
+النص العربي الذي سيُقرأ بالصوت.
 
-3. video_prompt:
-وصف بصري باللغة الإنجليزية لتوليد فيديو AI حقيقي متحرك.
+screen_text:
+جملة عربية قصيرة تظهر على الشاشة.
 
-مهم جداً:
+video_prompt:
+وصف باللغة الإنجليزية لمشهد فيديو AI حقيقي متحرك.
 
-- لا تضع أي كتابة داخل الفيديو.
-- لا تستخدم صور ثابتة.
-- المشهد يجب أن يحتوي حركة حقيقية.
-- استخدم حركة كاميرا واضحة.
-- cinematic realistic horror.
-- vertical video.
-- 9:16 composition.
-- realistic human movement.
-- realistic lighting.
-- atmospheric motion.
-- لا تذكر subtitles أو text في video_prompt.
-- حافظ على نفس الشخصيات والأماكن قدر الإمكان.
+شروط video_prompt:
 
-كل video_prompt يجب أن يكون مشهداً قابلاً للتحويل إلى فيديو،
-وليس مجرد وصف لصورة.
+- cinematic realistic horror
+- real moving video
+- visible character movement
+- camera movement
+- environmental movement
+- realistic lighting
+- atmospheric motion
+- vertical social-media composition
+- no text
+- no subtitles
+- no logos
+- no watermark
+- no static image
+- no slideshow
+- no photograph
 
-أخرج JSON فقط بهذا الشكل:
+اجعل المشاهد مترابطة بصرياً.
+
+مهم:
+لا تجعل الفيديو مجرد شخص واقف.
+يجب أن يحدث شيء في كل مشهد:
+walking, turning, opening door, looking around,
+wind, shadows, moving curtains, camera movement,
+breathing, approaching, etc.
+
+أخرج JSON فقط:
 
 {{
-  "title": "عنوان القصة",
+  "title": "عنوان",
   "scenes": [
     {{
       "narration": "...",
@@ -193,8 +211,8 @@ Instagram Reels وYouTube Shorts وTikTok.
             {
                 "role": "system",
                 "content": (
-                    "You are a professional Arabic short-video "
-                    "writer and cinematic director. "
+                    "You are an expert Arabic horror "
+                    "short-video director. "
                     "Return valid JSON only."
                 )
             },
@@ -209,27 +227,39 @@ Instagram Reels وYouTube Shorts وTikTok.
 
     content = response.choices[0].message.content.strip()
 
-    # Remove accidental markdown fences
+    # Remove markdown fences if Groq adds them.
     if content.startswith("```"):
-        content = content.replace("```json", "")
-        content = content.replace("```", "")
+        content = content.replace(
+            "```json",
+            ""
+        )
+
+        content = content.replace(
+            "```",
+            ""
+        )
+
         content = content.strip()
 
     data = json.loads(content)
 
-    if "scenes" not in data:
-        raise RuntimeError("Groq did not return scenes")
+    scenes = data.get("scenes")
 
-    if len(data["scenes"]) < SCENES_COUNT:
+    if not scenes:
         raise RuntimeError(
-            f"Groq returned only {len(data['scenes'])} scenes"
+            "Groq returned no scenes."
+        )
+
+    if len(scenes) < AI_SCENES:
+        raise RuntimeError(
+            f"Groq returned only {len(scenes)} scenes."
         )
 
     return data
 
 
 # ============================================================
-# HUGGING FACE LTX VIDEO
+# HUGGING FACE CLIENT
 # ============================================================
 
 _hf_client = None
@@ -242,8 +272,7 @@ def get_hf_client():
     if _hf_client is None:
 
         logger.info(
-            "Connecting to Hugging Face Space: %s",
-            HF_SPACE
+            "Connecting to Hugging Face Space..."
         )
 
         _hf_client = Client(
@@ -251,130 +280,339 @@ def get_hf_client():
             token=HF_TOKEN
         )
 
+        logger.info(
+            "Connected to Hugging Face."
+        )
+
     return _hf_client
 
 
-def generate_ai_clip(prompt: str, output_path: Path):
+# ============================================================
+# FIND VIDEO PATH
+# ============================================================
 
-    logger.info("Generating AI video clip...")
-    logger.info("Prompt: %s", prompt[:250])
+def extract_video_path(result):
+
+    """
+    Gradio can return a video as:
+
+    tuple
+    list
+    dict
+    string
+    FileData-like object
+
+    This function recursively searches all of them.
+    """
+
+    found = []
+
+    def walk(value):
+
+        if value is None:
+            return
+
+        # Lists / tuples
+        if isinstance(value, (list, tuple)):
+
+            for item in value:
+                walk(item)
+
+            return
+
+        # Dictionaries
+        if isinstance(value, dict):
+
+            # Prefer these keys.
+            for key in [
+                "path",
+                "video",
+                "file",
+                "name",
+                "url"
+            ]:
+
+                if key in value and value[key]:
+                    walk(value[key])
+
+            # Search all values too.
+            for item in value.values():
+                walk(item)
+
+            return
+
+        # Objects returned by Gradio
+        for attr in [
+            "path",
+            "video",
+            "file",
+            "name",
+            "url"
+        ]:
+
+            try:
+
+                attr_value = getattr(
+                    value,
+                    attr,
+                    None
+                )
+
+                if attr_value:
+                    walk(attr_value)
+
+            except Exception:
+                pass
+
+        # Strings
+        if isinstance(value, str):
+
+            found.append(value)
+
+    walk(result)
+
+    # Remove duplicates.
+    unique = []
+
+    for item in found:
+
+        if item not in unique:
+            unique.append(item)
+
+    logger.info(
+        "Possible video outputs: %r",
+        unique
+    )
+
+    # First priority: existing local file.
+    for item in unique:
+
+        try:
+
+            if os.path.isfile(item):
+                return item
+
+        except Exception:
+            pass
+
+    # Second priority: URL.
+    for item in unique:
+
+        if (
+            item.startswith("http://")
+            or item.startswith("https://")
+        ):
+            return item
+
+    return None
+
+
+# ============================================================
+# DOWNLOAD / COPY VIDEO
+# ============================================================
+
+def save_video_result(
+    source,
+    destination: Path
+):
+
+    if not source:
+
+        raise RuntimeError(
+            "Hugging Face returned no video source."
+        )
+
+    logger.info(
+        "Selected video source: %r",
+        source
+    )
+
+    # Local file
+    if os.path.isfile(str(source)):
+
+        shutil.copyfile(
+            str(source),
+            str(destination)
+        )
+
+    # Remote URL
+    elif (
+        str(source).startswith("http://")
+        or str(source).startswith("https://")
+    ):
+
+        logger.info(
+            "Downloading generated video..."
+        )
+
+        response = requests.get(
+            str(source),
+            timeout=300
+        )
+
+        response.raise_for_status()
+
+        with open(
+            destination,
+            "wb"
+        ) as f:
+
+            f.write(
+                response.content
+            )
+
+    else:
+
+        raise RuntimeError(
+            "Unknown Hugging Face video source: "
+            + str(source)
+        )
+
+    if not destination.exists():
+
+        raise RuntimeError(
+            "Video was not saved."
+        )
+
+    size = destination.stat().st_size
+
+    logger.info(
+        "Saved AI video: %s bytes",
+        size
+    )
+
+    if size < 10000:
+
+        raise RuntimeError(
+            "Generated video is too small."
+        )
+
+    return destination
+
+
+# ============================================================
+# GENERATE REAL AI VIDEO
+# ============================================================
+
+def generate_ai_clip(
+    prompt: str,
+    output_path: Path
+):
+
+    logger.info(
+        "======================================"
+    )
+
+    logger.info(
+        "GENERATING REAL AI VIDEO"
+    )
+
+    logger.info(
+        "Prompt: %s",
+        prompt[:500]
+    )
 
     client = get_hf_client()
 
     negative_prompt = (
-        "worst quality, blurry, low quality, "
-        "inconsistent motion, jittery motion, "
-        "deformed body, distorted face, "
-        "extra fingers, duplicate people, "
-        "text, subtitles, watermark, logo"
+        "worst quality, low quality, blurry, "
+        "static image, photograph, slideshow, "
+        "jittery motion, distorted face, "
+        "deformed body, extra fingers, "
+        "duplicate person, text, subtitles, "
+        "logo, watermark"
     )
 
-    # Current Lightricks Space exposes:
-    #
-    # text_to_video(
-    #   prompt,
-    #   negative_prompt,
-    #   image,
-    #   video,
-    #   height,
-    #   width,
-    #   mode,
-    #   duration,
-    #   frames,
-    #   seed,
-    #   randomize_seed,
-    #   guidance_scale,
-    #   improve_texture
-    # )
-    #
-    # The endpoint is officially named "text_to_video".
+    try:
 
-    result = client.predict(
-        prompt,
-        negative_prompt,
-        None,
-        None,
-        HEIGHT,
-        WIDTH,
-        "text-to-video",
-        CLIP_DURATION,
-        9,
-        0,
-        True,
-        3.0,
-        False,
-        api_name="/text_to_video"
+        # IMPORTANT:
+        # These arguments match the current
+        # official Lightricks Space.
+        #
+        # generate(
+        # prompt,
+        # negative_prompt,
+        # image,
+        # video,
+        # height,
+        # width,
+        # mode,
+        # duration,
+        # frames,
+        # seed,
+        # randomize_seed,
+        # guidance,
+        # improve_texture
+        # )
+        #
+        # The current API name is text_to_video.
+
+        result = client.predict(
+            prompt,
+            negative_prompt,
+            None,
+            None,
+            VIDEO_HEIGHT,
+            VIDEO_WIDTH,
+            "text-to-video",
+            CLIP_SECONDS,
+            9,
+            42,
+            True,
+            3.0,
+            False,
+            api_name="text_to_video"
+        )
+
+        logger.info(
+            "RAW HF RESULT TYPE: %s",
+            type(result)
+        )
+
+        logger.info(
+            "RAW HF RESULT: %r",
+            result
+        )
+
+    except Exception as e:
+
+        logger.exception(
+            "Hugging Face generation failed."
+        )
+
+        raise RuntimeError(
+            "Hugging Face generation failed: "
+            + str(e)
+        )
+
+    source = extract_video_path(
+        result
     )
 
-    logger.info("HF result: %s", result)
+    if not source:
 
-    # Gradio normally returns a filepath for gr.Video.
-    video_source = result[0] if isinstance(result, tuple) else result
-
-    if isinstance(video_source, dict):
-        video_source = (
-            video_source.get("path")
-            or video_source.get("url")
-        )
-
-    if not video_source:
         raise RuntimeError(
-            "Hugging Face returned no video file"
+            "Hugging Face generated a response, "
+            "but no video file/path was found.\n\n"
+            f"RAW RESULT:\n{result!r}"
         )
 
-    # Local file
-    if os.path.exists(str(video_source)):
-
-        subprocess.run(
-            [
-                "cp",
-                str(video_source),
-                str(output_path)
-            ],
-            check=True
-        )
-
-    # URL
-    elif str(video_source).startswith("http"):
-
-        r = requests.get(
-            str(video_source),
-            timeout=180
-        )
-
-        r.raise_for_status()
-
-        output_path.write_bytes(r.content)
-
-    else:
-        raise RuntimeError(
-            f"Unknown Hugging Face video result: {video_source}"
-        )
-
-    if not output_path.exists():
-        raise RuntimeError(
-            "Video file was not created"
-        )
-
-    if output_path.stat().st_size < 10000:
-        raise RuntimeError(
-            "Generated video file is suspiciously small"
-        )
-
-    logger.info(
-        "AI clip created: %s (%d bytes)",
-        output_path,
-        output_path.stat().st_size
+    save_video_result(
+        source,
+        output_path
     )
 
     return output_path
 
 
 # ============================================================
-# ARABIC VOICE
+# EDGE TTS
 # ============================================================
 
-async def create_voice(text: str, output_path: Path):
+async def generate_voice(
+    text: str,
+    output_path: Path
+):
 
     communicate = edge_tts.Communicate(
         text=text,
@@ -384,18 +622,26 @@ async def create_voice(text: str, output_path: Path):
         volume="+0%"
     )
 
-    await communicate.save(str(output_path))
+    await communicate.save(
+        str(output_path)
+    )
 
 
-def create_voice_sync(text: str, output_path: Path):
+def generate_voice_sync(
+    text: str,
+    output_path: Path
+):
 
     asyncio.run(
-        create_voice(text, output_path)
+        generate_voice(
+            text,
+            output_path
+        )
     )
 
 
 # ============================================================
-# FFMPEG - CAPTIONS + AUDIO
+# PROCESS SCENE
 # ============================================================
 
 def process_scene(
@@ -405,12 +651,19 @@ def process_scene(
     screen_text: str
 ):
 
-    font = "/usr/share/fonts/truetype/noto/NotoSansArabic-Regular.ttf"
+    font = (
+        "/usr/share/fonts/truetype/noto/"
+        "NotoSansArabic-Regular.ttf"
+    )
 
     if not os.path.exists(font):
-        font = "/usr/share/fonts/truetype/noto/NotoSansArabic-Bold.ttf"
 
-    escaped_text = (
+        font = (
+            "/usr/share/fonts/truetype/noto/"
+            "NotoSansArabic-Bold.ttf"
+        )
+
+    safe_text = (
         screen_text
         .replace("\\", "\\\\")
         .replace(":", "\\:")
@@ -420,12 +673,14 @@ def process_scene(
         .replace("]", "\")
     )
 
+    # Convert the AI video to proper 9:16.
     vf = (
-        "scale=720:1280:force_original_aspect_ratio=increase,"
+        "scale=720:1280:"
+        "force_original_aspect_ratio=increase,"
         "crop=720:1280,"
         "fps=30,"
         f"drawtext=fontfile='{font}':"
-        f"text='{escaped_text}':"
+        f"text='{safe_text}':"
         "fontcolor=white:"
         "fontsize=42:"
         "borderw=4:"
@@ -440,29 +695,42 @@ def process_scene(
     cmd = [
         "ffmpeg",
         "-y",
+
         "-i",
         str(video_path),
+
         "-i",
         str(audio_path),
+
         "-vf",
         vf,
+
         "-c:v",
         "libx264",
+
         "-preset",
         "veryfast",
+
         "-crf",
         "24",
+
         "-c:a",
         "aac",
+
         "-b:a",
         "128k",
+
         "-shortest",
+
         "-movflags",
         "+faststart",
+
         str(output_path)
     ]
 
-    logger.info("Processing scene with FFmpeg...")
+    logger.info(
+        "Running FFmpeg..."
+    )
 
     result = subprocess.run(
         cmd,
@@ -473,48 +741,69 @@ def process_scene(
     if result.returncode != 0:
 
         logger.error(
-            "FFmpeg error:\n%s",
-            result.stderr[-4000:]
+            "FFmpeg failed:\n%s",
+            result.stderr[-5000:]
         )
 
         raise RuntimeError(
-            "FFmpeg failed while processing scene"
+            "FFmpeg failed."
         )
 
 
 # ============================================================
-# CONCATENATE VIDEOS
+# CONCAT
 # ============================================================
 
-def concat_videos(video_files, output_path: Path):
+def concat_videos(
+    videos,
+    output_path: Path
+):
 
-    concat_file = WORK_DIR / f"concat_{uuid.uuid4().hex}.txt"
+    concat_file = (
+        WORK_DIR /
+        f"concat_{uuid.uuid4().hex}.txt"
+    )
 
-    with open(concat_file, "w", encoding="utf-8") as f:
+    with open(
+        concat_file,
+        "w",
+        encoding="utf-8"
+    ) as f:
 
-        for video in video_files:
+        for video in videos:
 
-            absolute = str(video.resolve())
+            path = str(
+                video.resolve()
+            )
 
             f.write(
                 "file '"
-                + absolute.replace("'", "'\\''")
+                + path.replace(
+                    "'",
+                    "'\\''"
+                )
                 + "'\n"
             )
 
     cmd = [
         "ffmpeg",
         "-y",
+
         "-f",
         "concat",
+
         "-safe",
         "0",
+
         "-i",
         str(concat_file),
+
         "-c",
         "copy",
+
         "-movflags",
         "+faststart",
+
         str(output_path)
     ]
 
@@ -527,55 +816,61 @@ def concat_videos(video_files, output_path: Path):
     if result.returncode != 0:
 
         logger.error(
-            "Concat error:\n%s",
-            result.stderr[-4000:]
+            "Concat failed:\n%s",
+            result.stderr[-5000:]
         )
 
         raise RuntimeError(
-            "Failed to combine video scenes"
+            "Failed to combine scenes."
         )
 
     return output_path
 
 
 # ============================================================
-# MAKE FINAL VIDEO 60+ SECONDS
+# MAKE 60 SECOND VIDEO
 # ============================================================
 
-def extend_to_one_minute(
-    input_video: Path,
+def make_one_minute_video(
+    source_video: Path,
     output_video: Path
 ):
 
-    # The AI clips are real moving video.
-    #
-    # We loop the generated sequence until it reaches
-    # approximately one minute.
-    #
-    # This avoids generating 60 seconds of expensive GPU
-    # video for every story.
+    logger.info(
+        "Extending final video to 60 seconds..."
+    )
 
     cmd = [
         "ffmpeg",
         "-y",
+
         "-stream_loop",
         "-1",
+
         "-i",
-        str(input_video),
+        str(source_video),
+
         "-t",
-        "60",
+        str(FINAL_SECONDS),
+
         "-c:v",
         "libx264",
+
         "-preset",
         "veryfast",
+
         "-crf",
         "24",
+
         "-c:a",
         "aac",
+
         "-b:a",
         "128k",
+
         "-movflags",
         "+faststart",
+
         str(output_video)
     ]
 
@@ -588,12 +883,12 @@ def extend_to_one_minute(
     if result.returncode != 0:
 
         logger.error(
-            "Final extension error:\n%s",
-            result.stderr[-4000:]
+            "Final video error:\n%s",
+            result.stderr[-5000:]
         )
 
         raise RuntimeError(
-            "Failed to create final 60 second video"
+            "Could not create final video."
         )
 
     return output_video
@@ -603,73 +898,108 @@ def extend_to_one_minute(
 # COMPLETE VIDEO
 # ============================================================
 
-def create_complete_video(story_text: str):
+def create_complete_video(
+    story_text: str
+):
 
     job_id = uuid.uuid4().hex
 
-    job_dir = WORK_DIR / job_id
-    job_dir.mkdir(parents=True, exist_ok=True)
-
-    logger.info(
-        "Starting video job: %s",
+    job_dir = (
+        WORK_DIR /
         job_id
     )
 
-    story = create_story(story_text)
+    job_dir.mkdir(
+        parents=True,
+        exist_ok=True
+    )
 
-    scenes = story["scenes"]
+    logger.info(
+        "STARTING VIDEO JOB: %s",
+        job_id
+    )
 
-    processed_scenes = []
+    # ----------------------------------------
+    # 1. Story
+    # ----------------------------------------
+
+    story = create_story(
+        story_text
+    )
+
+    title = story.get(
+        "title",
+        "Abosaraj AI"
+    )
+
+    scenes = story["scenes"][
+        :AI_SCENES
+    ]
+
+    logger.info(
+        "Story contains %d scenes.",
+        len(scenes)
+    )
+
+    processed_videos = []
+
+    # ----------------------------------------
+    # 2. Generate scenes
+    # ----------------------------------------
 
     for index, scene in enumerate(
-        scenes[:SCENES_COUNT],
+        scenes,
         start=1
     ):
 
         logger.info(
             "========== SCENE %d/%d ==========",
             index,
-            SCENES_COUNT
+            len(scenes)
         )
 
         raw_video = (
             job_dir /
-            f"scene_{index:02d}_raw.mp4"
+            f"scene_{index}_ai.mp4"
         )
 
         voice_file = (
             job_dir /
-            f"scene_{index:02d}.mp3"
+            f"scene_{index}_voice.mp3"
         )
 
-        processed_file = (
+        processed_video = (
             job_dir /
-            f"scene_{index:02d}_final.mp4"
+            f"scene_{index}_final.mp4"
         )
 
-        # Generate actual moving AI video
+        # REAL MOVING AI VIDEO
         generate_ai_clip(
             scene["video_prompt"],
             raw_video
         )
 
-        # Generate Arabic male voice
-        create_voice_sync(
+        # Arabic male voice
+        generate_voice_sync(
             scene["narration"],
             voice_file
         )
 
-        # Captions + voice + formatting
+        # Captions + 9:16
         process_scene(
             raw_video,
             voice_file,
-            processed_file,
+            processed_video,
             scene["screen_text"]
         )
 
-        processed_scenes.append(
-            processed_file
+        processed_videos.append(
+            processed_video
         )
+
+    # ----------------------------------------
+    # 3. Combine
+    # ----------------------------------------
 
     combined = (
         job_dir /
@@ -677,33 +1007,42 @@ def create_complete_video(story_text: str):
     )
 
     concat_videos(
-        processed_scenes,
+        processed_videos,
         combined
     )
+
+    # ----------------------------------------
+    # 4. Make 60 seconds
+    # ----------------------------------------
 
     final_video = (
         job_dir /
         "Abosaraj_Final.mp4"
     )
 
-    extend_to_one_minute(
+    make_one_minute_video(
         combined,
         final_video
     )
 
     logger.info(
-        "FINAL VIDEO CREATED: %s",
+        "======================================"
+    )
+
+    logger.info(
+        "FINAL VIDEO READY: %s",
         final_video
     )
 
-    return final_video, story.get(
-        "title",
-        "Abosaraj Video"
+    logger.info(
+        "======================================"
     )
+
+    return final_video, title
 
 
 # ============================================================
-# TELEGRAM
+# TELEGRAM START
 # ============================================================
 
 async def start_command(
@@ -712,13 +1051,19 @@ async def start_command(
 ):
 
     await update.message.reply_text(
-        "🎬 أهلاً بك في Abosaraj\n\n"
-        "ابعتلي أي قصة، وأنا أحولها إلى فيديو AI حقيقي "
-        "بمشاهد متحركة + صوت عربي رجالي + ترجمة.\n\n"
-        "⏳ العملية ممكن تأخذ عدة دقائق لأن الفيديو يتم "
-        "توليده بالذكاء الاصطناعي."
+        "🎬 أهلاً في Abosaraj AI\n\n"
+        "ابعتلي قصة، وأنا أحولها إلى:\n\n"
+        "🎥 فيديو AI متحرك\n"
+        "🎙️ صوت عربي رجالي\n"
+        "📝 ترجمة عربية\n"
+        "📱 مقاس 9:16\n\n"
+        "⏳ التوليد ممكن يأخذ عدة دقائق."
     )
 
+
+# ============================================================
+# TELEGRAM MESSAGE
+# ============================================================
 
 async def handle_message(
     update: Update,
@@ -736,35 +1081,40 @@ async def handle_message(
     if len(text.strip()) < 30:
 
         await update.message.reply_text(
-            "اكتبلي قصة أطول شوي، عشان أقدر أحولها لفيديو كامل."
+            "اكتب قصة أطول شوي حتى أقدر أعمل فيديو."
         )
 
         return
 
     status = await update.message.reply_text(
         "🎬 استلمت القصة.\n\n"
-        "🧠 جاري تقسيمها إلى مشاهد...\n"
-        "🎥 بعدها رح أبدأ توليد فيديوهات AI حقيقية.\n\n"
-        "لا تغلق المحادثة."
+        "🧠 أجهز المشاهد...\n"
+        "🎥 بعدها أبدأ توليد الفيديو الحقيقي بالـ AI.\n\n"
+        "⏳ لا تغلق المحادثة."
     )
 
     try:
 
         loop = asyncio.get_running_loop()
 
-        final_video, title = await loop.run_in_executor(
-            None,
-            create_complete_video,
-            text
+        final_video, title = (
+            await loop.run_in_executor(
+                None,
+                create_complete_video,
+                text
+            )
         )
 
         await status.edit_text(
-            "✅ الفيديو خلص!\n"
+            "✅ الفيديو خلص!\n\n"
             f"🎬 {title}\n\n"
-            "⬆️ جاري إرساله..."
+            "⬆️ جاري إرسال الفيديو..."
         )
 
-        with open(final_video, "rb") as video_file:
+        with open(
+            final_video,
+            "rb"
+        ) as video_file:
 
             await update.message.reply_video(
                 video=video_file,
@@ -783,8 +1133,11 @@ async def handle_message(
 
         error_text = str(e)
 
-        if len(error_text) > 2500:
-            error_text = error_text[-2500:]
+        if len(error_text) > 3500:
+
+            error_text = error_text[
+                -3500:
+            ]
 
         await status.edit_text(
             "❌ صار خطأ أثناء إنشاء الفيديو.\n\n"
@@ -801,24 +1154,29 @@ def main():
 
     check_environment()
 
-    logger.info("Starting Abosaraj...")
-
-    # Render health server
-    flask_thread = threading.Thread(
-        target=run_flask,
-        daemon=True
+    logger.info(
+        "Starting Abosaraj..."
     )
 
-    flask_thread.start()
+    # Render health server
+    threading.Thread(
+        target=run_flask,
+        daemon=True
+    ).start()
 
     # Telegram
     application = (
         Application.builder()
         .token(BOT_TOKEN)
+
         .connect_timeout(30)
+
         .read_timeout(60)
+
         .write_timeout(60)
+
         .pool_timeout(60)
+
         .build()
     )
 
@@ -831,18 +1189,14 @@ def main():
 
     application.add_handler(
         MessageHandler(
-            filters.TEXT & ~filters.COMMAND,
+            filters.TEXT
+            & ~filters.COMMAND,
             handle_message
         )
     )
 
-    logger.info("Telegram bot started!")
-
-    application.run_polling(
-        drop_pending_updates=True,
-        allowed_updates=Update.ALL_TYPES
+    logger.info(
+        "Telegram bot started!"
     )
 
-
-if __name__ == "__main__":
-    main()
+    application.run_poll
