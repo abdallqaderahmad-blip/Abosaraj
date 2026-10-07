@@ -47,12 +47,13 @@ GROQ_MODEL = os.getenv(
     "llama-3.3-70b-versatile"
 ).strip()
 
+
 # =========================================================
-# TEST MODE
+# TEST SETTINGS
 # =========================================================
 
-# حالياً مشهد واحد فقط حتى نقيس Wan.
-# لا نرفعها إلى 18 مشهد قبل نجاح الاختبار.
+# حالياً مشهد واحد فقط.
+# لا نرفع العدد قبل نجاح اختبار Wan.
 SHOT_COUNT = int(
     os.getenv(
         "SHOT_COUNT",
@@ -67,6 +68,7 @@ SHOT_DURATION = int(
     )
 )
 
+
 # =========================================================
 # VIDEO SETTINGS
 # =========================================================
@@ -77,7 +79,6 @@ FINAL_HEIGHT = 1280
 GEN_WIDTH = 576
 GEN_HEIGHT = 832
 
-# Wan 2.1 1.3B
 GEN_FRAMES = 81
 GEN_FPS = 16
 
@@ -85,6 +86,11 @@ TTS_VOICE = os.getenv(
     "TTS_VOICE",
     "ar-SA-HamedNeural"
 ).strip()
+
+
+# =========================================================
+# WORK DIRECTORY
+# =========================================================
 
 BASE_DIR = Path(
     "/tmp/abosaraj"
@@ -111,7 +117,7 @@ log = logging.getLogger(
 
 
 # =========================================================
-# FLASK
+# FLASK HEALTH SERVER
 # =========================================================
 
 app = Flask(__name__)
@@ -157,7 +163,7 @@ def start_health_server():
 
 
 # =========================================================
-# SECURITY
+# SAFE ERROR
 # =========================================================
 
 def safe_error_text(error):
@@ -179,7 +185,6 @@ def safe_error_text(error):
                 "[REDACTED]"
             )
 
-    # حماية إضافية لأي Telegram bot token
     text = re.sub(
         r"bot\d+:[A-Za-z0-9_-]+",
         "bot[REDACTED]",
@@ -191,7 +196,7 @@ def safe_error_text(error):
 
 
 # =========================================================
-# COMMAND
+# RUN COMMAND
 # =========================================================
 
 def run_command(command):
@@ -285,9 +290,7 @@ def check_telegram_connection():
         )
 
         webhook_url = (
-            result.get(
-                "url"
-            )
+            result.get("url")
             or "<EMPTY>"
         )
 
@@ -325,7 +328,7 @@ def check_telegram_connection():
 
 
 # =========================================================
-# GROQ
+# GROQ CLIENT
 # =========================================================
 
 def get_groq_client():
@@ -464,7 +467,7 @@ STORY:
 
 
 # =========================================================
-# HUGGING FACE
+# HUGGING FACE CLIENT
 # =========================================================
 
 def get_hf_client():
@@ -514,7 +517,7 @@ def get_api_schema(client):
 
 
 # =========================================================
-# HF ENDPOINT
+# RESOLVE ENDPOINT
 # =========================================================
 
 def resolve_endpoint(
@@ -545,15 +548,12 @@ def resolve_endpoint(
             ).lower()
 
             if "generate" in text:
-
                 score += 100
 
             if "video" in text:
-
                 score += 50
 
             if "text" in text:
-
                 score += 20
 
             candidates.append(
@@ -584,7 +584,6 @@ def resolve_endpoint(
                 )
 
                 if not name:
-
                     continue
 
                 score = 0
@@ -594,11 +593,9 @@ def resolve_endpoint(
                 ).lower()
 
                 if "generate" in text:
-
                     score += 100
 
                 if "video" in text:
-
                     score += 50
 
                 candidates.append(
@@ -643,7 +640,7 @@ def resolve_endpoint(
 
 
 # =========================================================
-# PARAMETER HELPERS
+# PARAMETER NAME
 # =========================================================
 
 def parameter_name(parameter):
@@ -663,6 +660,10 @@ def parameter_name(parameter):
         )
     ).strip()
 
+
+# =========================================================
+# PARAMETER CHOICES
+# =========================================================
 
 def get_choices(parameter):
 
@@ -687,7 +688,7 @@ def get_choices(parameter):
 
 
 # =========================================================
-# BUILD HF ARGUMENTS
+# BUILD GENERATE ARGUMENTS
 # =========================================================
 
 def build_generate_arguments(
@@ -935,7 +936,7 @@ def build_generate_arguments(
 
 
 # =========================================================
-# FIND VIDEO
+# FIND VIDEO VALUE
 # =========================================================
 
 def find_video_value(value):
@@ -956,7 +957,9 @@ def find_video_value(value):
             or value.startswith(
                 "https://"
             )
-            or os.path.exists(value)
+            or os.path.exists(
+                value
+            )
         ):
 
             return value
@@ -1018,7 +1021,7 @@ def find_video_value(value):
 
 
 # =========================================================
-# DOWNLOAD VIDEO
+# DOWNLOAD FILE
 # =========================================================
 
 def download_file(
@@ -1068,7 +1071,9 @@ def download_file(
             Path(
                 destination
             ).write_bytes(
-                Path(source).read_bytes()
+                Path(
+                    source
+                ).read_bytes()
             )
 
             return destination
@@ -1088,7 +1093,9 @@ def download_file(
             Path(
                 destination
             ).write_bytes(
-                Path(path).read_bytes()
+                Path(
+                    path
+                ).read_bytes()
             )
 
             return destination
@@ -1139,10 +1146,30 @@ def generate_ai_video(
         "HF_GENERATE_START"
     )
 
-    result = client.predict(
-        *args,
-        api_name=endpoint_name
-    )
+    # =====================================================
+    # IMPORTANT:
+    # Capture the REAL Gradio/HF exception.
+    # =====================================================
+
+    try:
+
+        result = client.predict(
+            *args,
+            api_name=endpoint_name
+        )
+
+    except Exception as e:
+
+        log.error(
+            "HF_PREDICT_ERROR=%s",
+            safe_error_text(e),
+            exc_info=True
+        )
+
+        raise RuntimeError(
+            "HF_GENERATION_FAILED: "
+            + safe_error_text(e)
+        )
 
     log.info(
         "HF_GENERATE_RESULT_RECEIVED"
@@ -1155,7 +1182,7 @@ def generate_ai_video(
     if video_value is None:
 
         raise RuntimeError(
-            "Hugging Face returned no video file."
+            "Hugging Face returned no video."
         )
 
     download_file(
@@ -1231,7 +1258,7 @@ def normalize_video(
 
 
 # =========================================================
-# CONCAT
+# CONCAT VIDEOS
 # =========================================================
 
 def concat_videos(
@@ -1249,7 +1276,9 @@ def concat_videos(
     for path in video_paths:
 
         safe_path = str(
-            Path(path).resolve()
+            Path(
+                path
+            ).resolve()
         ).replace(
             "'",
             "'\\''"
@@ -1344,7 +1373,9 @@ def mux_audio(
 # CREATE REEL
 # =========================================================
 
-async def create_reel(story):
+async def create_reel(
+    story
+):
 
     job_id = uuid.uuid4().hex
 
@@ -1426,7 +1457,9 @@ async def create_reel(story):
             )
 
             generated_videos.append(
-                str(normalized_video)
+                str(
+                    normalized_video
+                )
             )
 
             log.info(
@@ -1535,7 +1568,7 @@ async def start_command(
 
 
 # =========================================================
-# MESSAGE
+# HANDLE MESSAGE
 # =========================================================
 
 async def handle_message(
@@ -1596,7 +1629,7 @@ async def handle_message(
 
 
 # =========================================================
-# TELEGRAM ERROR
+# TELEGRAM ERROR HANDLER
 # =========================================================
 
 async def telegram_error_handler(
