@@ -40,7 +40,10 @@ HF_SPACE = os.getenv(
     "numanajmal0/wan-video-api"
 ).strip()
 
-HF_API_NAME = os.getenv("HF_API_NAME", "").strip()
+HF_API_NAME = os.getenv(
+    "HF_API_NAME",
+    ""
+).strip()
 
 GROQ_MODEL = os.getenv(
     "GROQ_MODEL",
@@ -79,14 +82,21 @@ SHOT_DURATION = int(
     os.getenv("SHOT_DURATION", "5")
 )
 
+# Final Reel resolution
 FINAL_WIDTH = 720
 FINAL_HEIGHT = 1280
 
+# Wan generation resolution
 GEN_WIDTH = 576
 GEN_HEIGHT = 832
 
+# Wan 2.1 1.3B
 GEN_FRAMES = 81
 GEN_FPS = 16
+
+GEN_STEPS = 20
+GEN_GUIDANCE = 5.0
+GEN_SEED = 0
 
 TTS_VOICE = os.getenv(
     "TTS_VOICE",
@@ -99,6 +109,7 @@ TTS_VOICE = os.getenv(
 # =========================================================
 
 BASE_DIR = Path("/tmp/abosaraj")
+
 BASE_DIR.mkdir(
     parents=True,
     exist_ok=True
@@ -169,7 +180,7 @@ def safe_error_text(error):
                 "[REDACTED]"
             )
 
-    # Hide possible HF tokens
+    # Hide HF tokens
     text = re.sub(
         r"hf_[A-Za-z0-9]+",
         "[HF_TOKEN_REDACTED]",
@@ -359,7 +370,6 @@ Create the storyboard based on this idea:
 
     content = response.choices[0].message.content.strip()
 
-    # Remove accidental markdown fences
     content = re.sub(
         r"^```(?:json)?",
         "",
@@ -450,7 +460,6 @@ def resolve_endpoint(client, api_dict):
         if "generate" in text:
             return "/generate"
 
-    # Fallback
     try:
         client_endpoints = getattr(
             client,
@@ -491,9 +500,9 @@ def build_generate_arguments(
     width=GEN_WIDTH,
     height=GEN_HEIGHT,
     num_frames=GEN_FRAMES,
-    steps=20,
-    guidance_scale=5.0,
-    seed=0,
+    steps=GEN_STEPS,
+    guidance_scale=GEN_GUIDANCE,
+    seed=GEN_SEED,
     lora_scale=None,
     custom_ckpt=None
 ):
@@ -546,9 +555,9 @@ def build_generate_arguments(
 
         value = None
 
-        # -------------------------
+        # =================================================
         # MODEL
-        # -------------------------
+        # =================================================
 
         if name_lower in {
             "model_key",
@@ -574,16 +583,16 @@ def build_generate_arguments(
             else:
                 value = "wan-base"
 
-        # -------------------------
+        # =================================================
         # PROMPT
-        # -------------------------
+        # =================================================
 
         elif name_lower == "prompt":
             value = prompt
 
-        # -------------------------
-        # NEGATIVE
-        # -------------------------
+        # =================================================
+        # NEGATIVE PROMPT
+        # =================================================
 
         elif name_lower == "negative_prompt":
             value = (
@@ -591,26 +600,26 @@ def build_generate_arguments(
                 "distorted, deformed, bad anatomy, "
                 "text, subtitles, watermark, "
                 "jpeg artifacts, frozen frame, "
-                "unnatural movement"
+                "unnatural movement, duplicate objects"
             )
 
-        # -------------------------
+        # =================================================
         # WIDTH
-        # -------------------------
+        # =================================================
 
         elif name_lower == "width":
             value = width
 
-        # -------------------------
+        # =================================================
         # HEIGHT
-        # -------------------------
+        # =================================================
 
         elif name_lower == "height":
             value = height
 
-        # -------------------------
+        # =================================================
         # FRAMES
-        # -------------------------
+        # =================================================
 
         elif name_lower in {
             "num_frames",
@@ -618,16 +627,16 @@ def build_generate_arguments(
         }:
             value = num_frames
 
-        # -------------------------
+        # =================================================
         # STEPS
-        # -------------------------
+        # =================================================
 
         elif name_lower == "steps":
             value = steps
 
-        # -------------------------
+        # =================================================
         # GUIDANCE
-        # -------------------------
+        # =================================================
 
         elif name_lower in {
             "guidance_scale",
@@ -635,16 +644,16 @@ def build_generate_arguments(
         }:
             value = guidance_scale
 
-        # -------------------------
+        # =================================================
         # SEED
-        # -------------------------
+        # =================================================
 
         elif name_lower == "seed":
             value = seed
 
-        # -------------------------
+        # =================================================
         # LORA
-        # -------------------------
+        # =================================================
 
         elif name_lower in {
             "lora_scale",
@@ -652,9 +661,9 @@ def build_generate_arguments(
         }:
             value = lora_scale
 
-        # -------------------------
+        # =================================================
         # CUSTOM CHECKPOINT
-        # -------------------------
+        # =================================================
 
         elif name_lower in {
             "custom_ckpt",
@@ -663,26 +672,26 @@ def build_generate_arguments(
         }:
             value = custom_ckpt
 
-        # -------------------------
-        # OTHER CHOICE
-        # -------------------------
+        # =================================================
+        # OTHER ENUM
+        # =================================================
 
         elif choices:
             value = choices[0]
 
-        # -------------------------
+        # =================================================
         # BOOLEAN
-        # -------------------------
+        # =================================================
 
-        elif isinstance(
-            type_info,
-            dict
-        ) and type_info.get("type") == "boolean":
+        elif (
+            isinstance(type_info, dict)
+            and type_info.get("type") == "boolean"
+        ):
             value = False
 
-        # -------------------------
+        # =================================================
         # DEFAULT
-        # -------------------------
+        # =================================================
 
         else:
             if parameter.get(
@@ -715,7 +724,6 @@ def find_video_value(value):
     if value is None:
         return None
 
-    # FileData-like object
     path = getattr(
         value,
         "path",
@@ -734,7 +742,6 @@ def find_video_value(value):
     if url:
         return url
 
-    # String
     if isinstance(
         value,
         str
@@ -756,7 +763,6 @@ def find_video_value(value):
         if Path(value).exists():
             return value
 
-    # Dict
     if isinstance(
         value,
         dict
@@ -784,7 +790,6 @@ def find_video_value(value):
             if result:
                 return result
 
-    # List / tuple
     if isinstance(
         value,
         (list, tuple)
@@ -796,6 +801,46 @@ def find_video_value(value):
 
             if result:
                 return result
+
+    return None
+
+
+# =========================================================
+# EXTRACT GPU TIME FROM WAN RESULT
+# =========================================================
+
+def extract_gpu_seconds(result):
+    """
+    Wan returns metadata similar to:
+
+    **Wan 2.1 ... · 3.4s GPU**
+
+    Extract the GPU number without depending on
+    the exact rest of the message.
+    """
+
+    text = str(result)
+
+    patterns = [
+        r"([\d.]+)\s*s\s*GPU",
+        r"([\d.]+)\s*sec(?:onds?)?\s*GPU",
+        r"GPU\s*[:=]\s*([\d.]+)"
+    ]
+
+    for pattern in patterns:
+        match = re.search(
+            pattern,
+            text,
+            flags=re.IGNORECASE
+        )
+
+        if match:
+            try:
+                return float(
+                    match.group(1)
+                )
+            except Exception:
+                pass
 
     return None
 
@@ -822,7 +867,6 @@ def download_file(
             "DOWNLOAD_VALUE_EMPTY"
         )
 
-    # Object with path
     object_path = getattr(
         value,
         "path",
@@ -833,11 +877,11 @@ def download_file(
         value = object_path
 
     # Local file
-    if isinstance(
-        value,
-        str
-    ) and not value.startswith(
-        ("http://", "https://")
+    if (
+        isinstance(value, str)
+        and not value.startswith(
+            ("http://", "https://")
+        )
     ):
         local = Path(value)
 
@@ -855,11 +899,11 @@ def download_file(
             return target
 
     # URL
-    if isinstance(
-        value,
-        str
-    ) and value.startswith(
-        ("http://", "https://")
+    if (
+        isinstance(value, str)
+        and value.startswith(
+            ("http://", "https://")
+        )
     ):
         response = requests.get(
             value,
@@ -949,10 +993,20 @@ def generate_ai_video(
 
     elapsed = time.time() - start
 
+    gpu_seconds = extract_gpu_seconds(
+        result
+    )
+
     log.warning(
         "HF_PREDICT_DONE_SECONDS=%.2f",
         elapsed
     )
+
+    if gpu_seconds is not None:
+        log.warning(
+            "HF_GPU_SECONDS=%.2f",
+            gpu_seconds
+        )
 
     log.warning(
         "HF_RESULT_TYPE=%s",
@@ -980,7 +1034,7 @@ def generate_ai_video(
 
 
 # =========================================================
-# TEST 4 — REAL WAN GENERATION
+# TEST 4
 # =========================================================
 
 async def hf_test4_command(
@@ -996,7 +1050,7 @@ async def hf_test4_command(
 
     await update.message.reply_text(
         "🧪 TEST4 بدأ...\n"
-        "رح أجرب Wan Base فعليًا بفيديو صغير جدًا.\n"
+        "رح أجرب Wan Base بفيديو صغير جدًا.\n"
         "استنى شوي."
     )
 
@@ -1089,10 +1143,20 @@ async def hf_test4_command(
 
         elapsed = time.time() - predict_start
 
+        gpu_seconds = extract_gpu_seconds(
+            result
+        )
+
         log.warning(
             "HFT_TEST4_PREDICT_DONE_SECONDS=%.2f",
             elapsed
         )
+
+        if gpu_seconds is not None:
+            log.warning(
+                "HFT_TEST4_GPU_SECONDS=%.2f",
+                gpu_seconds
+            )
 
         log.warning(
             "HFT_TEST4_RESULT_TYPE=%s",
@@ -1162,10 +1226,21 @@ async def hf_test4_command(
                     video=video_file,
                     caption=(
                         "✅ TEST4 نجح 🎬\n\n"
-                        f"⏱ زمن التوليد: "
+                        f"⏱ زمن الطلب: "
                         f"{elapsed:.2f} ثانية\n"
+                        f"🎮 GPU: "
+                        f"{gpu_seconds:.2f} ثانية\n"
                         f"📦 الحجم: "
                         f"{file_size / 1024 / 1024:.2f} MB"
+                        if gpu_seconds is not None
+                        else
+                        (
+                            "✅ TEST4 نجح 🎬\n\n"
+                            f"⏱ زمن الطلب: "
+                            f"{elapsed:.2f} ثانية\n"
+                            f"📦 الحجم: "
+                            f"{file_size / 1024 / 1024:.2f} MB"
+                        )
                     )
                 )
 
@@ -1179,8 +1254,6 @@ async def hf_test4_command(
             log.warning(
                 "HFT_TEST4_FINISHED_SUCCESS"
             )
-
-            return
 
         except Exception as e:
             log.error(
@@ -1223,6 +1296,401 @@ async def hf_test4_command(
             "❌ TEST4 فشل.\n\n"
             + error[:1800]
             + f"\n\n⏱ الزمن: {total:.2f} ثانية"
+        )
+
+
+# =========================================================
+# TEST 5 — PRODUCTION WAN TEST
+# =========================================================
+
+async def hf_test5_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+    if not update.message:
+        return
+
+    log.warning(
+        "HFT_TEST5_START"
+    )
+
+    await update.message.reply_text(
+        "🚀 TEST5 بدأ...\n\n"
+        "هذا اختبار Wan الحقيقي بإعدادات الإنتاج:\n"
+        "📐 576×832\n"
+        "🎞️ 81 frames\n"
+        "⚙️ 20 steps\n"
+        "🎮 wan-base\n\n"
+        "هذا الاختبار مهم لأنه سيعطينا استهلاك GPU الحقيقي تقريبًا لفيديو 5 ثواني.\n\n"
+        "استنى شوي 🎬"
+    )
+
+    total_start = time.time()
+
+    try:
+        client = get_hf_client()
+
+        api_name = "/generate"
+
+        test_prompt = (
+            "A highly realistic cinematic science fiction "
+            "scene inside a modern futuristic research "
+            "laboratory at night. A humanoid robot slowly "
+            "turns its head and notices a human scientist "
+            "standing behind glass. The scientist looks "
+            "surprised. Subtle natural body movement, "
+            "realistic facial expressions, realistic hands, "
+            "realistic physics, cinematic camera slowly "
+            "moves forward, shallow depth of field, "
+            "dramatic but realistic laboratory lighting, "
+            "photorealistic live action movie look, "
+            "high detail, coherent motion, no text."
+        )
+
+        negative_prompt = (
+            "static image, slideshow, frozen frame, "
+            "blurry, low quality, distorted, deformed, "
+            "bad anatomy, extra limbs, extra fingers, "
+            "duplicate person, duplicate robot, "
+            "melting face, warped body, text, subtitles, "
+            "watermark, logo, jpeg artifacts, "
+            "unnatural motion, flickering, camera shake"
+        )
+
+        # Exact production test arguments
+        args = [
+            "wan-base",
+            test_prompt,
+            negative_prompt,
+            576,
+            832,
+            81,
+            20,
+            5.0,
+            0,
+            None,
+            None
+        ]
+
+        # ---------------------------------------------
+        # Log complete test configuration
+        # ---------------------------------------------
+
+        log.warning(
+            "HFT_TEST5_API=%s",
+            api_name
+        )
+
+        log.warning(
+            "HFT_TEST5_MODEL=wan-base"
+        )
+
+        log.warning(
+            "HFT_TEST5_WIDTH=576"
+        )
+
+        log.warning(
+            "HFT_TEST5_HEIGHT=832"
+        )
+
+        log.warning(
+            "HFT_TEST5_FRAMES=81"
+        )
+
+        log.warning(
+            "HFT_TEST5_FPS=16"
+        )
+
+        log.warning(
+            "HFT_TEST5_EXPECTED_VIDEO_SECONDS=%.3f",
+            81 / 16
+        )
+
+        log.warning(
+            "HFT_TEST5_STEPS=20"
+        )
+
+        log.warning(
+            "HFT_TEST5_GUIDANCE=5.0"
+        )
+
+        log.warning(
+            "HFT_TEST5_SEED=0"
+        )
+
+        log.warning(
+            "HFT_TEST5_LORA=None"
+        )
+
+        log.warning(
+            "HFT_TEST5_CUSTOM_CKPT=None"
+        )
+
+        log.warning(
+            "HFT_TEST5_BEFORE_PREDICT"
+        )
+
+        # ---------------------------------------------
+        # Generate
+        # ---------------------------------------------
+
+        predict_start = time.time()
+
+        result = await asyncio.to_thread(
+            client.predict,
+            *args,
+            api_name=api_name
+        )
+
+        predict_elapsed = (
+            time.time()
+            - predict_start
+        )
+
+        # ---------------------------------------------
+        # Extract GPU
+        # ---------------------------------------------
+
+        gpu_seconds = extract_gpu_seconds(
+            result
+        )
+
+        log.warning(
+            "HFT_TEST5_PREDICT_DONE_SECONDS=%.2f",
+            predict_elapsed
+        )
+
+        if gpu_seconds is not None:
+            log.warning(
+                "HFT_TEST5_GPU_SECONDS=%.2f",
+                gpu_seconds
+            )
+
+            expected_video_seconds = (
+                81 / 16
+            )
+
+            if expected_video_seconds > 0:
+                gpu_per_video_second = (
+                    gpu_seconds
+                    / expected_video_seconds
+                )
+
+                log.warning(
+                    "HFT_TEST5_GPU_PER_VIDEO_SECOND=%.4f",
+                    gpu_per_video_second
+                )
+
+                estimated_gpu_for_90_seconds = (
+                    gpu_per_video_second
+                    * 90
+                )
+
+                log.warning(
+                    "HFT_TEST5_EST_GPU_FOR_90_SECONDS=%.2f",
+                    estimated_gpu_for_90_seconds
+                )
+
+        else:
+            log.warning(
+                "HFT_TEST5_GPU_SECONDS=UNKNOWN"
+            )
+
+        # ---------------------------------------------
+        # Result info
+        # ---------------------------------------------
+
+        log.warning(
+            "HFT_TEST5_RESULT_TYPE=%s",
+            type(result).__name__
+        )
+
+        log.warning(
+            "HFT_TEST5_RESULT_REPR=%r",
+            result
+        )
+
+        # ---------------------------------------------
+        # Find video
+        # ---------------------------------------------
+
+        video_value = find_video_value(
+            result
+        )
+
+        if not video_value:
+            log.error(
+                "HFT_TEST5_NO_VIDEO_FOUND"
+            )
+
+            total = (
+                time.time()
+                - total_start
+            )
+
+            log.warning(
+                "HFT_TEST5_TOTAL_SECONDS=%.2f",
+                total
+            )
+
+            log.warning(
+                "HFT_TEST5_FINISHED_NO_VIDEO"
+            )
+
+            await update.message.reply_text(
+                "❌ TEST5 رجع نتيجة، لكن ما لقيت ملف فيديو.\n\n"
+                f"⏱ زمن الطلب: {predict_elapsed:.2f}s\n"
+                f"🎮 GPU: "
+                + (
+                    f"{gpu_seconds:.2f}s"
+                    if gpu_seconds is not None
+                    else "غير معروف"
+                )
+                + "\n\n"
+                "ابعتلي Logs التي تبدأ بـ HFT_TEST5_."
+            )
+
+            return
+
+        log.warning(
+            "HFT_TEST5_VIDEO_VALUE=%r",
+            video_value
+        )
+
+        # ---------------------------------------------
+        # Download
+        # ---------------------------------------------
+
+        video_path = download_file(
+            video_value,
+            BASE_DIR / "hf_test5"
+        )
+
+        video_path = Path(
+            video_path
+        )
+
+        log.warning(
+            "HFT_TEST5_DOWNLOADED=%s",
+            video_path
+        )
+
+        file_size = (
+            video_path.stat().st_size
+        )
+
+        log.warning(
+            "HFT_TEST5_FILE_SIZE=%s",
+            file_size
+        )
+
+        # ---------------------------------------------
+        # Final timing
+        # ---------------------------------------------
+
+        total = (
+            time.time()
+            - total_start
+        )
+
+        log.warning(
+            "HFT_TEST5_TOTAL_SECONDS=%.2f",
+            total
+        )
+
+        log.warning(
+            "HFT_TEST5_FINISHED_SUCCESS"
+        )
+
+        # ---------------------------------------------
+        # Telegram result
+        # ---------------------------------------------
+
+        gpu_text = (
+            f"{gpu_seconds:.2f} ثانية"
+            if gpu_seconds is not None
+            else "غير معروف"
+        )
+
+        video_duration = (
+            81 / 16
+        )
+
+        if gpu_seconds is not None:
+            gpu_per_second = (
+                gpu_seconds
+                / video_duration
+            )
+
+            estimated_90 = (
+                gpu_per_second
+                * 90
+            )
+
+            estimated_90_text = (
+                f"{estimated_90:.1f} ثانية GPU"
+            )
+
+        else:
+            estimated_90_text = (
+                "غير محسوب"
+            )
+
+        caption = (
+            "🚀 TEST5 نجح 🎬🔥\n\n"
+            "📐 الدقة: 576×832\n"
+            "🎞️ الفريمات: 81\n"
+            "🎬 مدة الفيديو: "
+            f"{video_duration:.2f}s\n"
+            "⚙️ Steps: 20\n"
+            "🤖 Model: wan-base\n\n"
+            f"🎮 GPU: {gpu_text}\n"
+            f"⏱ زمن الطلب: {predict_elapsed:.2f}s\n"
+            f"⏱ الإجمالي: {total:.2f}s\n"
+            f"📦 الحجم: "
+            f"{file_size / 1024 / 1024:.2f} MB\n\n"
+            "📊 تقدير 90 ثانية بنفس المعدل:\n"
+            f"{estimated_90_text}\n\n"
+            "🔥 ابعتلي Logs HFT_TEST5_ كاملة."
+        )
+
+        with open(
+            video_path,
+            "rb"
+        ) as video_file:
+            await update.message.reply_video(
+                video=video_file,
+                caption=caption
+            )
+
+    except Exception as e:
+        total = (
+            time.time()
+            - total_start
+        )
+
+        error = safe_error_text(e)
+
+        log.error(
+            "HFT_TEST5_PREDICT_ERROR=%s",
+            error,
+            exc_info=True
+        )
+
+        log.warning(
+            "HFT_TEST5_TOTAL_SECONDS=%.2f",
+            total
+        )
+
+        log.warning(
+            "HFT_TEST5_FINISHED_WITH_ERROR"
+        )
+
+        await update.message.reply_text(
+            "❌ TEST5 فشل.\n\n"
+            + error[:1800]
+            + f"\n\n⏱ الزمن: {total:.2f} ثانية\n\n"
+            "إذا كان الخطأ من Wan، ابعتلي Logs التي تبدأ بـ HFT_TEST5_."
         )
 
 
@@ -1324,7 +1792,6 @@ def concat_videos(
         )
 
     except Exception:
-        # Re-encode fallback
         command = [
             "ffmpeg",
             "-y",
@@ -1518,6 +1985,7 @@ async def create_reel(
             combined_video
         )
 
+    # Current version keeps the existing pipeline.
     story_text = (
         storyboard.get(
             "hook",
@@ -1954,6 +2422,13 @@ async def initialize_telegram():
     )
 
     telegram_application.add_handler(
+        CommandHandler(
+            "hftest5",
+            hf_test5_command
+        )
+    )
+
+    telegram_application.add_handler(
         MessageHandler(
             filters.TEXT
             & ~filters.COMMAND,
@@ -2099,8 +2574,6 @@ def telegram_webhook():
             )
         )
 
-        # We intentionally don't block waiting
-        # for the complete Telegram handler.
         _ = future
 
         return (
@@ -2168,6 +2641,26 @@ def main():
     log.info(
         "SHOT_DURATION=%s",
         SHOT_DURATION
+    )
+
+    log.info(
+        "GEN_WIDTH=%s",
+        GEN_WIDTH
+    )
+
+    log.info(
+        "GEN_HEIGHT=%s",
+        GEN_HEIGHT
+    )
+
+    log.info(
+        "GEN_FRAMES=%s",
+        GEN_FRAMES
+    )
+
+    log.info(
+        "GEN_STEPS=%s",
+        GEN_STEPS
     )
 
     worker = threading.Thread(
