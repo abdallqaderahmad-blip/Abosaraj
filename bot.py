@@ -24,7 +24,7 @@ from telegram.ext import (
     CommandHandler,
     MessageHandler,
     ContextTypes,
-    filters
+    filters,
 )
 
 
@@ -38,17 +38,17 @@ HF_TOKEN = os.getenv("HF_TOKEN", "").strip()
 
 GROQ_MODEL = os.getenv(
     "GROQ_MODEL",
-    "llama-3.3-70b-versatile"
+    "llama-3.3-70b-versatile",
 ).strip()
 
 HF_SPACE = os.getenv(
     "HF_SPACE",
-    "numanajmal0/wan-video-api"
+    "numanajmal0/wan-video-api",
 ).strip()
 
 HF_API_NAME = os.getenv(
     "HF_API_NAME",
-    ""
+    "",
 ).strip()
 
 # نبدأ بلقطة واحدة فقط للاختبار
@@ -60,7 +60,7 @@ SHOT_DURATION = int(
     os.getenv("SHOT_DURATION", "5")
 )
 
-# الحجم النهائي للفيديو
+# الحجم النهائي
 FINAL_WIDTH = 720
 FINAL_HEIGHT = 1280
 
@@ -68,7 +68,7 @@ FPS = 30
 
 TTS_VOICE = os.getenv(
     "TTS_VOICE",
-    "ar-SA-HamedNeural"
+    "ar-SA-HamedNeural",
 ).strip()
 
 BASE_DIR = Path("/app")
@@ -76,7 +76,7 @@ WORK_DIR = BASE_DIR / "work"
 
 WORK_DIR.mkdir(
     parents=True,
-    exist_ok=True
+    exist_ok=True,
 )
 
 
@@ -86,7 +86,7 @@ WORK_DIR.mkdir(
 
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(message)s"
+    format="%(asctime)s | %(levelname)s | %(message)s",
 )
 
 log = logging.getLogger("ABOSARAJ")
@@ -104,14 +104,14 @@ def home():
     return jsonify({
         "status": "ok",
         "service": "Abosaraj",
-        "bot": "running"
+        "bot": "running",
     })
 
 
 @app.route("/health")
 def health():
     return jsonify({
-        "status": "healthy"
+        "status": "healthy",
     })
 
 
@@ -126,16 +126,16 @@ def start_health_server():
             host="0.0.0.0",
             port=port,
             debug=False,
-            use_reloader=False
+            use_reloader=False,
         ),
-        daemon=True
+        daemon=True,
     )
 
     thread.start()
 
     log.info(
         "HEALTH_SERVER_STARTED port=%s",
-        port
+        port,
     )
 
 
@@ -153,7 +153,7 @@ def safe_error_text(text):
     secrets = [
         BOT_TOKEN,
         GROQ_API_KEY,
-        HF_TOKEN
+        HF_TOKEN,
     ]
 
     for secret in secrets:
@@ -161,7 +161,7 @@ def safe_error_text(text):
         if secret:
             text = text.replace(
                 secret,
-                "[REDACTED]"
+                "[REDACTED]",
             )
 
     return text
@@ -173,7 +173,7 @@ def safe_error_text(text):
 
 def run_command(
     command,
-    timeout=None
+    timeout=None,
 ):
 
     safe_command = []
@@ -195,7 +195,7 @@ def run_command(
 
     log.info(
         "RUN_COMMAND=%s",
-        " ".join(safe_command)
+        " ".join(safe_command),
     )
 
     result = subprocess.run(
@@ -203,7 +203,7 @@ def run_command(
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
-        timeout=timeout
+        timeout=timeout,
     )
 
     if result.returncode != 0:
@@ -243,12 +243,12 @@ def check_telegram_connection():
 
         response = requests.get(
             url,
-            timeout=15
+            timeout=15,
         )
 
         log.info(
             "TELEGRAM_API_HTTP_STATUS=%s",
-            response.status_code
+            response.status_code,
         )
 
         if response.status_code != 200:
@@ -257,7 +257,7 @@ def check_telegram_connection():
                 "TELEGRAM_API_RESPONSE=%s",
                 safe_error_text(
                     response.text[:2000]
-                )
+                ),
             )
 
             return
@@ -271,31 +271,31 @@ def check_telegram_connection():
                 safe_error_text(
                     json.dumps(
                         data,
-                        ensure_ascii=False
+                        ensure_ascii=False,
                     )
-                )
+                ),
             )
 
             return
 
         info = data.get(
             "result",
-            {}
+            {},
         )
 
         webhook_url = info.get(
             "url",
-            ""
+            "",
         )
 
         pending = info.get(
             "pending_update_count",
-            0
+            0,
         )
 
         ip_address = info.get(
             "ip_address",
-            ""
+            "",
         )
 
         log.info(
@@ -306,7 +306,7 @@ def check_telegram_connection():
             pending,
             ip_address
             if ip_address
-            else "<NONE>"
+            else "<NONE>",
         )
 
         if webhook_url:
@@ -325,9 +325,7 @@ def check_telegram_connection():
 
         log.error(
             "TELEGRAM_CONNECTION_CHECK_FAILED=%s",
-            safe_error_text(
-                str(e)
-            )
+            safe_error_text(str(e)),
         )
 
         log.error(
@@ -357,7 +355,7 @@ def get_groq_client():
 # ============================================================
 
 def create_storyboard(
-    story_text
+    story_text,
 ):
 
     client = get_groq_client()
@@ -405,24 +403,21 @@ STORY:
 
     response = client.chat.completions.create(
         model=GROQ_MODEL,
-
         messages=[
             {
                 "role": "system",
                 "content": (
                     "You are a cinematic AI video director. "
                     "Return valid JSON only."
-                )
+                ),
             },
             {
                 "role": "user",
-                "content": prompt
-            }
+                "content": prompt,
+            },
         ],
-
         temperature=0.8,
-
-        max_tokens=3000
+        max_tokens=3000,
     )
 
     content = (
@@ -437,13 +432,13 @@ STORY:
         r"^```(?:json)?\s*",
         "",
         content,
-        flags=re.IGNORECASE
+        flags=re.IGNORECASE,
     )
 
     content = re.sub(
         r"\s*```$",
         "",
-        content
+        content,
     )
 
     data = json.loads(
@@ -457,7 +452,7 @@ STORY:
     if (
         not isinstance(
             scenes,
-            list
+            list,
         )
         or not scenes
     ):
@@ -494,24 +489,24 @@ def get_hf_client():
 
             log.info(
                 "HF_CONNECTING space=%s",
-                HF_SPACE
+                HF_SPACE,
             )
 
             _hf_client = Client(
                 HF_SPACE,
-                token=HF_TOKEN
+                token=HF_TOKEN,
             )
 
             log.info(
                 "HF_CONNECTED space=%s",
-                HF_SPACE
+                HF_SPACE,
             )
 
     return _hf_client
 
 
 def get_api_schema(
-    client
+    client,
 ):
 
     log.info(
@@ -536,19 +531,19 @@ def get_api_schema(
 
         named = info.get(
             "named_endpoints",
-            {}
+            {},
         )
 
         if isinstance(
             named,
-            dict
+            dict,
         ):
 
             log.info(
                 "HF_NAMED_ENDPOINTS=%s",
                 list(
                     named.keys()
-                )
+                ),
             )
 
     except Exception:
@@ -557,44 +552,52 @@ def get_api_schema(
     return info
 
 
+# ============================================================
+# RESOLVE HF ENDPOINT
+# ============================================================
+
 def resolve_endpoint(
-    api_info
+    api_info,
 ):
 
     named = api_info.get(
         "named_endpoints",
-        {}
+        {},
     )
 
     if not isinstance(
         named,
-        dict
+        dict,
     ):
 
         named = {}
+
+    # --------------------------------------------------------
+    # Explicit endpoint from environment
+    # --------------------------------------------------------
 
     if HF_API_NAME:
 
         endpoint_name = HF_API_NAME
 
-        if endpoint_name.startswith(
-            "/"
-        ):
-
+        if endpoint_name.startswith("/"):
             endpoint_name = endpoint_name[1:]
 
         if endpoint_name in named:
 
             return (
                 "/" + endpoint_name,
-                named[endpoint_name]
+                named[endpoint_name],
             )
 
         raise RuntimeError(
             "Configured HF_API_NAME was not found. "
-            f"Available endpoints: "
-            f"{list(named.keys())}"
+            f"Available endpoints: {list(named.keys())}"
         )
+
+    # --------------------------------------------------------
+    # Automatic endpoint discovery
+    # --------------------------------------------------------
 
     candidates = []
 
@@ -606,17 +609,17 @@ def resolve_endpoint(
 
         score = 0
 
-        if "generate" in lower:
-            score += 100
-
-        if "video" in lower:
-            score += 80
-
         if "text_to_video" in lower:
             score += 120
 
         if "text-to-video" in lower:
             score += 120
+
+        if "generate" in lower:
+            score += 100
+
+        if "video" in lower:
+            score += 80
 
         if "predict" in lower:
             score += 60
@@ -625,35 +628,42 @@ def resolve_endpoint(
             (
                 score,
                 name,
-                endpoint
+                endpoint,
             )
         )
 
     candidates.sort(
-        key=lambda x: x[0],
-        reverse=True
+        key=lambda item: item[0],
+        reverse=True,
     )
+
+    # --------------------------------------------------------
+    # Best matching endpoint
+    # --------------------------------------------------------
 
     if (
         candidates
         and candidates[0][0] > 0
     ):
 
-        _,
-        name,
-        endpoint = candidates[0]
+        score, name, endpoint = candidates[0]
 
         log.info(
-            "HF_ENDPOINT_AUTO_SELECTED=%s",
-            name
+            "HF_ENDPOINT_AUTO_SELECTED=%s score=%s",
+            name,
+            score,
         )
 
         return (
             name
             if str(name).startswith("/")
             else "/" + str(name),
-            endpoint
+            endpoint,
         )
+
+    # --------------------------------------------------------
+    # Only one endpoint available
+    # --------------------------------------------------------
 
     if len(named) == 1:
 
@@ -663,45 +673,48 @@ def resolve_endpoint(
 
         log.info(
             "HF_ENDPOINT_ONLY_AVAILABLE=%s",
-            name
+            name,
         )
 
         return (
             name
             if str(name).startswith("/")
             else "/" + str(name),
-            endpoint
+            endpoint,
         )
+
+    # --------------------------------------------------------
+    # Nothing found
+    # --------------------------------------------------------
 
     raise RuntimeError(
         "Could not automatically determine "
         "Hugging Face video endpoint. "
-        f"Available endpoints: "
-        f"{list(named.keys())}"
+        f"Available endpoints: {list(named.keys())}"
     )
 
 
 # ============================================================
-# HF PARAMETER BUILDER
+# HF PARAMETER VALUES
 # ============================================================
 
 def choose_value_from_parameter(
     parameter,
     prompt,
-    negative_prompt=""
+    negative_prompt="",
 ):
 
     name = str(
         parameter.get(
             "parameter_name",
-            ""
+            "",
         )
     ).lower()
 
     label = str(
         parameter.get(
             "label",
-            ""
+            "",
         )
     ).lower()
 
@@ -711,13 +724,10 @@ def choose_value_from_parameter(
 
     component = parameter.get(
         "component",
-        ""
+        "",
     )
 
-    # --------------------------------------------------------
-    # PROMPT
-    # --------------------------------------------------------
-
+    # Prompt
     if (
         "negative" not in combined
         and "prompt" in combined
@@ -725,18 +735,12 @@ def choose_value_from_parameter(
 
         return prompt
 
-    # --------------------------------------------------------
-    # NEGATIVE PROMPT
-    # --------------------------------------------------------
-
+    # Negative prompt
     if "negative" in combined:
 
         return negative_prompt
 
-    # --------------------------------------------------------
-    # MODEL
-    # --------------------------------------------------------
-
+    # Model
     if "model" in combined:
 
         choices = parameter.get(
@@ -751,10 +755,7 @@ def choose_value_from_parameter(
             "default"
         )
 
-    # --------------------------------------------------------
-    # DURATION
-    # --------------------------------------------------------
-
+    # Duration
     if (
         "duration" in combined
         or "seconds" in combined
@@ -762,10 +763,7 @@ def choose_value_from_parameter(
 
         return SHOT_DURATION
 
-    # --------------------------------------------------------
     # FPS
-    # --------------------------------------------------------
-
     if (
         "fps" in combined
         or "frame rate" in combined
@@ -774,11 +772,8 @@ def choose_value_from_parameter(
         return FPS
 
     # --------------------------------------------------------
-    # WIDTH
-    # --------------------------------------------------------
-    # IMPORTANT:
-    # Wan endpoint rejects 1280.
-    # Generate at 576 and upscale/pad later.
+    # Wan width
+    # The endpoint rejected 1280.
     # --------------------------------------------------------
 
     if "width" in combined:
@@ -786,40 +781,29 @@ def choose_value_from_parameter(
         return 576
 
     # --------------------------------------------------------
-    # HEIGHT
-    # --------------------------------------------------------
-    # IMPORTANT:
-    # Maximum accepted by endpoint is 832.
-    # Final FFmpeg output remains 720x1280.
+    # Wan height
+    # Maximum reported by endpoint = 832.
+    # Final FFmpeg output = 720x1280.
     # --------------------------------------------------------
 
     if "height" in combined:
 
         return 832
 
-    # --------------------------------------------------------
-    # FRAMES
-    # --------------------------------------------------------
-
+    # Frames
     if "frames" in combined:
 
         return max(
             FPS * SHOT_DURATION,
-            1
+            1,
         )
 
-    # --------------------------------------------------------
-    # STEPS
-    # --------------------------------------------------------
-
+    # Steps
     if "steps" in combined:
 
         return 20
 
-    # --------------------------------------------------------
-    # GUIDANCE
-    # --------------------------------------------------------
-
+    # Guidance / CFG
     if (
         "guidance" in combined
         or "cfg" in combined
@@ -827,31 +811,22 @@ def choose_value_from_parameter(
 
         return 6.0
 
-    # --------------------------------------------------------
-    # SEED
-    # --------------------------------------------------------
-
+    # Seed
     if "seed" in combined:
 
         return -1
 
-    # --------------------------------------------------------
-    # CHECKBOX
-    # --------------------------------------------------------
-
+    # Checkbox
     if component == "Checkbox":
 
         return bool(
             parameter.get(
                 "default",
-                False
+                False,
             )
         )
 
-    # --------------------------------------------------------
-    # CHOICES
-    # --------------------------------------------------------
-
+    # Dropdown
     choices = parameter.get(
         "choices"
     )
@@ -860,10 +835,7 @@ def choose_value_from_parameter(
 
         return choices[0]
 
-    # --------------------------------------------------------
-    # DEFAULT
-    # --------------------------------------------------------
-
+    # Default
     if "default" in parameter:
 
         return parameter["default"]
@@ -873,17 +845,17 @@ def choose_value_from_parameter(
 
 def build_generate_arguments(
     endpoint_info,
-    prompt
+    prompt,
 ):
 
     parameters = endpoint_info.get(
         "parameters",
-        []
+        [],
     )
 
     if not isinstance(
         parameters,
-        list
+        list,
     ):
 
         raise RuntimeError(
@@ -896,12 +868,12 @@ def build_generate_arguments(
 
         value = choose_value_from_parameter(
             parameter,
-            prompt
+            prompt,
         )
 
         name = parameter.get(
             "parameter_name",
-            ""
+            "",
         )
 
         log.info(
@@ -909,7 +881,7 @@ def build_generate_arguments(
             name,
             safe_error_text(
                 str(value)
-            )[:300]
+            )[:300],
         )
 
         args.append(
@@ -924,30 +896,24 @@ def build_generate_arguments(
 # ============================================================
 
 def find_video_value(
-    value
+    value,
 ):
 
     if value is None:
-
         return None
 
+    # String
     if isinstance(
         value,
-        str
+        str,
     ):
 
         lower = value.lower()
 
         if (
-            lower.startswith(
-                "http://"
-            )
-            or lower.startswith(
-                "https://"
-            )
-            or lower.startswith(
-                "/"
-            )
+            lower.startswith("http://")
+            or lower.startswith("https://")
+            or lower.startswith("/")
             or ".mp4" in lower
             or ".webm" in lower
             or ".mov" in lower
@@ -957,9 +923,10 @@ def find_video_value(
 
         return None
 
+    # List / tuple
     if isinstance(
         value,
-        (list, tuple)
+        (list, tuple),
     ):
 
         for item in value:
@@ -974,9 +941,10 @@ def find_video_value(
 
         return None
 
+    # Dictionary
     if isinstance(
         value,
-        dict
+        dict,
     ):
 
         preferred_keys = [
@@ -985,7 +953,7 @@ def find_video_value(
             "url",
             "path",
             "file",
-            "name"
+            "name",
         ]
 
         for key in preferred_keys:
@@ -1012,10 +980,11 @@ def find_video_value(
 
         return None
 
+    # Gradio FileData-like object
     for attr in [
         "path",
         "url",
-        "name"
+        "name",
     ]:
 
         try:
@@ -1023,7 +992,7 @@ def find_video_value(
             attr_value = getattr(
                 value,
                 attr,
-                None
+                None,
             )
 
             if attr_value:
@@ -1048,7 +1017,7 @@ def find_video_value(
 
 def download_file(
     source,
-    destination
+    destination,
 ):
 
     destination = Path(
@@ -1059,7 +1028,7 @@ def download_file(
     if (
         isinstance(
             source,
-            str
+            str,
         )
         and os.path.exists(
             source
@@ -1077,34 +1046,30 @@ def download_file(
     if (
         isinstance(
             source,
-            str
+            str,
         )
         and (
-            source.startswith(
-                "http://"
-            )
-            or source.startswith(
-                "https://"
-            )
+            source.startswith("http://")
+            or source.startswith("https://")
         )
     ):
 
         log.info(
             "DOWNLOADING_VIDEO=%s",
-            source[:200]
+            source[:200],
         )
 
         response = requests.get(
             source,
             stream=True,
-            timeout=180
+            timeout=180,
         )
 
         response.raise_for_status()
 
         with open(
             destination,
-            "wb"
+            "wb",
         ) as f:
 
             for chunk in response.iter_content(
@@ -1130,7 +1095,7 @@ def download_file(
 
 def generate_ai_video(
     prompt,
-    output_path
+    output_path,
 ):
 
     client = get_hf_client()
@@ -1145,12 +1110,12 @@ def generate_ai_video(
 
     log.info(
         "HF_GENERATION_ENDPOINT=%s",
-        endpoint_name
+        endpoint_name,
     )
 
     args = build_generate_arguments(
         endpoint_info,
-        prompt
+        prompt,
     )
 
     log.info(
@@ -1161,7 +1126,7 @@ def generate_ai_video(
 
         result = client.predict(
             *args,
-            api_name=endpoint_name
+            api_name=endpoint_name,
         )
 
     except Exception as e:
@@ -1170,7 +1135,7 @@ def generate_ai_video(
             "HF_GENERATION_FIRST_ATTEMPT_FAILED=%s",
             safe_error_text(
                 str(e)
-            )
+            ),
         )
 
         log.error(
@@ -1185,7 +1150,7 @@ def generate_ai_video(
 
         result = client.predict(
             *args,
-            api_name=endpoint_name
+            api_name=endpoint_name,
         )
 
     log.info(
@@ -1201,13 +1166,12 @@ def generate_ai_video(
         raise RuntimeError(
             "Hugging Face generation completed but "
             "no video file/URL was found in the response. "
-            f"Response type: "
-            f"{type(result).__name__}"
+            f"Response type: {type(result).__name__}"
         )
 
     download_file(
         video_value,
-        output_path
+        output_path,
     )
 
     if not output_path.exists():
@@ -1219,7 +1183,7 @@ def generate_ai_video(
     log.info(
         "HF_VIDEO_READY=%s size=%s",
         output_path,
-        output_path.stat().st_size
+        output_path.stat().st_size,
     )
 
     return output_path
@@ -1231,12 +1195,12 @@ def generate_ai_video(
 
 async def create_tts_async(
     text,
-    output_path
+    output_path,
 ):
 
     communicate = edge_tts.Communicate(
         text,
-        TTS_VOICE
+        TTS_VOICE,
     )
 
     await communicate.save(
@@ -1246,13 +1210,13 @@ async def create_tts_async(
 
 def create_tts(
     text,
-    output_path
+    output_path,
 ):
 
     asyncio.run(
         create_tts_async(
             text,
-            output_path
+            output_path,
         )
     )
 
@@ -1271,7 +1235,7 @@ def create_tts(
 
 def normalize_video(
     input_path,
-    output_path
+    output_path,
 ):
 
     run_command(
@@ -1305,10 +1269,10 @@ def normalize_video(
 
             "-an",
 
-            str(output_path)
+            str(output_path),
         ],
 
-        timeout=300
+        timeout=300,
     )
 
     return output_path
@@ -1320,7 +1284,7 @@ def normalize_video(
 
 def concat_videos(
     video_paths,
-    output_path
+    output_path,
 ):
 
     if not video_paths:
@@ -1337,7 +1301,7 @@ def concat_videos(
     with open(
         list_file,
         "w",
-        encoding="utf-8"
+        encoding="utf-8",
     ) as f:
 
         for path in video_paths:
@@ -1346,7 +1310,7 @@ def concat_videos(
                 Path(path).resolve()
             ).replace(
                 "'",
-                "'\\''"
+                "'\\''",
             )
 
             f.write(
@@ -1380,10 +1344,10 @@ def concat_videos(
 
                 "-an",
 
-                str(output_path)
+                str(output_path),
             ],
 
-            timeout=300
+            timeout=300,
         )
 
     finally:
@@ -1403,7 +1367,7 @@ def concat_videos(
 def mux_audio(
     video_path,
     audio_path,
-    output_path
+    output_path,
 ):
 
     run_command(
@@ -1434,10 +1398,10 @@ def mux_audio(
 
             "-shortest",
 
-            str(output_path)
+            str(output_path),
         ],
 
-        timeout=300
+        timeout=300,
     )
 
     return output_path
@@ -1449,12 +1413,12 @@ def mux_audio(
 
 def create_video(
     story_text,
-    job_dir
+    job_dir,
 ):
 
     job_dir.mkdir(
         parents=True,
-        exist_ok=True
+        exist_ok=True,
     )
 
     log.info(
@@ -1467,19 +1431,19 @@ def create_video(
 
     log.info(
         "STORYBOARD_READY scenes=%s",
-        len(scenes)
+        len(scenes),
     )
 
     scene_videos = []
 
     for index, scene in enumerate(
         scenes,
-        start=1
+        start=1,
     ):
 
         prompt = scene.get(
             "prompt",
-            ""
+            "",
         ).strip()
 
         if not prompt:
@@ -1490,7 +1454,7 @@ def create_video(
 
         log.info(
             "SCENE_START=%s",
-            index
+            index,
         )
 
         raw_video = (
@@ -1505,12 +1469,12 @@ def create_video(
 
         generate_ai_video(
             prompt,
-            raw_video
+            raw_video,
         )
 
         normalize_video(
             raw_video,
-            normalized_video
+            normalized_video,
         )
 
         scene_videos.append(
@@ -1519,7 +1483,7 @@ def create_video(
 
         log.info(
             "SCENE_DONE=%s",
-            index
+            index,
         )
 
     combined_video = (
@@ -1529,7 +1493,7 @@ def create_video(
 
     concat_videos(
         scene_videos,
-        combined_video
+        combined_video,
     )
 
     audio_file = (
@@ -1539,7 +1503,7 @@ def create_video(
 
     create_tts(
         story_text,
-        audio_file
+        audio_file,
     )
 
     final_video = (
@@ -1550,7 +1514,7 @@ def create_video(
     mux_audio(
         combined_video,
         audio_file,
-        final_video
+        final_video,
     )
 
     if not final_video.exists():
@@ -1568,7 +1532,7 @@ def create_video(
 
 async def start_command(
     update: Update,
-    context: ContextTypes.DEFAULT_TYPE
+    context: ContextTypes.DEFAULT_TYPE,
 ):
 
     await update.message.reply_text(
@@ -1578,7 +1542,7 @@ async def start_command(
 
 async def handle_story(
     update: Update,
-    context: ContextTypes.DEFAULT_TYPE
+    context: ContextTypes.DEFAULT_TYPE,
 ):
 
     if not update.message:
@@ -1608,7 +1572,7 @@ async def handle_story(
     log.info(
         "JOB_START=%s user=%s",
         job_id,
-        user_id
+        user_id,
     )
 
     try:
@@ -1621,17 +1585,17 @@ async def handle_story(
         final_video = await asyncio.to_thread(
             create_video,
             story,
-            job_dir
+            job_dir,
         )
 
         log.info(
             "JOB_SUCCESS=%s",
-            job_id
+            job_id,
         )
 
         with open(
             final_video,
-            "rb"
+            "rb",
         ) as video_file:
 
             await update.message.reply_video(
@@ -1640,7 +1604,7 @@ async def handle_story(
                     "🎬 الفيديو جاهز\n"
                     f"EP — {job_id}"
                 ),
-                supports_streaming=True
+                supports_streaming=True,
             )
 
     except Exception as e:
@@ -1651,17 +1615,17 @@ async def handle_story(
 
         log.error(
             "JOB_FAILED=%s",
-            job_id
+            job_id,
         )
 
         log.error(
             "ERROR_TYPE=%s",
-            type(e).__name__
+            type(e).__name__,
         )
 
         log.error(
             "ERROR_MESSAGE=%s",
-            error_message
+            error_message,
         )
 
         log.error(
@@ -1685,7 +1649,7 @@ async def handle_story(
 
         log.info(
             "JOB_CLEANUP=%s",
-            job_id
+            job_id,
         )
 
         try:
@@ -1694,7 +1658,7 @@ async def handle_story(
 
                 shutil.rmtree(
                     job_dir,
-                    ignore_errors=True
+                    ignore_errors=True,
                 )
 
         except Exception:
@@ -1703,7 +1667,7 @@ async def handle_story(
 
 async def telegram_error_handler(
     update,
-    context
+    context,
 ):
 
     error = context.error
@@ -1714,7 +1678,7 @@ async def telegram_error_handler(
 
     log.error(
         "TELEGRAM_HANDLER_ERROR=%s",
-        error_text
+        error_text,
     )
 
     log.error(
@@ -1743,7 +1707,7 @@ def build_application():
     application.add_handler(
         CommandHandler(
             "start",
-            start_command
+            start_command,
         )
     )
 
@@ -1751,7 +1715,7 @@ def build_application():
         MessageHandler(
             filters.TEXT
             & ~filters.COMMAND,
-            handle_story
+            handle_story,
         )
     )
 
