@@ -6,11 +6,12 @@ import asyncio
 import logging
 import subprocess
 import threading
+import hashlib
 from pathlib import Path
 
 import requests
 import edge_tts
-from flask import Flask
+from flask import Flask, request
 from groq import Groq
 from gradio_client import Client
 
@@ -46,6 +47,40 @@ GROQ_MODEL = os.getenv(
     "GROQ_MODEL",
     "llama-3.3-70b-versatile"
 ).strip()
+
+
+# =========================================================
+# RENDER WEBHOOK CONFIG
+# =========================================================
+
+PORT = int(
+    os.getenv(
+        "PORT",
+        "10000"
+    )
+)
+
+RENDER_EXTERNAL_URL = os.getenv(
+    "RENDER_EXTERNAL_URL",
+    ""
+).strip()
+
+# Telegram webhook path
+WEBHOOK_PATH = "/telegram/webhook"
+
+# Secret for Telegram webhook verification.
+# If not provided in Render, derive a private deterministic value
+# from the bot token without exposing the token.
+BOT_WEBHOOK_SECRET = os.getenv(
+    "BOT_WEBHOOK_SECRET",
+    ""
+).strip()
+
+if not BOT_WEBHOOK_SECRET and BOT_TOKEN:
+
+    BOT_WEBHOOK_SECRET = hashlib.sha256(
+        BOT_TOKEN.encode("utf-8")
+    ).hexdigest()[:32]
 
 
 # =========================================================
@@ -117,7 +152,7 @@ log = logging.getLogger(
 
 
 # =========================================================
-# FLASK HEALTH SERVER
+# FLASK SERVER
 # =========================================================
 
 app = Flask(__name__)
@@ -135,31 +170,13 @@ def health():
     return "OK", 200
 
 
-def start_health_server():
+# =========================================================
+# TELEGRAM APPLICATION GLOBALS
+# =========================================================
 
-    port = int(
-        os.getenv(
-            "PORT",
-            "10000"
-        )
-    )
-
-    thread = threading.Thread(
-        target=lambda: app.run(
-            host="0.0.0.0",
-            port=port,
-            debug=False,
-            use_reloader=False
-        ),
-        daemon=True
-    )
-
-    thread.start()
-
-    log.info(
-        "HEALTH_SERVER_STARTED port=%s",
-        port
-    )
+telegram_application = None
+telegram_loop = None
+telegram_ready = threading.Event()
 
 
 # =========================================================
@@ -173,7 +190,8 @@ def safe_error_text(error):
     secrets = [
         BOT_TOKEN,
         GROQ_API_KEY,
-        HF_TOKEN
+        HF_TOKEN,
+        BOT_WEBHOOK_SECRET
     ]
 
     for secret in secrets:
@@ -209,7 +227,8 @@ def run_command(command):
     for secret in [
         BOT_TOKEN,
         GROQ_API_KEY,
-        HF_TOKEN
+        HF_TOKEN,
+        BOT_WEBHOOK_SECRET
     ]:
 
         if secret:
@@ -306,18 +325,20 @@ def check_telegram_connection():
             or "<NONE>"
         )
 
-        log.info(
-            "TELEGRAM_WEBHOOK url=%s pending=%s ip=%s",
-            webhook_url,
-            pending,
-            ip
+        last_error = (
+            result.get(
+                "last_error_message"
+            )
+            or "<NONE>"
         )
 
-        if webhook_url == "<EMPTY>":
-
-            log.info(
-                "TELEGRAM_WEBHOOK_IS_EMPTY"
-            )
+        log.info(
+            "TELEGRAM_WEBHOOK url=%s pending=%s ip=%s last_error=%s",
+            webhook_url,
+            pending,
+            ip,
+            last_error
+        )
 
     except Exception as e:
 
@@ -1146,11 +1167,6 @@ def generate_ai_video(
         "HF_GENERATE_START"
     )
 
-    # =====================================================
-    # IMPORTANT:
-    # Capture the REAL Gradio/HF exception.
-    # =====================================================
-
     try:
 
         result = client.predict(
@@ -1396,10 +1412,6 @@ async def create_reel(
             job_id
         )
 
-        # =================================================
-        # STORYBOARD
-        # =================================================
-
         scenes = generate_storyboard(
             story
         )
@@ -1410,10 +1422,6 @@ async def create_reel(
         )
 
         generated_videos = []
-
-        # =================================================
-        # AI VIDEO
-        # =================================================
 
         for index, scene in enumerate(
             scenes,
@@ -1473,10 +1481,6 @@ async def create_reel(
                 "No video scenes generated."
             )
 
-        # =================================================
-        # CONCAT
-        # =================================================
-
         combined_video = (
             work_dir
             / "combined.mp4"
@@ -1499,10 +1503,6 @@ async def create_reel(
                 str(combined_video)
             )
 
-        # =================================================
-        # TTS
-        # =================================================
-
         audio_file = (
             work_dir
             / "narration.mp3"
@@ -1512,10 +1512,6 @@ async def create_reel(
             story,
             str(audio_file)
         )
-
-        # =================================================
-        # FINAL VIDEO
-        # =================================================
 
         final_video = (
             work_dir
@@ -1647,6 +1643,210 @@ async def telegram_error_handler(
 
 
 # =========================================================
+# TELEGRAM ASYNC LOOP
+# =========================================================
+
+def telegram_loop_worker():
+
+    global telegram_loop
+    global telegram_application
+
+    telegram_loop = asyncio.new_event_loop()
+
+    asyncio.set_event_loop(
+        telegram_loop
+    )
+
+    telegram_application = (
+        Application.builder()
+        .token(BOT_TOKEN)
+        .build()
+    )
+
+    telegram_application.add_handler(
+        CommandHandler(
+            "start",
+            start_command
+        )
+    )
+
+    telegram_application.add_handler(
+        MessageHandler(
+            filters.TEXT
+            & ~filters.COMMAND,
+            handle_message
+        )
+    )
+
+    telegram_application.add_error_handler(
+        telegram_error_handler
+    )
+
+    async def initialize():
+
+        log.info(
+            "TELEGRAM_APPLICATION_INITIALIZING"
+        )
+
+        await telegram_application.initialize()
+
+        await telegram_application.start()
+
+        webhook_url = (
+            RENDER_EXTERNAL_URL.rstrip("/")
+            + WEBHOOK_PATH
+        )
+
+        if not RENDER_EXTERNAL_URL:
+
+            raise RuntimeError(
+                "RENDER_EXTERNAL_URL is missing. "
+                "This service must run as a Render Web Service."
+            )
+
+        log.info(
+            "TELEGRAM_SETTING_WEBHOOK url=%s",
+            webhook_url
+        )
+
+        await telegram_application.bot.set_webhook(
+            url=webhook_url,
+            secret_token=BOT_WEBHOOK_SECRET,
+            drop_pending_updates=True,
+            allowed_updates=Update.ALL_TYPES
+        )
+
+        log.info(
+            "TELEGRAM_WEBHOOK_SET"
+        )
+
+        telegram_ready.set()
+
+    try:
+
+        telegram_loop.run_until_complete(
+            initialize()
+        )
+
+        log.info(
+            "TELEGRAM_ASYNC_LOOP_READY"
+        )
+
+        telegram_loop.run_forever()
+
+    except Exception as e:
+
+        log.error(
+            "TELEGRAM_LOOP_ERROR=%s",
+            safe_error_text(e),
+            exc_info=True
+        )
+
+    finally:
+
+        try:
+
+            if telegram_application:
+
+                telegram_loop.run_until_complete(
+                    telegram_application.stop()
+                )
+
+                telegram_loop.run_until_complete(
+                    telegram_application.shutdown()
+                )
+
+        except Exception as e:
+
+            log.error(
+                "TELEGRAM_SHUTDOWN_ERROR=%s",
+                safe_error_text(e)
+            )
+
+        try:
+
+            telegram_loop.close()
+
+        except Exception:
+            pass
+
+
+# =========================================================
+# TELEGRAM WEBHOOK ROUTE
+# =========================================================
+
+@app.route(
+    WEBHOOK_PATH,
+    methods=["POST"]
+)
+def telegram_webhook():
+
+    global telegram_application
+    global telegram_loop
+
+    if not telegram_ready.is_set():
+
+        log.warning(
+            "TELEGRAM_WEBHOOK_RECEIVED_BEFORE_READY"
+        )
+
+        return "Service not ready", 503
+
+    incoming_secret = request.headers.get(
+        "X-Telegram-Bot-Api-Secret-Token",
+        ""
+    )
+
+    if (
+        BOT_WEBHOOK_SECRET
+        and incoming_secret != BOT_WEBHOOK_SECRET
+    ):
+
+        log.warning(
+            "TELEGRAM_WEBHOOK_BAD_SECRET"
+        )
+
+        return "Forbidden", 403
+
+    try:
+
+        data = request.get_json(
+            force=True,
+            silent=False
+        )
+
+        update = Update.de_json(
+            data,
+            telegram_application.bot
+        )
+
+        future = asyncio.run_coroutine_threadsafe(
+            telegram_application.process_update(
+                update
+            ),
+            telegram_loop
+        )
+
+        # We intentionally don't wait for the whole video job.
+        # Telegram only needs the webhook to acknowledge the update.
+        log.info(
+            "TELEGRAM_WEBHOOK_UPDATE_ACCEPTED"
+        )
+
+        return "OK", 200
+
+    except Exception as e:
+
+        log.error(
+            "TELEGRAM_WEBHOOK_ERROR=%s",
+            safe_error_text(e),
+            exc_info=True
+        )
+
+        return "Webhook error", 500
+
+
+# =========================================================
 # MAIN
 # =========================================================
 
@@ -1662,46 +1862,61 @@ def main():
         "ABOSARAJ STARTING"
     )
 
-    start_health_server()
+    log.info(
+        "RENDER_EXTERNAL_URL=%s",
+        RENDER_EXTERNAL_URL or "<MISSING>"
+    )
+
+    log.info(
+        "WEBHOOK_PATH=%s",
+        WEBHOOK_PATH
+    )
 
     check_telegram_connection()
 
-    application = (
-        Application.builder()
-        .token(BOT_TOKEN)
-        .build()
+    # =====================================================
+    # START TELEGRAM APPLICATION
+    # =====================================================
+
+    telegram_thread = threading.Thread(
+        target=telegram_loop_worker,
+        daemon=True,
+        name="telegram-loop"
     )
 
-    application.add_handler(
-        CommandHandler(
-            "start",
-            start_command
+    telegram_thread.start()
+
+    # =====================================================
+    # WAIT FOR TELEGRAM TO BE READY
+    # =====================================================
+
+    if not telegram_ready.wait(
+        timeout=60
+    ):
+
+        raise RuntimeError(
+            "Telegram webhook initialization timed out."
         )
-    )
-
-    application.add_handler(
-        MessageHandler(
-            filters.TEXT
-            & ~filters.COMMAND,
-            handle_message
-        )
-    )
-
-    application.add_error_handler(
-        telegram_error_handler
-    )
 
     log.info(
-        "TELEGRAM_HANDLERS_READY"
+        "TELEGRAM_WEBHOOK_READY"
     )
+
+    # =====================================================
+    # START FLASK / RENDER HTTP SERVER
+    # =====================================================
 
     log.info(
-        "BOT_START_POLLING"
+        "HEALTH_SERVER_STARTED port=%s",
+        PORT
     )
 
-    application.run_polling(
-        drop_pending_updates=True,
-        allowed_updates=Update.ALL_TYPES
+    app.run(
+        host="0.0.0.0",
+        port=PORT,
+        debug=False,
+        use_reloader=False,
+        threaded=True
     )
 
 
