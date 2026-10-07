@@ -46,13 +46,36 @@ HF_SPACE = os.getenv(
     "numanajmal0/wan-video-api"
 )
 
+# Optional:
+# If empty, the bot will automatically discover the endpoint.
 HF_API_NAME = os.getenv(
     "HF_API_NAME",
-    "/generate"
+    ""
+).strip()
+
+# ============================================================
+# IMPORTANT TEST MODE
+# ============================================================
+# First successful test = 1 scene only.
+# After everything works, change to 8.
+#
+# You can also set:
+# SHOT_COUNT=8
+# in Render Environment Variables later.
+
+SHOT_COUNT = int(
+    os.getenv(
+        "SHOT_COUNT",
+        "1"
+    )
 )
 
-SHOT_COUNT = 8
-SHOT_DURATION = 5
+SHOT_DURATION = int(
+    os.getenv(
+        "SHOT_DURATION",
+        "5"
+    )
+)
 
 FINAL_WIDTH = 720
 FINAL_HEIGHT = 1280
@@ -63,7 +86,10 @@ TTS_VOICE = os.getenv(
     "ar-SA-HamedNeural"
 )
 
-BASE_DIR = Path("/tmp/abosaraj")
+BASE_DIR = Path(
+    "/tmp/abosaraj"
+)
+
 BASE_DIR.mkdir(
     parents=True,
     exist_ok=True
@@ -81,7 +107,9 @@ logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(message)s"
 )
 
-log = logging.getLogger("ABOSARAJ")
+log = logging.getLogger(
+    "ABOSARAJ"
+)
 
 
 # ============================================================
@@ -93,22 +121,32 @@ flask_app = Flask(__name__)
 
 @flask_app.route("/")
 def home():
-    return "ABOSARAJ BOT ONLINE", 200
+
+    return (
+        "ABOSARAJ BOT ONLINE",
+        200
+    )
 
 
 @flask_app.route("/health")
 def health():
+
     return {
         "status": "ok",
         "bot": "online",
         "video_engine": "huggingface_zero_gpu",
-        "space": HF_SPACE
+        "space": HF_SPACE,
+        "shots": SHOT_COUNT
     }, 200
 
 
 def run_flask():
+
     port = int(
-        os.getenv("PORT", "10000")
+        os.getenv(
+            "PORT",
+            "10000"
+        )
     )
 
     flask_app.run(
@@ -119,23 +157,59 @@ def run_flask():
 
 
 # ============================================================
+# SAFE ERROR TEXT
+# ============================================================
+
+def safe_error_text(error):
+
+    text = str(error)
+
+    secrets = [
+        HF_TOKEN,
+        BOT_TOKEN,
+        GROQ_API_KEY
+    ]
+
+    for secret in secrets:
+
+        if secret:
+            text = text.replace(
+                secret,
+                "[REDACTED]"
+            )
+
+    return text
+
+
+# ============================================================
 # COMMAND RUNNER
 # ============================================================
 
-def run_command(cmd, timeout=900):
+def run_command(
+    cmd,
+    timeout=900
+):
 
     safe_cmd = []
 
     for item in cmd:
+
         item = str(item)
 
         if (
             "token" in item.lower()
             or item.startswith("hf_")
         ):
-            safe_cmd.append("[REDACTED]")
+
+            safe_cmd.append(
+                "[REDACTED]"
+            )
+
         else:
-            safe_cmd.append(item)
+
+            safe_cmd.append(
+                item
+            )
 
     log.info(
         "RUN_COMMAND=%s",
@@ -143,6 +217,7 @@ def run_command(cmd, timeout=900):
     )
 
     try:
+
         result = subprocess.run(
             cmd,
             stdout=subprocess.PIPE,
@@ -184,6 +259,7 @@ def run_command(cmd, timeout=900):
 def clean_json(text):
 
     if not text:
+
         raise RuntimeError(
             "Groq returned an empty response."
         )
@@ -294,7 +370,12 @@ Story:
         ]
     )
 
-    raw = response.choices[0].message.content
+    raw = (
+        response
+        .choices[0]
+        .message
+        .content
+    )
 
     log.info(
         "GROQ_RESPONSE_LENGTH=%s",
@@ -302,6 +383,7 @@ Story:
     )
 
     try:
+
         data = json.loads(
             clean_json(raw)
         )
@@ -309,18 +391,26 @@ Story:
     except Exception as e:
 
         raise RuntimeError(
-            f"Groq returned invalid JSON: {e}"
+            f"Groq returned invalid JSON: {safe_error_text(e)}"
         )
 
-    if not isinstance(data, dict):
+    if not isinstance(
+        data,
+        dict
+    ):
 
         raise RuntimeError(
             "Groq returned invalid storyboard."
         )
 
-    shots = data.get("shots")
+    shots = data.get(
+        "shots"
+    )
 
-    if not isinstance(shots, list):
+    if not isinstance(
+        shots,
+        list
+    ):
 
         raise RuntimeError(
             "Storyboard does not contain shots."
@@ -332,22 +422,30 @@ Story:
             f"Groq returned only {len(shots)} shots."
         )
 
-    data["shots"] = shots[:SHOT_COUNT]
+    data["shots"] = (
+        shots[:SHOT_COUNT]
+    )
 
     narration = str(
-        data.get("narration", "")
+        data.get(
+            "narration",
+            ""
+        )
     ).strip()
 
     if not narration:
+
         narration = story
 
-    data["narration"] = narration
+    data["narration"] = (
+        narration
+    )
 
     return data
 
 
 # ============================================================
-# HUGGING FACE / GRADIO
+# HUGGING FACE CLIENT
 # ============================================================
 
 def get_hf_client():
@@ -355,9 +453,7 @@ def get_hf_client():
     if not HF_TOKEN:
 
         raise RuntimeError(
-            "HF_TOKEN is missing. "
-            "Add your Hugging Face Read token "
-            "to Render Environment Variables."
+            "HF_TOKEN is missing."
         )
 
     log.info(
@@ -367,13 +463,11 @@ def get_hf_client():
 
     try:
 
-        # IMPORTANT:
-        # Modern gradio_client uses token= instead
-        # of the old hf_token= parameter.
+        # Gradio 6 uses token=
+        # instead of hf_token=.
         client = Client(
             HF_SPACE,
-            token=HF_TOKEN,
-            verbose=False
+            token=HF_TOKEN
         )
 
         log.info(
@@ -384,22 +478,233 @@ def get_hf_client():
 
     except Exception as e:
 
-        error_text = str(e)
-
-        # Never expose the actual HF token
-        if HF_TOKEN:
-            error_text = error_text.replace(
-                HF_TOKEN,
-                "[REDACTED]"
-            )
-
         raise RuntimeError(
-            f"Could not connect to Hugging Face Space: "
-            f"{error_text}"
+            "Could not connect to Hugging Face Space: "
+            + safe_error_text(e)
         )
 
 
-def normalize_label(value):
+# ============================================================
+# HUGGING FACE API SCHEMA
+# ============================================================
+
+def get_api_schema(
+    client
+):
+
+    try:
+
+        # Return dictionary form.
+        info = client.view_api(
+            return_format="dict"
+        )
+
+        if not isinstance(
+            info,
+            dict
+        ):
+
+            raise RuntimeError(
+                "view_api() did not return a dictionary."
+            )
+
+        log.info(
+            "HF_API_SCHEMA_RECEIVED=True"
+        )
+
+        # Log endpoint names only.
+        named = info.get(
+            "named_endpoints",
+            {}
+        )
+
+        unnamed = info.get(
+            "unnamed_endpoints",
+            {}
+        )
+
+        if isinstance(
+            named,
+            dict
+        ):
+
+            names = list(
+                named.keys()
+            )
+
+            log.info(
+                "HF_NAMED_ENDPOINTS=%s",
+                names
+            )
+
+        else:
+
+            log.info(
+                "HF_NAMED_ENDPOINTS=[]"
+            )
+
+        if isinstance(
+            unnamed,
+            dict
+        ):
+
+            log.info(
+                "HF_UNNAMED_ENDPOINT_COUNT=%s",
+                len(unnamed)
+            )
+
+        return info
+
+    except Exception as e:
+
+        raise RuntimeError(
+            "Could not read Hugging Face API schema: "
+            + safe_error_text(e)
+        )
+
+
+# ============================================================
+# RESOLVE REAL ENDPOINT
+# ============================================================
+
+def resolve_endpoint(
+    api_info
+):
+
+    if not isinstance(
+        api_info,
+        dict
+    ):
+
+        raise RuntimeError(
+            "Invalid Hugging Face API schema."
+        )
+
+    named_endpoints = (
+        api_info.get(
+            "named_endpoints",
+            {}
+        )
+    )
+
+    if not isinstance(
+        named_endpoints,
+        dict
+    ):
+
+        named_endpoints = {}
+
+    log.info(
+        "HF_ENDPOINT_COUNT=%s",
+        len(named_endpoints)
+    )
+
+    # --------------------------------------------------------
+    # 1. User explicitly configured endpoint
+    # --------------------------------------------------------
+
+    if HF_API_NAME:
+
+        if HF_API_NAME in named_endpoints:
+
+            log.info(
+                "HF_ENDPOINT_SELECTED=%s",
+                HF_API_NAME
+            )
+
+            return (
+                HF_API_NAME,
+                named_endpoints[
+                    HF_API_NAME
+                ]
+            )
+
+        log.warning(
+            "HF_CONFIGURED_ENDPOINT_NOT_FOUND=%s",
+            HF_API_NAME
+        )
+
+    # --------------------------------------------------------
+    # 2. Automatically find generate/video endpoint
+    # --------------------------------------------------------
+
+    preferred = []
+
+    for name, endpoint in (
+        named_endpoints.items()
+    ):
+
+        normalized = (
+            str(name)
+            .lower()
+        )
+
+        if any(
+            word in normalized
+            for word in (
+                "generate",
+                "video",
+                "text_to_video",
+                "text-to-video",
+                "predict"
+            )
+        ):
+
+            preferred.append(
+                (name, endpoint)
+            )
+
+    if len(preferred) == 1:
+
+        selected = preferred[0]
+
+        log.info(
+            "HF_ENDPOINT_AUTO_SELECTED=%s",
+            selected[0]
+        )
+
+        return selected
+
+    # --------------------------------------------------------
+    # 3. Only one named endpoint
+    # --------------------------------------------------------
+
+    if len(named_endpoints) == 1:
+
+        selected = next(
+            iter(
+                named_endpoints.items()
+            )
+        )
+
+        log.info(
+            "HF_ENDPOINT_ONLY_NAMED=%s",
+            selected[0]
+        )
+
+        return selected
+
+    # --------------------------------------------------------
+    # 4. Multiple endpoints but no clear match
+    # --------------------------------------------------------
+
+    available = list(
+        named_endpoints.keys()
+    )
+
+    raise RuntimeError(
+        "Could not automatically choose a Hugging Face "
+        f"video endpoint. Available endpoints: {available}"
+    )
+
+
+# ============================================================
+# NORMALIZE LABEL
+# ============================================================
+
+def normalize_label(
+    value
+):
 
     if value is None:
         return ""
@@ -411,57 +716,9 @@ def normalize_label(value):
     ).strip("_")
 
 
-def get_api_schema(client):
-
-    try:
-
-        info = client.view_api()
-
-        log.info(
-            "HF_API_SCHEMA_RECEIVED"
-        )
-
-        return info
-
-    except Exception as e:
-
-        raise RuntimeError(
-            f"Could not read Hugging Face API schema: {e}"
-        )
-
-
-def extract_generate_dependency(api_info):
-
-    found = []
-
-    def walk(obj):
-
-        if isinstance(obj, dict):
-
-            api_name = (
-                obj.get("api_name")
-                or obj.get("endpoint")
-                or obj.get("name")
-            )
-
-            if api_name == HF_API_NAME:
-                found.append(obj)
-
-            for value in obj.values():
-                walk(value)
-
-        elif isinstance(obj, list):
-
-            for value in obj:
-                walk(value)
-
-    walk(api_info)
-
-    if found:
-        return found[0]
-
-    return None
-
+# ============================================================
+# PARAMETER VALUE BUILDER
+# ============================================================
 
 def choose_value_from_parameter(
     parameter,
@@ -469,17 +726,45 @@ def choose_value_from_parameter(
     negative_prompt
 ):
 
-    if not isinstance(parameter, dict):
+    if not isinstance(
+        parameter,
+        dict
+    ):
+
         return ""
 
-    label = " ".join([
-        str(parameter.get("label", "")),
-        str(parameter.get("name", "")),
-        str(parameter.get("parameter_name", "")),
-        str(parameter.get("display_name", ""))
-    ])
+    label = " ".join(
+        [
+            str(
+                parameter.get(
+                    "label",
+                    ""
+                )
+            ),
+            str(
+                parameter.get(
+                    "name",
+                    ""
+                )
+            ),
+            str(
+                parameter.get(
+                    "parameter_name",
+                    ""
+                )
+            ),
+            str(
+                parameter.get(
+                    "display_name",
+                    ""
+                )
+            )
+        ]
+    )
 
-    normalized = normalize_label(label)
+    normalized = normalize_label(
+        label
+    )
 
     # --------------------------------------------------------
     # NEGATIVE PROMPT
@@ -489,6 +774,7 @@ def choose_value_from_parameter(
         "negative" in normalized
         or "negative_prompt" in normalized
     ):
+
         return negative_prompt
 
     # --------------------------------------------------------
@@ -498,7 +784,12 @@ def choose_value_from_parameter(
     if (
         "prompt" in normalized
         or "description" in normalized
+        or normalized in (
+            "text",
+            "input"
+        )
     ):
+
         return prompt
 
     # --------------------------------------------------------
@@ -516,16 +807,26 @@ def choose_value_from_parameter(
             "",
             []
         ):
+
             return default
 
         choices = parameter.get(
             "choices"
         )
 
-        if isinstance(choices, list) and choices:
+        if (
+            isinstance(
+                choices,
+                list
+            )
+            and choices
+        ):
+
             return choices[0]
 
-        return "Wan 2.1 T2V 1.3B"
+        return (
+            "Wan 2.1 T2V 1.3B"
+        )
 
     # --------------------------------------------------------
     # DURATION
@@ -534,8 +835,8 @@ def choose_value_from_parameter(
     if (
         "duration" in normalized
         or "seconds" in normalized
-        or normalized == "length"
     ):
+
         return SHOT_DURATION
 
     # --------------------------------------------------------
@@ -545,7 +846,9 @@ def choose_value_from_parameter(
     if (
         normalized == "fps"
         or "frame_rate" in normalized
+        or "framerate" in normalized
     ):
+
         return 16
 
     # --------------------------------------------------------
@@ -553,6 +856,7 @@ def choose_value_from_parameter(
     # --------------------------------------------------------
 
     if "width" in normalized:
+
         return 480
 
     # --------------------------------------------------------
@@ -560,6 +864,7 @@ def choose_value_from_parameter(
     # --------------------------------------------------------
 
     if "height" in normalized:
+
         return 832
 
     # --------------------------------------------------------
@@ -567,6 +872,14 @@ def choose_value_from_parameter(
     # --------------------------------------------------------
 
     if "seed" in normalized:
+
+        default = parameter.get(
+            "default"
+        )
+
+        if default is not None:
+            return default
+
         return -1
 
     # --------------------------------------------------------
@@ -625,7 +938,7 @@ def choose_value_from_parameter(
         return 81
 
     # --------------------------------------------------------
-    # BOOLEAN
+    # CHECKBOX
     # --------------------------------------------------------
 
     component = str(
@@ -650,7 +963,10 @@ def choose_value_from_parameter(
     # --------------------------------------------------------
 
     if "default" in parameter:
-        return parameter["default"]
+
+        return parameter[
+            "default"
+        ]
 
     # --------------------------------------------------------
     # CHOICES
@@ -660,47 +976,73 @@ def choose_value_from_parameter(
         "choices"
     )
 
-    if isinstance(choices, list) and choices:
+    if (
+        isinstance(
+            choices,
+            list
+        )
+        and choices
+    ):
+
         return choices[0]
+
+    # --------------------------------------------------------
+    # UNKNOWN
+    # --------------------------------------------------------
 
     return ""
 
 
+# ============================================================
+# BUILD API ARGUMENTS
+# ============================================================
+
 def build_generate_arguments(
-    api_info,
+    endpoint_info,
     prompt,
     negative_prompt
 ):
 
-    dependency = extract_generate_dependency(
-        api_info
-    )
-
-    if dependency is None:
+    if not isinstance(
+        endpoint_info,
+        dict
+    ):
 
         raise RuntimeError(
-            f"Could not find Hugging Face endpoint "
-            f"{HF_API_NAME} in API schema."
+            "Invalid Hugging Face endpoint information."
         )
 
-    log.info(
-        "HF_GENERATE_DEPENDENCY_FOUND"
-    )
-
     parameters = (
-        dependency.get("parameters")
-        or dependency.get("inputs")
-        or dependency.get("input_components")
-        or []
+        endpoint_info.get(
+            "parameters",
+            []
+        )
     )
 
-    if not isinstance(parameters, list):
+    if not isinstance(
+        parameters,
+        list
+    ):
 
         parameters = []
 
+    log.info(
+        "HF_PARAMETER_COUNT=%s",
+        len(parameters)
+    )
+
+    if not parameters:
+
+        raise RuntimeError(
+            "Hugging Face endpoint has no parameters."
+        )
+
     args = []
 
-    for parameter in parameters:
+    for index, parameter in enumerate(
+        parameters,
+        start=1
+    ):
 
         value = choose_value_from_parameter(
             parameter,
@@ -708,48 +1050,52 @@ def build_generate_arguments(
             negative_prompt
         )
 
-        # SECURITY:
-        # Do not print parameter values.
-        log.info(
-            "HF_ARG label=%s",
+        label = parameter.get(
+            "label",
             parameter.get(
-                "label",
-                parameter.get(
-                    "parameter_name",
-                    ""
-                )
+                "parameter_name",
+                f"parameter_{index}"
             )
         )
 
-        args.append(value)
+        log.info(
+            "HF_PARAMETER_%s=%s",
+            index,
+            label
+        )
 
-    if not args:
-
-        raise RuntimeError(
-            "Hugging Face /generate endpoint "
-            "returned no input parameters."
+        args.append(
+            value
         )
 
     return args
 
 
 # ============================================================
-# EXTRACT GENERATED VIDEO
+# FIND VIDEO RESULT
 # ============================================================
 
-def find_video_value(value):
+def find_video_value(
+    value
+):
 
     if value is None:
         return None
 
-    if isinstance(value, str):
+    if isinstance(
+        value,
+        str
+    ):
 
         lower = value.lower()
 
-        if (
-            lower.startswith("http://")
-            or lower.startswith("https://")
+        if lower.startswith(
+            (
+                "http://",
+                "https://"
+            )
         ):
+
             return value
 
         if lower.endswith(
@@ -761,11 +1107,15 @@ def find_video_value(value):
                 ".mkv"
             )
         ):
+
             return value
 
         return None
 
-    if isinstance(value, dict):
+    if isinstance(
+        value,
+        dict
+    ):
 
         for key in (
             "video",
@@ -778,8 +1128,10 @@ def find_video_value(value):
 
             if key in value:
 
-                result = find_video_value(
-                    value[key]
+                result = (
+                    find_video_value(
+                        value[key]
+                    )
                 )
 
                 if result:
@@ -787,8 +1139,10 @@ def find_video_value(value):
 
         for item in value.values():
 
-            result = find_video_value(
-                item
+            result = (
+                find_video_value(
+                    item
+                )
             )
 
             if result:
@@ -796,38 +1150,78 @@ def find_video_value(value):
 
         return None
 
-    if isinstance(value, (list, tuple)):
+    if isinstance(
+        value,
+        (list, tuple)
+    ):
 
         for item in value:
 
-            result = find_video_value(
-                item
+            result = (
+                find_video_value(
+                    item
+                )
             )
 
             if result:
                 return result
 
+    # Handle Gradio FileData-like objects
+    for attribute in (
+        "path",
+        "url",
+        "name"
+    ):
+
+        try:
+
+            candidate = getattr(
+                value,
+                attribute,
+                None
+            )
+
+            if candidate:
+
+                result = (
+                    find_video_value(
+                        candidate
+                    )
+                )
+
+                if result:
+                    return result
+
+        except Exception:
+            pass
+
     return None
 
+
+# ============================================================
+# DOWNLOAD VIDEO RESULT
+# ============================================================
 
 def download_video_result(
     result,
     output_path
 ):
 
-    video_value = find_video_value(
-        result
+    video_value = (
+        find_video_value(
+            result
+        )
     )
 
     if not video_value:
 
         raise RuntimeError(
-            "Hugging Face generated a response, "
+            "Hugging Face returned a result, "
             "but no video file was found."
         )
 
     log.info(
-        "HF_VIDEO_RESULT_RECEIVED"
+        "HF_VIDEO_RESULT_RECEIVED=True"
     )
 
     # --------------------------------------------------------
@@ -835,9 +1229,15 @@ def download_video_result(
     # --------------------------------------------------------
 
     if (
-        isinstance(video_value, str)
+        isinstance(
+            video_value,
+            str
+        )
         and video_value.startswith(
-            ("http://", "https://")
+            (
+                "http://",
+                "https://"
+            )
         )
     ):
 
@@ -864,7 +1264,7 @@ def download_video_result(
         return output_path
 
     # --------------------------------------------------------
-    # Local file
+    # LOCAL FILE
     # --------------------------------------------------------
 
     source = Path(
@@ -887,7 +1287,7 @@ def download_video_result(
 
 
 # ============================================================
-# HUGGING FACE VIDEO GENERATOR
+# AI VIDEO GENERATOR
 # ============================================================
 
 def generate_ai_video(
@@ -949,26 +1349,60 @@ blurry, static image
         "HF_VIDEO_GENERATION_START"
     )
 
+    # --------------------------------------------------------
+    # CONNECT
+    # --------------------------------------------------------
+
     client = get_hf_client()
+
+    # --------------------------------------------------------
+    # READ API
+    # --------------------------------------------------------
 
     api_info = get_api_schema(
         client
     )
 
+    # --------------------------------------------------------
+    # RESOLVE ENDPOINT
+    # --------------------------------------------------------
+
+    endpoint_name, endpoint_info = (
+        resolve_endpoint(
+            api_info
+        )
+    )
+
+    log.info(
+        "HF_GENERATE_ENDPOINT=%s",
+        endpoint_name
+    )
+
+    # --------------------------------------------------------
+    # BUILD ARGUMENTS
+    # --------------------------------------------------------
+
     args = build_generate_arguments(
-        api_info,
+        endpoint_info,
         final_prompt.strip(),
         negative_prompt.strip()
     )
 
     log.info(
-        "HF_GENERATE_START args_count=%s",
+        "HF_GENERATE_ARGUMENT_COUNT=%s",
         len(args)
     )
 
+    # --------------------------------------------------------
+    # GENERATION
+    # --------------------------------------------------------
+
     last_error = None
 
-    for attempt in range(1, 3):
+    for attempt in range(
+        1,
+        3
+    ):
 
         try:
 
@@ -979,7 +1413,7 @@ blurry, static image
 
             result = client.predict(
                 *args,
-                api_name=HF_API_NAME
+                api_name=endpoint_name
             )
 
             log.info(
@@ -997,7 +1431,9 @@ blurry, static image
                     "Hugging Face video was not created."
                 )
 
-            size = output_path.stat().st_size
+            size = (
+                output_path.stat().st_size
+            )
 
             log.info(
                 "HF_VIDEO_FILE_SIZE=%s",
@@ -1020,33 +1456,31 @@ blurry, static image
 
             last_error = e
 
-            error_text = str(e)
-
-            if HF_TOKEN:
-                error_text = error_text.replace(
-                    HF_TOKEN,
-                    "[REDACTED]"
-                )
-
             log.error(
                 "HF_VIDEO_ATTEMPT_FAILED=%s",
-                error_text
+                safe_error_text(e)
             )
 
             if attempt < 2:
 
                 time.sleep(
-                    5 * attempt
+                    5
                 )
 
                 try:
-                    client = get_hf_client()
+
+                    client = (
+                        get_hf_client()
+                    )
+
                 except Exception:
                     pass
 
     raise RuntimeError(
-        f"Hugging Face video generation failed: "
-        f"{last_error}"
+        "Hugging Face video generation failed: "
+        + safe_error_text(
+            last_error
+        )
     )
 
 
@@ -1168,11 +1602,12 @@ def concat_videos(
 
         for video in video_files:
 
-            safe_path = str(
-                video
-            ).replace(
-                "'",
-                "'\\''"
+            safe_path = (
+                str(video)
+                .replace(
+                    "'",
+                    "'\\''"
+                )
             )
 
             f.write(
@@ -1251,7 +1686,7 @@ def add_audio(
 
 
 # ============================================================
-# MAIN VIDEO PIPELINE
+# BUILD REEL
 # ============================================================
 
 def build_reel(
@@ -1275,12 +1710,19 @@ def build_reel(
     # 1. STORYBOARD
     # --------------------------------------------------------
 
-    storyboard = create_storyboard(
-        story
+    storyboard = (
+        create_storyboard(
+            story
+        )
     )
 
-    narration = storyboard["narration"]
-    shots = storyboard["shots"]
+    narration = (
+        storyboard["narration"]
+    )
+
+    shots = (
+        storyboard["shots"]
+    )
 
     log.info(
         "STORYBOARD_READY shots=%s",
@@ -1323,7 +1765,7 @@ def build_reel(
     )
 
     # --------------------------------------------------------
-    # 3. AI VIDEOS
+    # 3. VIDEO SCENES
     # --------------------------------------------------------
 
     normalized_videos = []
@@ -1382,9 +1824,11 @@ def build_reel(
         )
 
         try:
+
             raw_video.unlink(
                 missing_ok=True
             )
+
         except Exception:
             pass
 
@@ -1429,7 +1873,7 @@ def build_reel(
     )
 
     # --------------------------------------------------------
-    # 6. CHECK
+    # 6. FINAL CHECK
     # --------------------------------------------------------
 
     if not final_video.exists():
@@ -1469,7 +1913,7 @@ def build_reel(
 
 
 # ============================================================
-# TELEGRAM HANDLER
+# TELEGRAM /START
 # ============================================================
 
 async def start_command(
@@ -1485,6 +1929,10 @@ async def start_command(
         "ابعتلي قصة وأنا أحولها إلى Reel."
     )
 
+
+# ============================================================
+# TELEGRAM STORY HANDLER
+# ============================================================
 
 async def handle_story(
     update: Update,
@@ -1546,17 +1994,20 @@ async def handle_story(
 
         await update.message.reply_text(
             "📝 استلمت القصة.\n\n"
-            "🎬 جاري تحويلها إلى فيلم قصير..."
+            f"🎬 جاري إنشاء {SHOT_COUNT} "
+            "مشهد تجريبي..."
         )
 
-        final_video = await asyncio.to_thread(
-            build_reel,
-            story,
-            job_dir
+        final_video = (
+            await asyncio.to_thread(
+                build_reel,
+                story,
+                job_dir
+            )
         )
 
         await update.message.reply_text(
-            "🚀 خلص الفيلم! جاري إرساله..."
+            "🚀 خلص الفيديو! جاري إرساله..."
         )
 
         with open(
@@ -1589,13 +2040,9 @@ async def handle_story(
             type(e).__name__
         )
 
-        error_message = str(e)
-
-        if HF_TOKEN:
-            error_message = error_message.replace(
-                HF_TOKEN,
-                "[REDACTED]"
-            )
+        error_message = (
+            safe_error_text(e)
+        )
 
         log.error(
             "ERROR_MESSAGE=%s",
@@ -1603,13 +2050,26 @@ async def handle_story(
         )
 
         log.error(
+            "TRACEBACK_START"
+        )
+
+        log.error(
             traceback.format_exc()
         )
 
-        message = error_message
+        log.error(
+            "TRACEBACK_END"
+        )
+
+        message = (
+            error_message
+        )
 
         if len(message) > 1500:
-            message = message[:1500]
+
+            message = (
+                message[:1500]
+            )
 
         try:
 
@@ -1654,17 +2114,13 @@ async def telegram_error_handler(
 
     error = context.error
 
-    error_text = str(error)
-
-    if HF_TOKEN:
-        error_text = error_text.replace(
-            HF_TOKEN,
-            "[REDACTED]"
-        )
-
     log.error(
         "TELEGRAM_HANDLER_ERROR=%s",
-        error_text
+        safe_error_text(error)
+    )
+
+    log.error(
+        traceback.format_exc()
     )
 
 
@@ -1687,7 +2143,7 @@ def main():
     )
 
     # --------------------------------------------------------
-    # ENV VALIDATION
+    # ENV CHECK
     # --------------------------------------------------------
 
     if not BOT_TOKEN:
@@ -1725,14 +2181,27 @@ def main():
         HF_SPACE
     )
 
-    log.info(
-        "HF_API_NAME=%s",
-        HF_API_NAME
-    )
+    if HF_API_NAME:
+
+        log.info(
+            "HF_API_NAME_CONFIGURED=%s",
+            HF_API_NAME
+        )
+
+    else:
+
+        log.info(
+            "HF_API_NAME_MODE=AUTO_DISCOVERY"
+        )
 
     log.info(
         "SHOT_COUNT=%s",
         SHOT_COUNT
+    )
+
+    log.info(
+        "SHOT_DURATION=%s",
+        SHOT_DURATION
     )
 
     # --------------------------------------------------------
@@ -1757,7 +2226,9 @@ def main():
     app = (
         Application
         .builder()
-        .token(BOT_TOKEN)
+        .token(
+            BOT_TOKEN
+        )
         .build()
     )
 
@@ -1805,17 +2276,9 @@ if __name__ == "__main__":
 
     except Exception as e:
 
-        error_text = str(e)
-
-        if HF_TOKEN:
-            error_text = error_text.replace(
-                HF_TOKEN,
-                "[REDACTED]"
-            )
-
         log.error(
             "FATAL_ERROR=%s",
-            error_text
+            safe_error_text(e)
         )
 
         log.error(
