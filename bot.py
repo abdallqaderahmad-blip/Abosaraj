@@ -87,6 +87,9 @@ FINAL_WIDTH = 720
 FINAL_HEIGHT = 1280
 
 # Wan generation resolution
+# NOTE:
+# We keep production at 576x832.
+# TEST5.1 temporarily uses 480x832 only.
 GEN_WIDTH = 576
 GEN_HEIGHT = 832
 
@@ -180,14 +183,12 @@ def safe_error_text(error):
                 "[REDACTED]"
             )
 
-    # Hide HF tokens
     text = re.sub(
         r"hf_[A-Za-z0-9]+",
         "[HF_TOKEN_REDACTED]",
         text
     )
 
-    # Hide Telegram bot token-looking strings
     text = re.sub(
         r"\b\d{8,12}:[A-Za-z0-9_-]{20,}\b",
         "[BOT_TOKEN_REDACTED]",
@@ -1300,7 +1301,7 @@ async def hf_test4_command(
 
 
 # =========================================================
-# TEST 5 — PRODUCTION WAN TEST
+# TEST 5.1 — PRODUCTION WAN TEST
 # =========================================================
 
 async def hf_test5_command(
@@ -1315,13 +1316,15 @@ async def hf_test5_command(
     )
 
     await update.message.reply_text(
-        "🚀 TEST5 بدأ...\n\n"
-        "هذا اختبار Wan الحقيقي بإعدادات الإنتاج:\n"
-        "📐 576×832\n"
+        "🚀 TEST5.1 بدأ...\n\n"
+        "هذا اختبار Wan بإعدادات أقرب للإنتاج:\n"
+        "📐 480×832\n"
         "🎞️ 81 frames\n"
         "⚙️ 20 steps\n"
-        "🎮 wan-base\n\n"
-        "هذا الاختبار مهم لأنه سيعطينا استهلاك GPU الحقيقي تقريبًا لفيديو 5 ثواني.\n\n"
+        "🎮 wan-base\n"
+        "🧩 LoRA: 1.0\n\n"
+        "هذا الاختبار مهم لأنه سيبين لنا هل Wan يستطيع "
+        "توليد فيديو رأسي طويل نسبيًا بهذه الإعدادات.\n\n"
         "استنى شوي 🎬"
     )
 
@@ -1357,18 +1360,24 @@ async def hf_test5_command(
             "unnatural motion, flickering, camera shake"
         )
 
-        # Exact production test arguments
+        # =================================================
+        # TEST5.1
+        #
+        # Only this test uses 480x832.
+        # Production GEN_WIDTH remains 576.
+        # =================================================
+
         args = [
             "wan-base",
             test_prompt,
             negative_prompt,
-            576,
+            480,
             832,
             81,
             20,
             5.0,
             0,
-            None,
+            1.0,
             None
         ]
 
@@ -1386,7 +1395,7 @@ async def hf_test5_command(
         )
 
         log.warning(
-            "HFT_TEST5_WIDTH=576"
+            "HFT_TEST5_WIDTH=480"
         )
 
         log.warning(
@@ -1419,7 +1428,7 @@ async def hf_test5_command(
         )
 
         log.warning(
-            "HFT_TEST5_LORA=None"
+            "HFT_TEST5_LORA=1.0"
         )
 
         log.warning(
@@ -1431,16 +1440,67 @@ async def hf_test5_command(
         )
 
         # ---------------------------------------------
+        # Log actual arguments safely
+        # ---------------------------------------------
+
+        for index, value in enumerate(args):
+            if index == 1:
+                log.warning(
+                    "HFT_TEST5_ARG_%s=<PROMPT>",
+                    index
+                )
+
+            elif index == 2:
+                log.warning(
+                    "HFT_TEST5_ARG_%s=<NEGATIVE_PROMPT>",
+                    index
+                )
+
+            else:
+                log.warning(
+                    "HFT_TEST5_ARG_%s=%r",
+                    index,
+                    value
+                )
+
+        # ---------------------------------------------
         # Generate
         # ---------------------------------------------
 
         predict_start = time.time()
 
-        result = await asyncio.to_thread(
-            client.predict,
-            *args,
-            api_name=api_name
-        )
+        try:
+            result = await asyncio.to_thread(
+                client.predict,
+                *args,
+                api_name=api_name
+            )
+
+        except Exception as predict_error:
+            predict_elapsed = (
+                time.time()
+                - predict_start
+            )
+
+            error = safe_error_text(
+                predict_error
+            )
+
+            log.error(
+                "HFT_TEST5_PREDICT_ERROR=%s",
+                error,
+                exc_info=True
+            )
+
+            log.warning(
+                "HFT_TEST5_PREDICT_FAILED_SECONDS=%.2f",
+                predict_elapsed
+            )
+
+            raise RuntimeError(
+                "HF_TEST5_PREDICT_FAILED: "
+                + error
+            )
 
         predict_elapsed = (
             time.time()
@@ -1538,7 +1598,7 @@ async def hf_test5_command(
             )
 
             await update.message.reply_text(
-                "❌ TEST5 رجع نتيجة، لكن ما لقيت ملف فيديو.\n\n"
+                "❌ TEST5.1 رجع نتيجة، لكن ما لقيت ملف فيديو.\n\n"
                 f"⏱ زمن الطلب: {predict_elapsed:.2f}s\n"
                 f"🎮 GPU: "
                 + (
@@ -1637,13 +1697,14 @@ async def hf_test5_command(
             )
 
         caption = (
-            "🚀 TEST5 نجح 🎬🔥\n\n"
-            "📐 الدقة: 576×832\n"
+            "🚀 TEST5.1 نجح 🎬🔥\n\n"
+            "📐 الدقة: 480×832\n"
             "🎞️ الفريمات: 81\n"
             "🎬 مدة الفيديو: "
             f"{video_duration:.2f}s\n"
             "⚙️ Steps: 20\n"
-            "🤖 Model: wan-base\n\n"
+            "🤖 Model: wan-base\n"
+            "🧩 LoRA: 1.0\n\n"
             f"🎮 GPU: {gpu_text}\n"
             f"⏱ زمن الطلب: {predict_elapsed:.2f}s\n"
             f"⏱ الإجمالي: {total:.2f}s\n"
@@ -1687,7 +1748,7 @@ async def hf_test5_command(
         )
 
         await update.message.reply_text(
-            "❌ TEST5 فشل.\n\n"
+            "❌ TEST5.1 فشل.\n\n"
             + error[:1800]
             + f"\n\n⏱ الزمن: {total:.2f} ثانية\n\n"
             "إذا كان الخطأ من Wan، ابعتلي Logs التي تبدأ بـ HFT_TEST5_."
