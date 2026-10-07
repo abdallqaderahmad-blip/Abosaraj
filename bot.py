@@ -586,6 +586,12 @@ def resolve_endpoint(
 
             for endpoint in endpoints:
 
+                if not isinstance(
+                    endpoint,
+                    dict
+                ):
+                    continue
+
                 name = endpoint.get(
                     "api_name",
                     ""
@@ -1519,10 +1525,10 @@ async def start_command(
 
 
 # =========================================================
-# HF DEEP TEST 3
+# HF API TEST 3
 # =========================================================
 
-async def hf_test_command(
+async def hf_test3_command(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
 ):
@@ -1530,12 +1536,16 @@ async def hf_test_command(
     if not update.message:
         return
 
+    # =====================================================
+    # ASCII ONLY VERSION MARKERS
+    # =====================================================
+
     log.warning(
         "HFT_TEST3_START"
     )
 
     await update.message.reply_text(
-        "🧪 HFT_TEST3 بدأ الفحص العميق لـ Hugging Face..."
+        "🧪 فحص Hugging Face TEST3 بدأ..."
     )
 
     try:
@@ -1543,6 +1553,10 @@ async def hf_test_command(
         # =================================================
         # CREATE CLIENT
         # =================================================
+
+        log.warning(
+            "HFT_TEST3_BEFORE_CLIENT"
+        )
 
         client = get_hf_client()
 
@@ -1568,7 +1582,7 @@ async def hf_test_command(
             )
 
             log.warning(
-                "========== HFT_TEST3_CLIENT_DICT =========="
+                "HFT_TEST3_CLIENT_DICT_START"
             )
 
             if isinstance(
@@ -1578,48 +1592,30 @@ async def hf_test_command(
 
                 for key, value in client_dict.items():
 
-                    try:
+                    key_text = str(
+                        key
+                    ).lower()
 
-                        value_repr = repr(
-                            value
-                        )
+                    if any(
+                        secret_word in key_text
+                        for secret_word in [
+                            "token",
+                            "auth",
+                            "password",
+                            "secret"
+                        ]
+                    ):
 
-                        if len(
-                            value_repr
-                        ) > 3000:
+                        value = "[REDACTED]"
 
-                            value_repr = (
-                                value_repr[:3000]
-                                + "...[TRUNCATED]"
-                            )
-
-                        log.warning(
-                            "CLIENT_ATTR %s = %s",
-                            key,
-                            value_repr
-                        )
-
-                    except Exception as attr_error:
-
-                        log.warning(
-                            "CLIENT_ATTR_ERROR %s = %s",
-                            key,
-                            safe_error_text(
-                                attr_error
-                            )
-                        )
-
-            else:
-
-                log.warning(
-                    "CLIENT_DICT_TYPE=%s",
-                    type(
-                        client_dict
-                    ).__name__
-                )
+                    log.warning(
+                        "CLIENT_ATTR %s=%r",
+                        key,
+                        value
+                    )
 
             log.warning(
-                "========== HFT_TEST3_CLIENT_DICT_END =========="
+                "HFT_TEST3_CLIENT_DICT_END"
             )
 
         except Exception as e:
@@ -1631,44 +1627,33 @@ async def hf_test_command(
             )
 
         # =================================================
-        # VIEW API
+        # VIEW API RAW
         # =================================================
 
-        try:
+        log.warning(
+            "HFT_TEST3_VIEW_API_START"
+        )
 
-            log.warning(
-                "========== HFT_TEST3_VIEW_API_START =========="
-            )
+        try:
 
             api_result = client.view_api()
 
             log.warning(
                 "HFT_TEST3_VIEW_API_TYPE=%s",
-                type(
-                    api_result
-                ).__name__
+                type(api_result).__name__
             )
 
-            api_repr = repr(
+            log.warning(
+                "HFT_TEST3_VIEW_API_REPR_START"
+            )
+
+            log.warning(
+                "%r",
                 api_result
             )
 
-            if len(
-                api_repr
-            ) > 12000:
-
-                api_repr = (
-                    api_repr[:12000]
-                    + "...[TRUNCATED]"
-                )
-
             log.warning(
-                "HFT_TEST3_VIEW_API_RESULT=%s",
-                api_repr
-            )
-
-            log.warning(
-                "========== HFT_TEST3_VIEW_API_END =========="
+                "HFT_TEST3_VIEW_API_REPR_END"
             )
 
         except Exception as e:
@@ -1680,14 +1665,14 @@ async def hf_test_command(
             )
 
         # =================================================
-        # VIEW API AS DICT
+        # VIEW API DICT
         # =================================================
 
-        try:
+        log.warning(
+            "HFT_TEST3_DICT_START"
+        )
 
-            log.warning(
-                "========== HFT_TEST3_DICT_START =========="
-            )
+        try:
 
             api_dict = client.view_api(
                 return_format="dict"
@@ -1695,42 +1680,49 @@ async def hf_test_command(
 
             log.warning(
                 "HFT_TEST3_DICT_TYPE=%s",
-                type(
-                    api_dict
-                ).__name__
+                type(api_dict).__name__
             )
 
-            try:
+            if isinstance(
+                api_dict,
+                dict
+            ):
 
-                api_json = json.dumps(
+                log.warning(
+                    "HFT_TEST3_DICT_KEYS=%r",
+                    list(
+                        api_dict.keys()
+                    )
+                )
+
+                named = api_dict.get(
+                    "named_endpoints",
+                    {}
+                )
+
+                endpoints = api_dict.get(
+                    "endpoints",
+                    []
+                )
+
+                log.warning(
+                    "HFT_TEST3_NAMED_ENDPOINTS=%r",
+                    named
+                )
+
+                log.warning(
+                    "HFT_TEST3_ENDPOINTS=%r",
+                    endpoints
+                )
+
+            log.warning(
+                "HFT_TEST3_API_DICT_FULL=%s",
+                json.dumps(
                     api_dict,
                     ensure_ascii=False,
                     indent=2,
                     default=str
                 )
-
-            except Exception:
-
-                api_json = repr(
-                    api_dict
-                )
-
-            if len(
-                api_json
-            ) > 20000:
-
-                api_json = (
-                    api_json[:20000]
-                    + "...[TRUNCATED]"
-                )
-
-            log.warning(
-                "HFT_TEST3_API_DICT=%s",
-                api_json
-            )
-
-            log.warning(
-                "========== HFT_TEST3_DICT_END =========="
             )
 
         except Exception as e:
@@ -1741,15 +1733,19 @@ async def hf_test_command(
                 exc_info=True
             )
 
+        log.warning(
+            "HFT_TEST3_DICT_END"
+        )
+
         # =================================================
-        # ENDPOINTS
+        # CLIENT ENDPOINTS
         # =================================================
+
+        log.warning(
+            "HFT_TEST3_ENDPOINTS_START"
+        )
 
         try:
-
-            log.warning(
-                "========== HFT_TEST3_ENDPOINTS_START =========="
-            )
 
             endpoints = getattr(
                 client,
@@ -1759,81 +1755,12 @@ async def hf_test_command(
 
             log.warning(
                 "HFT_TEST3_ENDPOINTS_TYPE=%s",
-                type(
-                    endpoints
-                ).__name__
+                type(endpoints).__name__
             )
 
             log.warning(
                 "HFT_TEST3_ENDPOINTS_REPR=%r",
                 endpoints
-            )
-
-            if isinstance(
-                endpoints,
-                dict
-            ):
-
-                for endpoint_key, endpoint_value in endpoints.items():
-
-                    log.warning(
-                        "ENDPOINT_KEY=%r",
-                        endpoint_key
-                    )
-
-                    log.warning(
-                        "ENDPOINT_TYPE=%s",
-                        type(
-                            endpoint_value
-                        ).__name__
-                    )
-
-                    endpoint_dict = getattr(
-                        endpoint_value,
-                        "__dict__",
-                        None
-                    )
-
-                    if isinstance(
-                        endpoint_dict,
-                        dict
-                    ):
-
-                        for key, value in endpoint_dict.items():
-
-                            try:
-
-                                value_repr = repr(
-                                    value
-                                )
-
-                                if len(
-                                    value_repr
-                                ) > 5000:
-
-                                    value_repr = (
-                                        value_repr[:5000]
-                                        + "...[TRUNCATED]"
-                                    )
-
-                                log.warning(
-                                    "ENDPOINT_ATTR %s = %s",
-                                    key,
-                                    value_repr
-                                )
-
-                            except Exception as attr_error:
-
-                                log.warning(
-                                    "ENDPOINT_ATTR_ERROR %s = %s",
-                                    key,
-                                    safe_error_text(
-                                        attr_error
-                                    )
-                                )
-
-            log.warning(
-                "========== HFT_TEST3_ENDPOINTS_END =========="
             )
 
         except Exception as e:
@@ -1844,8 +1771,12 @@ async def hf_test_command(
                 exc_info=True
             )
 
+        log.warning(
+            "HFT_TEST3_ENDPOINTS_END"
+        )
+
         # =================================================
-        # CONFIG
+        # SPACE SETTINGS
         # =================================================
 
         log.warning(
@@ -1859,13 +1790,31 @@ async def hf_test_command(
         )
 
         log.warning(
+            "HFT_TEST3_SHOT_COUNT=%s",
+            SHOT_COUNT
+        )
+
+        log.warning(
+            "HFT_TEST3_SHOT_DURATION=%s",
+            SHOT_DURATION
+        )
+
+        # =================================================
+        # FINISHED
+        # =================================================
+
+        log.warning(
             "HFT_TEST3_FINISHED"
         )
 
         await update.message.reply_text(
             "✅ HFT_TEST3 خلص.\n\n"
-            "افتح Render Logs وابحث عن:\n"
-            "HFT_TEST3"
+            "هسا افتح Render Logs وابحث عن:\n"
+            "HFT_TEST3_START\n\n"
+            "وابعتلي كل السطور من "
+            "HFT_TEST3_START "
+            "إلى "
+            "HFT_TEST3_FINISHED"
         )
 
     except Exception as e:
@@ -1878,6 +1827,10 @@ async def hf_test_command(
             "HFT_TEST3_FATAL_ERROR=%s",
             error,
             exc_info=True
+        )
+
+        log.warning(
+            "HFT_TEST3_FINISHED_WITH_ERROR"
         )
 
         await update.message.reply_text(
@@ -1991,13 +1944,13 @@ def telegram_loop_worker():
     )
 
     # =====================================================
-    # HFT TEST COMMAND
+    # HFT TEST 3
     # =====================================================
 
     telegram_application.add_handler(
         CommandHandler(
-            "hftest2",
-            hf_test_command
+            "hftest3",
+            hf_test3_command
         )
     )
 
@@ -2199,6 +2152,11 @@ def main():
     log.info(
         "WEBHOOK_PATH=%s",
         WEBHOOK_PATH
+    )
+
+    log.info(
+        "HF_SPACE=%s",
+        HF_SPACE
     )
 
     check_telegram_connection()
