@@ -6,14 +6,12 @@ import asyncio
 import logging
 import subprocess
 import threading
-
 from pathlib import Path
 from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor
 
 import requests
 import edge_tts
-import fal_client
 
 from flask import Flask
 from groq import Groq
@@ -33,7 +31,6 @@ from telegram.ext import (
 # =========================================================
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
 GROQ_MODEL = os.getenv(
@@ -41,33 +38,25 @@ GROQ_MODEL = os.getenv(
     "llama-3.3-70b-versatile"
 )
 
-FAL_KEY = os.getenv("FAL_KEY")
+POLLINATIONS_API_KEY = os.getenv(
+    "POLLINATIONS_API_KEY"
+)
 
-FAL_MODEL = os.getenv(
-    "FAL_MODEL",
-    "fal-ai/hunyuan-image/v3/text-to-image"
+POLLINATIONS_MODEL = os.getenv(
+    "POLLINATIONS_MODEL",
+    "flux"
 )
 
 
 # =========================================================
-# VIDEO SETTINGS
+# VIDEO
 # =========================================================
 
 FINAL_WIDTH = 720
 FINAL_HEIGHT = 1280
 FPS = 30
 
-# =========================================================
-# مهم:
-#
-# أول اختبار = 2 مشاهد فقط
-#
-# بعد نجاح أول فيديو:
-#
-# SCENE_COUNT = 8
-#
-# =========================================================
-
+# أول اختبار
 SCENE_COUNT = 2
 
 MIN_VIDEO_SECONDS = 60
@@ -77,20 +66,15 @@ VOICE = "ar-SA-HamedNeural"
 
 
 # =========================================================
-# WORK DIRECTORY
+# WORK
 # =========================================================
 
 WORK_DIR = Path("/tmp/abosaraj")
-
 WORK_DIR.mkdir(
     parents=True,
     exist_ok=True
 )
 
-
-# =========================================================
-# THREADING
-# =========================================================
 
 executor = ThreadPoolExecutor(
     max_workers=1
@@ -118,17 +102,15 @@ app = Flask(__name__)
 
 @app.route("/")
 def home():
-
     return "Abosaraj Story Video Engine is alive"
 
 
 @app.route("/health")
 def health():
-
     return {
         "status": "ok",
-        "version": "story-images-v1",
-        "video_engine": "Hunyuan Image + FFmpeg",
+        "version": "story-pollinations-v1",
+        "video_engine": "Pollinations Image + FFmpeg",
         "scenes": SCENE_COUNT,
         "width": FINAL_WIDTH,
         "height": FINAL_HEIGHT
@@ -138,10 +120,7 @@ def health():
 def run_flask():
 
     port = int(
-        os.getenv(
-            "PORT",
-            "10000"
-        )
+        os.getenv("PORT", "10000")
     )
 
     app.run(
@@ -165,21 +144,18 @@ def check_environment():
     if not GROQ_API_KEY:
         missing.append("GROQ_API_KEY")
 
-    if not FAL_KEY:
-        missing.append("FAL_KEY")
+    if not POLLINATIONS_API_KEY:
+        missing.append("POLLINATIONS_API_KEY")
 
     if missing:
-
         raise RuntimeError(
             "Missing environment variables: "
             + ", ".join(missing)
         )
 
-    os.environ["FAL_KEY"] = FAL_KEY
-
     logger.info(
-        "FAL model: %s",
-        FAL_MODEL
+        "Pollinations model: %s",
+        POLLINATIONS_MODEL
     )
 
     logger.info(
@@ -218,18 +194,16 @@ def create_story_plan(story):
 أنت مخرج محترف لفيديوهات القصص القصيرة
 المخصصة لـ TikTok وReels وYouTube Shorts.
 
-حوّل القصة التي سأعطيك إياها إلى فيديو
-سينمائي مدته بين دقيقة ودقيقتين.
+حوّل القصة التالية إلى فيديو سينمائي
+مدته بين دقيقة ودقيقتين.
 
 أريد بالضبط {SCENE_COUNT} مشاهد.
 
-كل مشهد سيصبح صورة سينمائية واحدة،
+كل مشهد سيصبح صورة واحدة،
 ثم سيتم تحريك الصورة بواسطة FFmpeg
 بحركة Zoom وPan سينمائية.
 
-أريد JSON فقط.
-
-الشكل:
+أريد JSON فقط بهذا الشكل:
 
 {{
   "title": "عنوان عربي قصير ومثير",
@@ -248,28 +222,23 @@ def create_story_plan(story):
 
 - narration بين 150 و260 كلمة تقريبًا.
 - يبدأ النص مباشرة بـ Hook قوي.
-- لا تضع مقدمة فارغة.
-- القصة يجب أن تتطور من البداية للنهاية.
-- المشهد الأول يجب أن يجذب المشاهد فورًا.
-- المشهد الأخير يجب أن يحتوي على نتيجة أو Twist
-  أو سؤال قوي عندما يناسب القصة.
-- كل مشهد يجب أن يضيف معلومة أو تطورًا جديدًا.
+- لا توجد مقدمة فارغة.
+- القصة تتطور من البداية للنهاية.
+- كل مشهد يضيف تطورًا جديدًا.
 - لا تكرر نفس الصورة.
-- لا تكرر نفس زاوية الكاميرا في كل المشاهد.
+- لا تكرر نفس زاوية الكاميرا.
+- حافظ على شكل الشخصيات بين المشاهد.
+- اجعل المشاهد مناسبة للفيديو العمودي 9:16.
 
-إذا ظهر شخص رئيسي:
-حافظ على نفس العمر والجنس والملابس
-والملامح والمظهر قدر الإمكان بين المشاهد.
+استخدم في الصور:
 
-استخدم:
-
-realistic cinematic photography,
 photorealistic,
-cinematic lighting,
+cinematic photography,
 realistic human anatomy,
 realistic facial expressions,
-realistic environment,
+cinematic lighting,
 dramatic atmosphere,
+realistic environment,
 vertical composition.
 
 كل image_prompt يجب أن يحتوي على:
@@ -284,19 +253,16 @@ vertical composition.
 
 ممنوع:
 
-- text
-- subtitles
-- logos
-- watermark
-- Arabic writing inside image
-- posters
-- UI
-- gore
-- excessive blood
+text
+subtitles
+logos
+watermark
+Arabic writing
+UI
+gore
+excessive blood
 
 image_prompt باللغة الإنجليزية فقط.
-
-اترك مساحة مناسبة أسفل الصورة للـcaptions.
 
 القصة:
 
@@ -344,7 +310,6 @@ image_prompt باللغة الإنجليزية فقط.
     )
 
     try:
-
         data = json.loads(content)
 
     except Exception:
@@ -371,10 +336,7 @@ image_prompt باللغة الإنجليزية فقط.
         )
 
     narration = (
-        data.get(
-            "narration",
-            ""
-        )
+        data.get("narration", "")
         .strip()
     )
 
@@ -385,15 +347,11 @@ image_prompt باللغة الإنجليزية فقط.
         )
 
     title = (
-        data.get(
-            "title",
-            "قصة جديدة"
-        )
+        data.get("title", "قصة جديدة")
         .strip()
     )
 
     if not title:
-
         title = "قصة جديدة"
 
     data["title"] = title
@@ -402,7 +360,7 @@ image_prompt باللغة الإنجليزية فقط.
 
 
 # =========================================================
-# FAL HUNYUAN IMAGE
+# POLLINATIONS IMAGE
 # =========================================================
 
 def generate_image(
@@ -412,16 +370,7 @@ def generate_image(
 ):
 
     logger.info(
-        "Generating image using %s",
-        FAL_MODEL
-    )
-
-    negative_prompt = (
-        "text, subtitles, logo, watermark, "
-        "signature, UI, poster, distorted face, "
-        "bad anatomy, extra fingers, deformed hands, "
-        "blurry, low quality, duplicate person, "
-        "gore, excessive blood"
+        "Generating image with Pollinations..."
     )
 
     enhanced_prompt = (
@@ -430,114 +379,104 @@ def generate_image(
         "vertical 9:16 cinematic composition, "
         "photorealistic, highly detailed, "
         "realistic skin texture, "
-        "realistic lighting, "
-        "cinematic photography, "
+        "realistic cinematic lighting, "
+        "dramatic atmosphere, "
         "no text, no subtitles, "
         "no logo, no watermark"
     )
 
+    encoded_prompt = requests.utils.quote(
+        enhanced_prompt,
+        safe=""
+    )
+
+    url = (
+        "https://gen.pollinations.ai/image/"
+        + encoded_prompt
+    )
+
+    params = {
+        "model": POLLINATIONS_MODEL,
+        "width": FINAL_WIDTH,
+        "height": FINAL_HEIGHT,
+        "seed": int(seed),
+        "nologo": "true",
+    }
+
+    headers = {
+        "Authorization":
+            f"Bearer {POLLINATIONS_API_KEY}",
+        "Accept":
+            "image/jpeg"
+    }
+
     try:
 
-        result = fal_client.subscribe(
-            FAL_MODEL,
-
-            arguments={
-                "prompt": enhanced_prompt,
-
-                "negative_prompt": negative_prompt,
-
-                "image_size": {
-                    "width": FINAL_WIDTH,
-                    "height": FINAL_HEIGHT
-                },
-
-                "num_images": 1,
-
-                "enable_prompt_expansion": True,
-
-                "enable_safety_checker": True,
-
-                "output_format": "jpeg",
-
-                "seed": int(seed)
-            }
+        response = requests.get(
+            url,
+            params=params,
+            headers=headers,
+            timeout=300
         )
 
-    except Exception as e:
-
-        error = str(e)
+    except requests.RequestException as e:
 
         logger.exception(
-            "Hunyuan image generation failed"
+            "Pollinations request failed"
         )
-
-        if (
-            "402" in error
-            or "credit" in error.lower()
-            or "insufficient" in error.lower()
-            or "balance" in error.lower()
-        ):
-
-            raise RuntimeError(
-                "❌ رصيد fal.ai غير كافي لتوليد الصورة."
-            )
-
-        if (
-            "401" in error
-            or "unauthorized" in error.lower()
-            or "authentication" in error.lower()
-        ):
-
-            raise RuntimeError(
-                "❌ FAL_KEY غير صحيح أو غير موجود."
-            )
 
         raise RuntimeError(
-            "❌ خطأ Hunyuan:\n"
-            + error
-        )
-
-    image_url = None
-
-    if isinstance(
-        result,
-        dict
-    ):
-
-        images = result.get(
-            "images",
-            []
-        )
-
-        if images:
-
-            first_image = images[0]
-
-            if isinstance(
-                first_image,
-                dict
-            ):
-
-                image_url = first_image.get(
-                    "url"
-                )
-
-    if not image_url:
-
-        raise RuntimeError(
-            "❌ Hunyuan لم يرجع رابط الصورة."
+            "❌ فشل الاتصال بـ Pollinations:\n"
+            + str(e)
         )
 
     logger.info(
-        "Downloading image..."
+        "Pollinations HTTP status: %s",
+        response.status_code
     )
 
-    response = requests.get(
-        image_url,
-        timeout=300
+    if response.status_code != 200:
+
+        error_text = response.text[:1500]
+
+        logger.error(
+            "Pollinations error: %s",
+            error_text
+        )
+
+        if response.status_code in (
+            401,
+            403
+        ):
+
+            raise RuntimeError(
+                "❌ مفتاح POLLINATIONS_API_KEY "
+                "غير صحيح أو غير مصرح به."
+            )
+
+        if response.status_code == 402:
+
+            raise RuntimeError(
+                "❌ رصيد/وحدات Pollinations غير كافية."
+            )
+
+        raise RuntimeError(
+            "❌ Pollinations image error "
+            f"({response.status_code}):\n"
+            + error_text
+        )
+
+    content_type = (
+        response.headers
+        .get("content-type", "")
+        .lower()
     )
 
-    response.raise_for_status()
+    if "image" not in content_type:
+
+        raise RuntimeError(
+            "❌ Pollinations لم يرجع صورة."
+        )
 
     with open(
         output_path,
@@ -559,6 +498,11 @@ def generate_image(
         raise RuntimeError(
             "Downloaded image is invalid."
         )
+
+    logger.info(
+        "Image saved: %s bytes",
+        output_path.stat().st_size
+    )
 
     return str(output_path)
 
@@ -644,7 +588,7 @@ def get_duration(path):
 
 
 # =========================================================
-# IMAGE → CINEMATIC MOTION
+# IMAGE → MOTION
 # =========================================================
 
 def create_motion_clip(
@@ -664,7 +608,7 @@ def create_motion_clip(
     if motion == 0:
 
         zoom_expression = (
-            "min(zoom+0.0008,1.18)"
+            "if(lte(on,1),1.0,min(zoom+0.0008,1.18))"
         )
 
         x_expression = (
@@ -678,12 +622,11 @@ def create_motion_clip(
     elif motion == 1:
 
         zoom_expression = (
-            "min(zoom+0.0006,1.14)"
+            "if(lte(on,1),1.0,min(zoom+0.0006,1.14))"
         )
 
         x_expression = (
-            f"(iw-iw/zoom)*"
-            f"(on/{frames})"
+            f"(iw-iw/zoom)*(on/{frames})"
         )
 
         y_expression = (
@@ -693,7 +636,7 @@ def create_motion_clip(
     elif motion == 2:
 
         zoom_expression = (
-            "max(zoom-0.0005,1.0)"
+            "if(lte(on,1),1.14,max(zoom-0.0005,1.0))"
         )
 
         x_expression = (
@@ -707,7 +650,7 @@ def create_motion_clip(
     else:
 
         zoom_expression = (
-            "min(zoom+0.0007,1.16)"
+            "if(lte(on,1),1.0,min(zoom+0.0007,1.16))"
         )
 
         x_expression = (
@@ -741,40 +684,28 @@ def create_motion_clip(
         [
             "ffmpeg",
             "-y",
-
             "-loop",
             "1",
-
             "-i",
             str(image_path),
-
             "-vf",
             filter_chain,
-
             "-t",
             str(duration),
-
             "-an",
-
             "-c:v",
             "libx264",
-
             "-preset",
             "veryfast",
-
             "-crf",
             "25",
-
             "-pix_fmt",
             "yuv420p",
-
             "-r",
             str(FPS),
-
             str(output_path)
         ],
         check=True,
-
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL
     )
@@ -810,12 +741,9 @@ def concat_clips(
 
         for clip in clips:
 
-            path = (
-                str(clip)
-                .replace(
-                    "'",
-                    "'\\''"
-                )
+            path = str(clip).replace(
+                "'",
+                "'\\''"
             )
 
             f.write(
@@ -826,23 +754,17 @@ def concat_clips(
         [
             "ffmpeg",
             "-y",
-
             "-f",
             "concat",
-
             "-safe",
             "0",
-
             "-i",
             str(concat_file),
-
             "-c",
             "copy",
-
             str(output_path)
         ],
         check=True,
-
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL
     )
@@ -869,11 +791,9 @@ def create_captions(
     words = narration.split()
 
     if not words:
-
         return None
 
     chunks = []
-
     current = []
 
     for word in words:
@@ -907,7 +827,6 @@ def create_captions(
         )
 
     if not chunks:
-
         return None
 
     part = (
@@ -1001,14 +920,8 @@ def create_captions(
 
             text = (
                 chunk
-                .replace(
-                    "{",
-                    "\\{"
-                )
-                .replace(
-                    "}",
-                    "\\}"
-                )
+                .replace("{", "\\{")
+                .replace("}", "\\}")
             )
 
             f.write(
@@ -1023,37 +936,19 @@ def create_captions(
 
 
 # =========================================================
-# DRAW TEXT ESCAPE
+# DRAW TEXT
 # =========================================================
 
 def escape_drawtext(text):
 
     return (
         str(text)
-        .replace(
-            "\\",
-            "\\\\"
-        )
-        .replace(
-            ":",
-            "\\:"
-        )
-        .replace(
-            "'",
-            "\\'"
-        )
-        .replace(
-            ",",
-            "\\,"
-        )
-        .replace(
-            "[",
-            "\\["
-        )
-        .replace(
-            "]",
-            "\\]"
-        )
+        .replace("\\", "\\\\")
+        .replace(":", "\\:")
+        .replace("'", "\\'")
+        .replace(",", "\\,")
+        .replace("[", "\\[")
+        .replace("]", "\\]")
     )
 
 
@@ -1069,10 +964,6 @@ def make_final_video(
     output_path
 ):
 
-    # -----------------------------------------------------
-    # Combined clips
-    # -----------------------------------------------------
-
     combined = (
         output_path.parent /
         "combined.mp4"
@@ -1082,10 +973,6 @@ def make_final_video(
         clips,
         combined
     )
-
-    # -----------------------------------------------------
-    # Voice duration
-    # -----------------------------------------------------
 
     voice_duration = get_duration(
         voice_file
@@ -1107,25 +994,6 @@ def make_final_video(
         target_duration
     )
 
-    logger.info(
-        "Voice duration: %.2f",
-        voice_duration
-    )
-
-    logger.info(
-        "Target duration: %.2f",
-        target_duration
-    )
-
-    # -----------------------------------------------------
-    # Captions
-    # -----------------------------------------------------
-
-    caption_duration = min(
-        voice_duration,
-        target_duration
-    )
-
     captions = (
         output_path.parent /
         "captions.ass"
@@ -1133,13 +1001,12 @@ def make_final_video(
 
     create_captions(
         narration,
-        caption_duration,
+        min(
+            voice_duration,
+            target_duration
+        ),
         captions
     )
-
-    # -----------------------------------------------------
-    # Title
-    # -----------------------------------------------------
 
     safe_title = escape_drawtext(
         title
@@ -1160,18 +1027,10 @@ def make_final_video(
         "enable='between(t,0,4)'"
     )
 
-    subtitle_filter = (
-        f"ass={captions}"
-    )
-
     final_filter = (
-        f"{subtitle_filter},"
+        f"ass={captions},"
         f"{title_filter}"
     )
-
-    # -----------------------------------------------------
-    # Loop visual clips
-    # -----------------------------------------------------
 
     looped = (
         output_path.parent /
@@ -1190,95 +1049,64 @@ def make_final_video(
         [
             "ffmpeg",
             "-y",
-
             "-stream_loop",
             "-1",
-
             "-i",
             str(combined),
-
             "-t",
             str(target_duration),
-
             "-vf",
             filter_video,
-
             "-an",
-
             "-c:v",
             "libx264",
-
             "-preset",
             "veryfast",
-
             "-crf",
             "24",
-
             "-pix_fmt",
             "yuv420p",
-
             str(looped)
         ],
         check=True,
-
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL
     )
-
-    # -----------------------------------------------------
-    # Final render
-    # -----------------------------------------------------
 
     subprocess.run(
         [
             "ffmpeg",
             "-y",
-
             "-i",
             str(looped),
-
             "-i",
             str(voice_file),
-
             "-vf",
             final_filter,
-
             "-map",
             "0:v:0",
-
             "-map",
             "1:a:0",
-
             "-t",
             str(target_duration),
-
             "-c:v",
             "libx264",
-
             "-preset",
             "veryfast",
-
             "-crf",
             "25",
-
             "-pix_fmt",
             "yuv420p",
-
             "-c:a",
             "aac",
-
             "-b:a",
             "128k",
-
             "-movflags",
             "+faststart",
-
             str(output_path)
         ],
         check=True,
-
         stdout=subprocess.DEVNULL,
-
         stderr=subprocess.DEVNULL
     )
 
@@ -1298,7 +1126,7 @@ def make_final_video(
 
 
 # =========================================================
-# CREATE ONE VIDEO
+# CREATE VIDEO
 # =========================================================
 
 def create_one_video(
@@ -1323,9 +1151,9 @@ def create_one_video(
         job_id
     )
 
-    # =====================================================
-    # 1. STORY PLAN
-    # =====================================================
+    # -----------------------------------------------------
+    # 1. STORY
+    # -----------------------------------------------------
 
     logger.info(
         "Step 1/5 - Creating story plan..."
@@ -1350,9 +1178,9 @@ def create_one_video(
         []
     )
 
-    # =====================================================
+    # -----------------------------------------------------
     # 2. VOICE
-    # =====================================================
+    # -----------------------------------------------------
 
     logger.info(
         "Step 2/5 - Generating Arabic voice..."
@@ -1388,23 +1216,18 @@ def create_one_video(
         target_duration
     )
 
-    # =====================================================
-    # 3. SCENE TIMING
-    # =====================================================
+    # -----------------------------------------------------
+    # 3. TIMING
+    # -----------------------------------------------------
 
     scene_duration = (
         target_duration /
         len(scenes)
     )
 
-    logger.info(
-        "Each scene duration: %.2f seconds",
-        scene_duration
-    )
-
-    # =====================================================
-    # 4. IMAGES + MOTION
-    # =====================================================
+    # -----------------------------------------------------
+    # 4. IMAGES
+    # -----------------------------------------------------
 
     logger.info(
         "Step 3/5 - Generating images..."
@@ -1412,9 +1235,7 @@ def create_one_video(
 
     clips = []
 
-    for index, scene in enumerate(
-        scenes
-    ):
+    for index, scene in enumerate(scenes):
 
         image_prompt = (
             scene.get(
@@ -1429,8 +1250,9 @@ def create_one_video(
             image_prompt = (
                 "A realistic cinematic "
                 "mysterious scene, "
-                "photorealistic, dramatic "
-                "lighting, realistic environment, "
+                "photorealistic, "
+                "dramatic lighting, "
+                "realistic environment, "
                 "vertical composition."
             )
 
@@ -1477,9 +1299,9 @@ def create_one_video(
             motion_path
         )
 
-    # =====================================================
-    # 5. FINAL VIDEO
-    # =====================================================
+    # -----------------------------------------------------
+    # 5. FINAL
+    # -----------------------------------------------------
 
     logger.info(
         "Step 4/5 - Building final video..."
@@ -1491,16 +1313,15 @@ def create_one_video(
     )
 
     make_final_video(
-        clips=clips,
-        voice_file=voice_file,
-        narration=narration,
-        title=title,
-        output_path=final_video
+        clips,
+        voice_file,
+        narration,
+        title,
+        final_video
     )
 
     logger.info(
-        "Step 5/5 - Video completed: %s",
-        final_video
+        "Step 5/5 - Video completed."
     )
 
     return {
@@ -1512,7 +1333,7 @@ def create_one_video(
 
 
 # =========================================================
-# TELEGRAM START
+# TELEGRAM
 # =========================================================
 
 async def start_command(
@@ -1528,14 +1349,9 @@ async def start_command(
         "🎞️ حركة سينمائية\n"
         "🎙️ صوت رجل عربي\n"
         "📝 Captions\n"
-        "📱 9:16\n"
-        "🔥 جاهز للنشر"
+        "📱 9:16"
     )
 
-
-# =========================================================
-# STATUS
-# =========================================================
 
 async def status_command(
     update: Update,
@@ -1551,14 +1367,11 @@ async def status_command(
         "🎞️ Motion: ON\n"
         "📱 Format: 720x1280\n"
         f"⏱️ Target: "
-        f"{MIN_VIDEO_SECONDS}-{MAX_VIDEO_SECONDS} sec\n\n"
-        f"🖼️ Image model:\n{FAL_MODEL}"
+        f"{MIN_VIDEO_SECONDS}-{MAX_VIDEO_SECONDS} sec\n"
+        f"🖼️ Image model: "
+        f"{POLLINATIONS_MODEL}"
     )
 
-
-# =========================================================
-# TELEGRAM STORY
-# =========================================================
 
 async def handle_story(
     update: Update,
@@ -1571,7 +1384,6 @@ async def handle_story(
     ).strip()
 
     if not story:
-
         return
 
     if len(story) < 30:
@@ -1611,9 +1423,7 @@ async def handle_story(
         )
 
         video_path = result["video"]
-
         title = result["title"]
-
         duration = result["duration"]
 
         await update.message.reply_text(
@@ -1634,13 +1444,11 @@ async def handle_story(
 
             await update.message.reply_video(
                 video=video_file,
-
                 caption=(
                     "🔥 جاهز للنشر\n\n"
                     "#قصص #رعب #غموض "
                     "#shorts #reels #ai"
                 ),
-
                 supports_streaming=True
             )
 
