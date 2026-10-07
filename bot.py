@@ -65,12 +65,8 @@ RENDER_EXTERNAL_URL = os.getenv(
     ""
 ).strip()
 
-# Telegram webhook path
 WEBHOOK_PATH = "/telegram/webhook"
 
-# Secret for Telegram webhook verification.
-# If not provided in Render, derive a private deterministic value
-# from the bot token without exposing the token.
 BOT_WEBHOOK_SECRET = os.getenv(
     "BOT_WEBHOOK_SECRET",
     ""
@@ -87,8 +83,6 @@ if not BOT_WEBHOOK_SECRET and BOT_TOKEN:
 # TEST SETTINGS
 # =========================================================
 
-# حالياً مشهد واحد فقط.
-# لا نرفع العدد قبل نجاح اختبار Wan.
 SHOT_COUNT = int(
     os.getenv(
         "SHOT_COUNT",
@@ -1564,6 +1558,72 @@ async def start_command(
 
 
 # =========================================================
+# HF API TEST
+# =========================================================
+
+async def hf_test_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    if not update.message:
+
+        return
+
+    await update.message.reply_text(
+        "🔎 بفحص API الخاصة بـ Hugging Face..."
+    )
+
+    try:
+
+        client = get_hf_client()
+
+        info = get_api_schema(
+            client
+        )
+
+        log.info(
+            "========== HF_API_SCHEMA =========="
+        )
+
+        log.info(
+            "%s",
+            json.dumps(
+                info,
+                ensure_ascii=False,
+                indent=2,
+                default=str
+            )
+        )
+
+        log.info(
+            "========== HF_API_SCHEMA_END =========="
+        )
+
+        await update.message.reply_text(
+            "✅ خلص فحص Hugging Face.\n"
+            "شوف Logs في Render وابعتلي الناتج."
+        )
+
+    except Exception as e:
+
+        error = safe_error_text(
+            e
+        )
+
+        log.error(
+            "HF_SCHEMA_TEST_ERROR=%s",
+            error,
+            exc_info=True
+        )
+
+        await update.message.reply_text(
+            "❌ فشل فحص HF:\n\n"
+            + error[:1500]
+        )
+
+
+# =========================================================
 # HANDLE MESSAGE
 # =========================================================
 
@@ -1667,6 +1727,13 @@ def telegram_loop_worker():
         CommandHandler(
             "start",
             start_command
+        )
+    )
+
+    telegram_application.add_handler(
+        CommandHandler(
+            "hftest",
+            hf_test_command
         )
     )
 
@@ -1820,15 +1887,13 @@ def telegram_webhook():
             telegram_application.bot
         )
 
-        future = asyncio.run_coroutine_threadsafe(
+        asyncio.run_coroutine_threadsafe(
             telegram_application.process_update(
                 update
             ),
             telegram_loop
         )
 
-        # We intentionally don't wait for the whole video job.
-        # Telegram only needs the webhook to acknowledge the update.
         log.info(
             "TELEGRAM_WEBHOOK_UPDATE_ACCEPTED"
         )
@@ -1874,10 +1939,6 @@ def main():
 
     check_telegram_connection()
 
-    # =====================================================
-    # START TELEGRAM APPLICATION
-    # =====================================================
-
     telegram_thread = threading.Thread(
         target=telegram_loop_worker,
         daemon=True,
@@ -1885,10 +1946,6 @@ def main():
     )
 
     telegram_thread.start()
-
-    # =====================================================
-    # WAIT FOR TELEGRAM TO BE READY
-    # =====================================================
 
     if not telegram_ready.wait(
         timeout=60
@@ -1901,10 +1958,6 @@ def main():
     log.info(
         "TELEGRAM_WEBHOOK_READY"
     )
-
-    # =====================================================
-    # START FLASK / RENDER HTTP SERVER
-    # =====================================================
 
     log.info(
         "HEALTH_SERVER_STARTED port=%s",
