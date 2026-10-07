@@ -5,6 +5,9 @@ async def hf_test_command(
     if not update.message:
         return
 
+    # علامة واضحة جدًا للتأكد أن Render يشغّل الكود الجديد
+    log.info("🔥🔥🔥 NEW_HFTEST_CODE_IS_RUNNING 🔥🔥🔥")
+
     await update.message.reply_text(
         "🔎 بفحص API الخاصة بـ Hugging Face بالتفصيل..."
     )
@@ -14,10 +17,20 @@ async def hf_test_command(
 
         log.info("========== HF_API_SCHEMA_RAW ==========")
 
-        # 1) العرض النصي الكامل
+        # 1) العرض النصي الكامل للـ API
         try:
             api_text = client.view_api()
-            log.info("VIEW_API_TEXT=%r", api_text)
+
+            log.info(
+                "VIEW_API_TEXT_TYPE=%s",
+                type(api_text).__name__
+            )
+
+            log.info(
+                "VIEW_API_TEXT=%r",
+                api_text
+            )
+
         except Exception as e:
             log.error(
                 "VIEW_API_TEXT_ERROR=%s",
@@ -25,13 +38,17 @@ async def hf_test_command(
                 exc_info=True
             )
 
-        # 2) العرض بصيغة dict
+        # 2) العرض بصيغة Dictionary
         try:
-            api_dict = client.view_api(return_format="dict")
+            api_dict = client.view_api(
+                return_format="dict"
+            )
+
             log.info(
                 "VIEW_API_DICT_TYPE=%s",
                 type(api_dict).__name__
             )
+
             log.info(
                 "VIEW_API_DICT=%s",
                 json.dumps(
@@ -41,6 +58,7 @@ async def hf_test_command(
                     default=str
                 )
             )
+
         except Exception as e:
             log.error(
                 "VIEW_API_DICT_ERROR=%s",
@@ -48,13 +66,19 @@ async def hf_test_command(
                 exc_info=True
             )
 
-        # 3) محاولة عرض endpoints إن كانت متاحة
+        # 3) عرض endpoints الموجودة داخل Client
         try:
-            endpoints = getattr(client, "endpoints", None)
+            endpoints = getattr(
+                client,
+                "endpoints",
+                None
+            )
+
             log.info(
                 "CLIENT_ENDPOINTS=%r",
                 endpoints
             )
+
         except Exception as e:
             log.error(
                 "CLIENT_ENDPOINTS_ERROR=%s",
@@ -62,14 +86,36 @@ async def hf_test_command(
                 exc_info=True
             )
 
-        log.info("========== HF_API_SCHEMA_RAW_END ==========")
+        # 4) معلومات إضافية عن الـ Client
+        try:
+            log.info(
+                "CLIENT_TYPE=%s",
+                type(client).__name__
+            )
+
+            log.info(
+                "CLIENT_SPACE=%s",
+                HF_SPACE
+            )
+
+        except Exception as e:
+            log.error(
+                "CLIENT_INFO_ERROR=%s",
+                safe_error_text(e),
+                exc_info=True
+            )
+
+        log.info(
+            "========== HF_API_SCHEMA_RAW_END =========="
+        )
 
         await update.message.reply_text(
             "✅ خلص الفحص التفصيلي.\n\n"
-            "ابعتلي من Render Logs كل شيء بين:\n"
-            "HF_API_SCHEMA_RAW\n"
-            "و\n"
-            "HF_API_SCHEMA_RAW_END"
+            "هسا افتح Render Logs وابحث عن:\n\n"
+            "🔥 NEW_HFTEST_CODE_IS_RUNNING\n\n"
+            "وبعدها:\n"
+            "HF_API_SCHEMA_RAW\n\n"
+            "وابعتلي كل الناتج."
         )
 
     except Exception as e:
