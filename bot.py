@@ -6,19 +6,17 @@ import shutil
 import asyncio
 import logging
 import traceback
-import subprocess
 import threading
-import gc
+import subprocess
 import time
+import gc
 from pathlib import Path
 from urllib.parse import quote
 
 import requests
 import edge_tts
-
 from groq import Groq
 from flask import Flask
-
 from telegram import Update
 from telegram.ext import (
     Application,
@@ -28,7 +26,6 @@ from telegram.ext import (
     filters,
 )
 
-
 # ============================================================
 # CONFIG
 # ============================================================
@@ -36,533 +33,342 @@ from telegram.ext import (
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
 
+POLLINATIONS_API_KEY = (
+    os.getenv("POLLINATIONS_API_KEY", "").strip()
+    or os.getenv("POLLINATIONS_KEY", "").strip()
+)
+
 GROQ_MODEL = os.getenv(
     "GROQ_MODEL",
     "llama-3.3-70b-versatile"
-).strip()
+)
 
-POLLINATIONS_API_KEY = os.getenv(
-    "POLLINATIONS_API_KEY",
-    ""
-).strip()
+# Direct AI video model
+POLLINATIONS_VIDEO_MODEL = os.getenv(
+    "POLLINATIONS_VIDEO_MODEL",
+    "alibaba/wan-2.2-fast"
+)
 
-POLLINATIONS_MODEL = os.getenv(
-    "POLLINATIONS_MODEL",
-    "flux"
-).strip()
+# Number of cinematic shots
+SHOT_COUNT = 8
 
-VOICE = os.getenv(
-    "VOICE",
-    "ar-SA-HamedNeural"
-).strip()
+# AI video duration per shot
+SHOT_DURATION = 5
 
-
-# ============================================================
-# VIDEO SETTINGS
-# ============================================================
-
-SHOT_COUNT = 10
-
+# Final Reel
 FINAL_WIDTH = 720
 FINAL_HEIGHT = 1280
 FPS = 30
 
-IMAGE_WIDTH = 720
-IMAGE_HEIGHT = 1280
-
-MIN_WORDS = 145
-MAX_WORDS = 185
-
-
-# ============================================================
-# DIRECTORIES
-# ============================================================
-
-BASE_DIR = Path("/tmp/abosaraj")
-
-BASE_DIR.mkdir(
-    parents=True,
-    exist_ok=True,
+# Arabic voice
+TTS_VOICE = os.getenv(
+    "TTS_VOICE",
+    "ar-SA-HamedNeural"
 )
 
-
-# ============================================================
-# GLOBAL LOCK
-# ============================================================
+BASE_DIR = Path("/tmp/abosaraj")
+BASE_DIR.mkdir(parents=True, exist_ok=True)
 
 JOB_LOCK = threading.Lock()
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(message)s"
+)
+
+log = logging.getLogger("ABOSARAJ")
+
 
 # ============================================================
-# FLASK
+# FLASK HEALTH SERVER
 # ============================================================
 
 flask_app = Flask(__name__)
 
 
-# ============================================================
-# LOGGING
-# ============================================================
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(message)s",
-)
-
-logger = logging.getLogger("abosaraj")
+@flask_app.route("/")
+def home():
+    return "ABOSARAJ BOT ONLINE", 200
 
 
-# ============================================================
-# BASIC HELPERS
-# ============================================================
+@flask_app.route("/health")
+def health():
+    return {
+        "status": "ok",
+        "bot": "online",
+        "video_engine": "pollinations"
+    }, 200
 
-def count_words(text):
-    return len(
-        re.findall(
-            r"\S+",
-            text or "",
-        )
+
+def run_flask():
+    port = int(os.getenv("PORT", "10000"))
+
+    flask_app.run(
+        host="0.0.0.0",
+        port=port,
+        threaded=True
     )
 
 
-def cleanup_memory():
-    gc.collect()
+# ============================================================
+# COMMAND RUNNER
+# ============================================================
 
+def run_command(cmd, timeout=900):
+    log.info("RUN_COMMAND=%s", " ".join(map(str, cmd)))
 
-def safe_delete(path):
     try:
-        path = Path(path)
-
-        if path.exists():
-            path.unlink()
-
-    except Exception as e:
-        logger.warning(
-            "DELETE_FAILED=%s",
-            str(e),
+        result = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=timeout
         )
-
-
-def safe_rmtree(path):
-    try:
-        shutil.rmtree(
-            path,
-            ignore_errors=True,
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(
+            f"Command timed out after {timeout} seconds"
         )
-    except Exception:
-        pass
-
-
-def run_cmd(command, timeout=900):
-
-    logger.info(
-        "RUN_CMD=%s",
-        " ".join(
-            str(x)
-            for x in command
-        ),
-    )
-
-    result = subprocess.run(
-        command,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        timeout=timeout,
-    )
 
     if result.returncode != 0:
-
-        logger.error(
-            "FFMPEG_STDOUT=%s",
-            result.stdout[-3000:],
+        log.error(
+            "COMMAND_EXIT=%s",
+            result.returncode
         )
 
-        logger.error(
-            "FFMPEG_STDERR=%s",
-            result.stderr[-5000:],
+        log.error(
+            "COMMAND_STDERR=%s",
+            result.stderr[-6000:]
         )
 
         raise RuntimeError(
-            f"Command failed: {result.returncode}"
+            f"Command failed: {result.returncode}\n"
+            f"{result.stderr[-3000:]}"
         )
 
     return result
-
-
-def get_duration(path):
-
-    result = run_cmd(
-        [
-            "ffprobe",
-            "-v",
-            "error",
-            "-show_entries",
-            "format=duration",
-            "-of",
-            "default=noprint_wrappers=1:nokey=1",
-            str(path),
-        ],
-        timeout=120,
-    )
-
-    return float(
-        result.stdout.strip()
-    )
 
 
 # ============================================================
 # GROQ DIRECTOR
 # ============================================================
 
-def generate_story_plan(story):
+def clean_json(text):
+    text = text.strip()
 
-    logger.info(
-        "========== GROQ =========="
-    )
+    if text.startswith("```"):
+        text = re.sub(
+            r"^```(?:json)?",
+            "",
+            text,
+            flags=re.IGNORECASE
+        )
 
-    client = Groq(
-        api_key=GROQ_API_KEY
-    )
+        text = re.sub(
+            r"```$",
+            "",
+            text
+        )
+
+    return text.strip()
+
+
+def create_storyboard(story):
+    client = Groq(api_key=GROQ_API_KEY)
 
     system_prompt = f"""
-أنت مخرج أفلام قصيرة محترف متخصص في Reels الرعب والغموض.
+You are a professional cinematic director for TikTok, Instagram Reels and YouTube Shorts.
 
-حوّل القصة إلى فيديو سينمائي عمودي.
+Convert the Arabic story into exactly {SHOT_COUNT} cinematic AI VIDEO shots.
 
-يجب إنتاج بالضبط {SHOT_COUNT} مشاهد.
+IMPORTANT:
 
-كل مشهد يجب أن يمثل حدثاً جديداً.
+- This is NOT a slideshow.
+- Every shot must describe real physical movement.
+- Every shot must be visually filmable.
+- Characters must remain visually consistent.
+- Avoid impossible camera movement.
+- Avoid text appearing inside the generated video.
+- Avoid subtitles inside the generated video.
+- Avoid logos.
+- Avoid changing character identity between shots.
+- Each shot is approximately {SHOT_DURATION} seconds.
 
-الشخصية الرئيسية:
-رجل عربي في أوائل الثلاثينات،
-شعر أسود قصير،
-لحية سوداء خفيفة،
-ملابس منزلية داكنة،
-وجه واقعي.
+Return ONLY valid JSON.
 
-الزوجة:
-امرأة عربية في الثلاثينات،
-شعر أسود طويل،
-ملامح واقعية.
-
-المكان:
-شقة عربية قديمة في الليل،
-إضاءة منخفضة،
-ظلال قوية،
-جو رعب واقعي.
-
-STYLE:
-photorealistic live action,
-cinematic horror thriller,
-realistic human anatomy,
-realistic skin,
-professional cinematography,
-35mm lens,
-shallow depth of field,
-dramatic lighting,
-vertical 9:16,
-high detail.
-
-ممنوع:
-text,
-subtitles,
-logo,
-watermark,
-cartoon,
-anime,
-painting,
-illustration.
-
-يجب أن يبدأ أول مشهد بـ HOOK قوي.
-
-يجب أن يحتوي كل مشهد على حركة أو حدث واضح.
-
-آخر مشهد يجب أن يحتوي على Twist.
-
-الناتج JSON فقط.
-
-الصيغة:
+Format:
 
 {{
-  "title": "...",
+  "title": "short title",
+  "narration": "short Arabic narration covering the whole story",
   "shots": [
     {{
       "id": 1,
-      "narration": "...",
-      "prompt": "...",
-      "camera": "...",
-      "motion": "...",
-      "mood": "..."
+      "visual_prompt": "English cinematic video prompt",
+      "duration": {SHOT_DURATION}
     }}
   ]
 }}
 
-القواعد:
-- {SHOT_COUNT} مشاهد بالضبط.
-- narration عربي.
-- prompt إنجليزي.
-- camera إنجليزي.
-- motion إنجليزي.
-- mood إنجليزي.
-- مجموع narration بين {MIN_WORDS} و {MAX_WORDS} كلمة.
-- لا تجعل مشهدين متتاليين بنفس زاوية الكاميرا.
+The visual_prompt must be in English because the video model performs better with English prompts.
+
+Make the prompts highly cinematic:
+
+- realistic humans
+- realistic environments
+- natural movement
+- cinematic lighting
+- camera movement
+- depth of field
+- realistic physics
+- dramatic composition
+- vertical social media framing
+- 9:16 composition
+
+The same character must keep the same:
+hair
+clothes
+age
+face
+body
+visual identity
+
+Story:
+{story}
 """
 
     response = client.chat.completions.create(
         model=GROQ_MODEL,
-        temperature=0.8,
-        max_tokens=6000,
-        response_format={
-            "type": "json_object"
-        },
+        temperature=0.7,
+        max_tokens=7000,
         messages=[
             {
                 "role": "system",
-                "content": system_prompt,
+                "content": system_prompt
             },
             {
                 "role": "user",
-                "content": story,
-            },
-        ],
+                "content": story
+            }
+        ]
     )
 
-    raw = (
-        response.choices[0]
-        .message
-        .content
+    raw = response.choices[0].message.content
+
+    log.info(
+        "GROQ_RESPONSE_LENGTH=%s",
+        len(raw or "")
     )
 
-    data = json.loads(
-        raw
-    )
+    data = json.loads(clean_json(raw))
 
-    shots = data.get(
-        "shots",
-        [],
-    )
-
-    if len(shots) != SHOT_COUNT:
-
+    if not isinstance(data, dict):
         raise RuntimeError(
-            f"Groq returned {len(shots)} shots "
-            f"instead of {SHOT_COUNT}."
+            "Groq returned invalid storyboard."
         )
 
-    narration = " ".join(
-        str(
-            x.get(
-                "narration",
-                "",
-            )
+    shots = data.get("shots")
+
+    if not isinstance(shots, list):
+        raise RuntimeError(
+            "Storyboard does not contain shots."
         )
-        for x in shots
-    )
 
-    logger.info(
-        "GROQ_SHOTS=%s",
-        len(shots),
-    )
+    if len(shots) < SHOT_COUNT:
+        raise RuntimeError(
+            f"Groq returned only {len(shots)} shots."
+        )
 
-    logger.info(
-        "GROQ_WORDS=%s",
-        count_words(narration),
-    )
+    data["shots"] = shots[:SHOT_COUNT]
+
+    narration = data.get("narration", "").strip()
+
+    if not narration:
+        narration = story
+
+    data["narration"] = narration
 
     return data
 
 
 # ============================================================
-# TTS
+# POLLINATIONS VIDEO GENERATOR
 # ============================================================
 
-async def tts_async(text, output):
-
-    communicate = edge_tts.Communicate(
-        text=text,
-        voice=VOICE,
-    )
-
-    await communicate.save(
-        str(output)
-    )
-
-
-def generate_tts(text, output):
-
-    error = []
-
-    def worker():
-
-        try:
-            asyncio.run(
-                tts_async(
-                    text,
-                    output,
-                )
-            )
-
-        except Exception as e:
-            error.append(e)
-
-    thread = threading.Thread(
-        target=worker,
-        daemon=True,
-    )
-
-    thread.start()
-    thread.join()
-
-    if error:
-        raise error[0]
-
-    if not output.exists():
-        raise RuntimeError(
-            "TTS file was not created."
-        )
-
-    duration = get_duration(
-        output
-    )
-
-    logger.info(
-        "TTS_SUCCESS duration=%.2f",
-        duration,
-    )
-
-    return duration
-
-
-# ============================================================
-# POLLINATIONS PROMPT
-# ============================================================
-
-def build_image_prompt(shot):
-
-    return f"""
-Photorealistic live-action cinematic horror movie frame.
-
-Vertical 9:16 composition.
-
-MAIN CHARACTER:
-realistic Arab man, early 30s,
-short black hair,
-short dark beard,
-dark home clothes,
-realistic face,
-realistic skin.
-
-ENVIRONMENT:
-old Arabic apartment at night,
-realistic interior,
-low light,
-deep shadows,
-cinematic atmosphere.
-
-EVENT:
-{shot["prompt"]}
-
-ACTION:
-{shot["motion"]}
-
-CAMERA:
-{shot["camera"]}
-
-MOOD:
-{shot["mood"]}
-
-Professional cinema photography,
-35mm lens,
-shallow depth of field,
-dramatic realistic lighting,
-natural anatomy,
-realistic hands,
-realistic face,
-high detail.
-
-NO TEXT.
-NO SUBTITLES.
-NO LOGO.
-NO WATERMARK.
-NO CARTOON.
-NO ANIME.
-NO PAINTING.
-NO ILLUSTRATION.
-NO DISTORTED FACE.
-NO EXTRA LIMBS.
-NO EXTRA FINGERS.
-"""
-
-
-# ============================================================
-# POLLINATIONS IMAGE GENERATOR
-# ============================================================
-
-def generate_pollinations_image(
-    shot,
-    output_path,
-    shot_number,
-):
-
-    logger.info(
-        "========== IMAGE %s/%s ==========",
-        shot_number,
-        SHOT_COUNT,
-    )
-
+def generate_ai_video(prompt, output_path, duration=SHOT_DURATION):
     if not POLLINATIONS_API_KEY:
-
         raise RuntimeError(
             "POLLINATIONS_API_KEY is missing. "
             "Add it to Render Environment Variables."
         )
 
-    prompt = build_image_prompt(
-        shot
-    )
+    # Extra quality instructions
+    final_prompt = f"""
+{prompt}
 
-    seed = (
-        int(time.time() * 1000)
-        + shot_number * 7919
-    ) % 2147483647
+Professional cinematic live-action video.
 
-    encoded = quote(
-        prompt,
-        safe="",
+Vertical 9:16 composition.
+
+Realistic human motion.
+
+Natural body movement.
+
+Realistic physics.
+
+Cinematic lighting.
+
+Shallow depth of field.
+
+Film-quality camera movement.
+
+High detail.
+
+No text.
+
+No subtitles.
+
+No watermark.
+
+No logo.
+
+No distorted hands.
+
+No duplicated people.
+
+No morphing faces.
+
+Maintain consistent character appearance.
+"""
+
+    encoded_prompt = quote(
+        final_prompt.strip(),
+        safe=""
     )
 
     url = (
-        "https://gen.pollinations.ai/image/"
-        + encoded
+        "https://gen.pollinations.ai/video/"
+        + encoded_prompt
     )
 
     params = {
-        "model": POLLINATIONS_MODEL,
-        "width": IMAGE_WIDTH,
-        "height": IMAGE_HEIGHT,
-        "seed": seed,
-        "nologo": "true",
+        "model": POLLINATIONS_VIDEO_MODEL,
+        "duration": str(duration)
     }
 
     headers = {
-        "Authorization":
-            f"Bearer {POLLINATIONS_API_KEY}",
-        "Accept": "image/*",
-        "User-Agent":
-            "Abosaraj/1.0",
+        "Authorization": f"Bearer {POLLINATIONS_API_KEY}",
+        "Accept": "video/mp4"
     }
 
-    logger.info(
-        "IMAGE_SEED=%s",
-        seed,
-    )
+    last_error = None
 
     for attempt in range(1, 4):
 
-        logger.info(
-            "POLLINATIONS_ATTEMPT=%s/3",
+        log.info(
+            "VIDEO_ATTEMPT=%s MODEL=%s",
             attempt,
+            POLLINATIONS_VIDEO_MODEL
         )
 
         try:
@@ -571,841 +377,488 @@ def generate_pollinations_image(
                 url,
                 params=params,
                 headers=headers,
-                timeout=240,
+                timeout=600,
+                stream=True
             )
 
-            status = response.status_code
-
-            logger.info(
-                "IMAGE_HTTP_STATUS=%s",
-                status,
+            log.info(
+                "VIDEO_HTTP_STATUS=%s",
+                response.status_code
             )
 
-            content_type = (
-                response.headers
-                .get(
-                    "content-type",
-                    "",
-                )
-                .lower()
+            content_type = response.headers.get(
+                "content-type",
+                ""
             )
 
-            # ------------------------------------------------
-            # SUCCESS
-            # ------------------------------------------------
+            log.info(
+                "VIDEO_CONTENT_TYPE=%s",
+                content_type
+            )
 
-            if status == 200:
-
-                content = (
-                    response.content
+            if response.status_code == 401:
+                raise RuntimeError(
+                    "Pollinations authentication failed (401). "
+                    "Check POLLINATIONS_API_KEY."
                 )
 
-                logger.info(
-                    "IMAGE_BYTES=%s",
-                    len(content),
+            if response.status_code == 402:
+                raise RuntimeError(
+                    "Pollinations returned 402. "
+                    "The account does not have enough Pollen/budget "
+                    "for this video generation."
                 )
 
-                is_image = (
-                    "image/" in content_type
-                    or content[:2] == b"\xff\xd8"
-                    or content[:8]
-                    == b"\x89PNG\r\n\x1a\n"
-                    or content[:4]
-                    == b"RIFF"
+            if response.status_code == 403:
+                raise RuntimeError(
+                    "Pollinations rejected the request (403)."
                 )
 
-                if (
-                    len(content) > 5000
-                    and is_image
+            if response.status_code == 429:
+                raise RuntimeError(
+                    "Pollinations rate limit reached (429)."
+                )
+
+            if response.status_code >= 500:
+                raise RuntimeError(
+                    f"Pollinations server error: "
+                    f"{response.status_code}"
+                )
+
+            if response.status_code != 200:
+                body = response.text[:1000]
+
+                raise RuntimeError(
+                    f"Pollinations video failed: "
+                    f"HTTP {response.status_code} "
+                    f"{body}"
+                )
+
+            with open(output_path, "wb") as f:
+
+                for chunk in response.iter_content(
+                    chunk_size=1024 * 1024
                 ):
 
-                    output_path.write_bytes(
-                        content
-                    )
+                    if chunk:
+                        f.write(chunk)
 
-                    logger.info(
-                        "IMAGE_SUCCESS=%s",
-                        output_path,
-                    )
+            size = output_path.stat().st_size
 
-                    cleanup_memory()
-
-                    return output_path
-
-                raise RuntimeError(
-                    "Pollinations returned HTTP 200 "
-                    "but the response was not a valid image."
-                )
-
-            # ------------------------------------------------
-            # AUTH
-            # ------------------------------------------------
-
-            if status == 401:
-
-                raise RuntimeError(
-                    "Pollinations rejected the API key "
-                    "(HTTP 401). Check POLLINATIONS_API_KEY."
-                )
-
-            # ------------------------------------------------
-            # BALANCE / BUDGET
-            # ------------------------------------------------
-
-            if status == 402:
-
-                raise RuntimeError(
-                    "Pollinations accepted the API key "
-                    "but the account/key has insufficient "
-                    "Pollen or budget (HTTP 402)."
-                )
-
-            # ------------------------------------------------
-            # FORBIDDEN
-            # ------------------------------------------------
-
-            if status == 403:
-
-                raise RuntimeError(
-                    "Pollinations denied this request "
-                    "(HTTP 403)."
-                )
-
-            # ------------------------------------------------
-            # BAD REQUEST
-            # ------------------------------------------------
-
-            if status == 400:
-
-                body = (
-                    response.text[:1000]
-                )
-
-                raise RuntimeError(
-                    "Pollinations rejected the request "
-                    f"(HTTP 400): {body}"
-                )
-
-            # ------------------------------------------------
-            # RATE LIMIT / SERVER
-            # ------------------------------------------------
-
-            if status in (
-                408,
-                429,
-                500,
-                502,
-                503,
-                504,
-            ):
-
-                logger.warning(
-                    "TEMPORARY_POLLINATIONS_ERROR "
-                    "status=%s",
-                    status,
-                )
-
-                if attempt < 3:
-
-                    wait = (
-                        attempt * 7
-                    )
-
-                    logger.info(
-                        "RETRY_IN=%s",
-                        wait,
-                    )
-
-                    time.sleep(
-                        wait
-                    )
-
-                    continue
-
-            body = (
-                response.text[:1000]
+            log.info(
+                "VIDEO_FILE_SIZE=%s",
+                size
             )
 
-            raise RuntimeError(
-                "Pollinations HTTP "
-                f"{status}: {body}"
+            if size < 50_000:
+                raise RuntimeError(
+                    "Generated video file is suspiciously small."
+                )
+
+            log.info(
+                "VIDEO_SUCCESS=%s",
+                output_path
             )
 
-        except requests.exceptions.Timeout:
+            return output_path
 
-            logger.warning(
-                "POLLINATIONS_TIMEOUT attempt=%s",
-                attempt,
+        except Exception as e:
+
+            last_error = e
+
+            log.error(
+                "VIDEO_ATTEMPT_FAILED=%s",
+                str(e)
             )
 
             if attempt < 3:
-
-                time.sleep(
-                    attempt * 7
-                )
-
-        except requests.exceptions.RequestException as e:
-
-            logger.warning(
-                "POLLINATIONS_NETWORK_ERROR=%s",
-                str(e),
-            )
-
-            if attempt < 3:
-
-                time.sleep(
-                    attempt * 7
-                )
+                time.sleep(4 * attempt)
 
     raise RuntimeError(
-        "Pollinations image generation failed "
-        "after 3 attempts."
+        f"Pollinations video generation failed: "
+        f"{last_error}"
     )
 
 
 # ============================================================
-# IMAGE -> VIDEO
+# TTS
 # ============================================================
 
-def create_scene_video(
-    image_path,
-    output_path,
-    duration,
-    scene_number,
-):
-
-    movements = [
-        "zoom_in",
-        "zoom_out",
-        "pan_left",
-        "pan_right",
-        "push_left",
-        "push_right",
-        "zoom_in",
-        "pan_right",
-        "zoom_out",
-        "push_right",
-    ]
-
-    movement = movements[
-        (scene_number - 1)
-        % len(movements)
-    ]
-
-    frames = max(
-        1,
-        int(duration * FPS),
+async def create_tts_async(text, output_path):
+    communicate = edge_tts.Communicate(
+        text,
+        TTS_VOICE
     )
 
-    if movement == "zoom_in":
+    await communicate.save(str(output_path))
 
-        z = "min(zoom+0.0015,1.15)"
-        x = "(iw-iw/zoom)/2"
-        y = "(ih-ih/zoom)/2"
 
-    elif movement == "zoom_out":
-
-        z = (
-            "if(eq(on,1),1.15,"
-            "max(zoom-0.0015,1.0))"
+def create_tts(text, output_path):
+    asyncio.run(
+        create_tts_async(
+            text,
+            output_path
         )
-        x = "(iw-iw/zoom)/2"
-        y = "(ih-ih/zoom)/2"
-
-    elif movement == "pan_left":
-
-        z = "1.10"
-        x = (
-            "(iw-iw/zoom)"
-            "*(1-on/total)"
-        )
-        y = "(ih-ih/zoom)/2"
-
-    elif movement == "pan_right":
-
-        z = "1.10"
-        x = (
-            "(iw-iw/zoom)"
-            "*(on/total)"
-        )
-        y = "(ih-ih/zoom)/2"
-
-    elif movement == "push_left":
-
-        z = "min(zoom+0.001,1.10)"
-        x = (
-            "(iw-iw/zoom)"
-            "*(1-on/total)"
-        )
-        y = "(ih-ih/zoom)/2"
-
-    else:
-
-        z = "min(zoom+0.001,1.10)"
-        x = (
-            "(iw-iw/zoom)"
-            "*(on/total)"
-        )
-        y = "(ih-ih/zoom)/2"
-
-    vf = (
-        "scale=800:1422:"
-        "force_original_aspect_ratio=increase,"
-        "crop=800:1422,"
-        f"zoompan=z='{z}':"
-        f"x='{x}':"
-        f"y='{y}':"
-        f"d={frames}:"
-        f"s={FINAL_WIDTH}x{FINAL_HEIGHT}:"
-        f"fps={FPS},"
-        "setsar=1"
-    )
-
-    run_cmd(
-        [
-            "ffmpeg",
-            "-y",
-            "-loop",
-            "1",
-            "-i",
-            str(image_path),
-            "-vf",
-            vf,
-            "-t",
-            str(duration),
-            "-an",
-            "-c:v",
-            "libx264",
-            "-preset",
-            "ultrafast",
-            "-crf",
-            "27",
-            "-pix_fmt",
-            "yuv420p",
-            "-movflags",
-            "+faststart",
-            str(output_path),
-        ],
-        timeout=300,
     )
 
     if not output_path.exists():
         raise RuntimeError(
-            "Scene video was not created."
+            "TTS file was not created."
         )
 
-    logger.info(
-        "SCENE_VIDEO_SUCCESS=%s",
-        output_path,
-    )
-
-    return output_path
+    if output_path.stat().st_size < 1000:
+        raise RuntimeError(
+            "TTS file is too small."
+        )
 
 
 # ============================================================
-# CONCAT
+# NORMALIZE VIDEO
 # ============================================================
 
-def concat_videos(
-    paths,
-    output,
-):
+def normalize_video(input_path, output_path):
+    """
+    Normalize every generated AI clip into exactly:
+    720x1280
+    30fps
+    H264
+    yuv420p
 
-    txt = (
-        output.parent /
-        "videos.txt"
+    This avoids the previous zoompan/libx264 failure.
+    """
+
+    vf = (
+        "scale=720:1280:"
+        "force_original_aspect_ratio=decrease,"
+        "pad=720:1280:(ow-iw)/2:(oh-ih)/2,"
+        "setsar=1,"
+        "fps=30,"
+        "format=yuv420p"
     )
 
-    with open(
-        txt,
-        "w",
-        encoding="utf-8",
-    ) as f:
+    cmd = [
+        "ffmpeg",
+        "-y",
 
-        for path in paths:
+        "-i",
+        str(input_path),
 
-            p = (
-                str(path)
-                .replace("\\", "/")
-                .replace("'", "'\\''")
-            )
+        "-vf",
+        vf,
 
-            f.write(
-                f"file '{p}'\n"
-            )
+        "-an",
 
-    run_cmd(
-        [
-            "ffmpeg",
-            "-y",
-            "-f",
-            "concat",
-            "-safe",
-            "0",
-            "-i",
-            str(txt),
-            "-c",
-            "copy",
-            "-movflags",
-            "+faststart",
-            str(output),
-        ],
-        timeout=600,
-    )
+        "-c:v",
+        "libx264",
 
-    return output
+        "-preset",
+        "veryfast",
 
+        "-crf",
+        "24",
 
-def concat_audio(
-    paths,
-    output,
-):
+        "-pix_fmt",
+        "yuv420p",
 
-    txt = (
-        output.parent /
-        "audio.txt"
-    )
+        "-movflags",
+        "+faststart",
 
-    with open(
-        txt,
-        "w",
-        encoding="utf-8",
-    ) as f:
-
-        for path in paths:
-
-            p = (
-                str(path)
-                .replace("\\", "/")
-                .replace("'", "'\\''")
-            )
-
-            f.write(
-                f"file '{p}'\n"
-            )
-
-    run_cmd(
-        [
-            "ffmpeg",
-            "-y",
-            "-f",
-            "concat",
-            "-safe",
-            "0",
-            "-i",
-            str(txt),
-            "-c:a",
-            "aac",
-            "-b:a",
-            "128k",
-            str(output),
-        ],
-        timeout=600,
-    )
-
-    return output
-
-
-# ============================================================
-# CAPTIONS
-# ============================================================
-
-def find_font():
-
-    fonts = [
-        "/usr/share/fonts/truetype/noto/NotoNaskhArabic-Regular.ttf",
-        "/usr/share/fonts/truetype/noto/NotoSansArabic-Regular.ttf",
-        "/usr/share/fonts/truetype/noto/NotoSansArabic-Bold.ttf",
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        str(output_path)
     ]
 
-    for font in fonts:
+    run_command(cmd, timeout=300)
 
-        if Path(font).exists():
-            return font
-
-    return None
-
-
-def ass_time(seconds):
-
-    h = int(
-        seconds // 3600
-    )
-
-    m = int(
-        (seconds % 3600) // 60
-    )
-
-    s = int(
-        seconds % 60
-    )
-
-    cs = int(
-        round(
-            (seconds - int(seconds))
-            * 100
-        )
-    )
-
-    if cs >= 100:
-
-        cs = 0
-        s += 1
-
-    return (
-        f"{h}:"
-        f"{m:02d}:"
-        f"{s:02d}."
-        f"{cs:02d}"
-    )
-
-
-def create_ass(
-    shots,
-    durations,
-    output,
-):
-
-    font = find_font()
-
-    font_name = (
-        Path(font).stem
-        if font
-        else "DejaVu Sans"
-    )
-
-    content = f"""
-[Script Info]
-ScriptType: v4.00+
-PlayResX: 720
-PlayResY: 1280
-ScaledBorderAndShadow: yes
-
-[V4+ Styles]
-Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,{font_name},48,&H00FFFFFF,&H00FFFFFF,&H00000000,&H99000000,1,0,0,0,100,100,0,0,1,3,1,2,45,45,130,1
-
-[Events]
-Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
-"""
-
-    current = 0.0
-
-    for shot, duration in zip(
-        shots,
-        durations,
-    ):
-
-        start = current
-        end = (
-            current +
-            duration
+    if not output_path.exists():
+        raise RuntimeError(
+            "Normalized video was not created."
         )
 
-        text = re.sub(
-            r"\s+",
-            " ",
-            str(
-                shot["narration"]
-            ).strip(),
-        )
 
-        words = text.split()
+# ============================================================
+# CONCAT VIDEOS
+# ============================================================
 
-        if len(words) > 10:
+def concat_videos(video_files, output_path, work_dir):
 
-            middle = (
-                len(words) // 2
+    concat_file = work_dir / "videos.txt"
+
+    with open(concat_file, "w", encoding="utf-8") as f:
+
+        for video in video_files:
+
+            safe_path = str(video).replace(
+                "'",
+                "'\\''"
             )
 
-            text = (
-                " ".join(
-                    words[:middle]
-                )
-                + r"\N"
-                + " ".join(
-                    words[middle:]
-                )
+            f.write(
+                f"file '{safe_path}'\n"
             )
 
-        content += (
-            "Dialogue: 0,"
-            f"{ass_time(start)},"
-            f"{ass_time(end)},"
-            "Default,,0,0,0,,"
-            f"{text}\n"
+    cmd = [
+        "ffmpeg",
+        "-y",
+
+        "-f",
+        "concat",
+
+        "-safe",
+        "0",
+
+        "-i",
+        str(concat_file),
+
+        "-c",
+        "copy",
+
+        str(output_path)
+    ]
+
+    run_command(cmd, timeout=600)
+
+    if not output_path.exists():
+        raise RuntimeError(
+            "Concatenated video was not created."
         )
 
-        current = end
 
-    output.write_text(
-        content,
-        encoding="utf-8",
-    )
+# ============================================================
+# ADD AUDIO
+# ============================================================
 
-    return output
+def add_audio(video_path, audio_path, output_path):
+
+    cmd = [
+        "ffmpeg",
+        "-y",
+
+        "-i",
+        str(video_path),
+
+        "-i",
+        str(audio_path),
+
+        "-map",
+        "0:v:0",
+
+        "-map",
+        "1:a:0",
+
+        "-c:v",
+        "copy",
+
+        "-c:a",
+        "aac",
+
+        "-b:a",
+        "128k",
+
+        "-shortest",
+
+        "-movflags",
+        "+faststart",
+
+        str(output_path)
+    ]
+
+    run_command(cmd, timeout=600)
+
+    if not output_path.exists():
+        raise RuntimeError(
+            "Final video was not created."
+        )
 
 
 # ============================================================
-# FINAL VIDEO
+# MAIN VIDEO PIPELINE
 # ============================================================
 
-def create_final_video(
-    video,
-    audio,
-    ass,
-    output,
-):
+def build_reel(story, job_dir):
 
-    ass_path = (
-        str(ass)
-        .replace("\\", "/")
-        .replace(":", "\\:")
+    log.info("========================================")
+    log.info("BUILD_REEL_START")
+    log.info("========================================")
+
+    # ----------------------------------------
+    # 1. STORYBOARD
+    # ----------------------------------------
+
+    storyboard = create_storyboard(story)
+
+    narration = storyboard["narration"]
+
+    shots = storyboard["shots"]
+
+    log.info(
+        "STORYBOARD_READY shots=%s",
+        len(shots)
     )
 
-    run_cmd(
-        [
-            "ffmpeg",
-            "-y",
-            "-i",
-            str(video),
-            "-i",
-            str(audio),
-            "-vf",
-            f"ass={ass_path}",
-            "-map",
-            "0:v:0",
-            "-map",
-            "1:a:0",
-            "-c:v",
-            "libx264",
-            "-preset",
-            "ultrafast",
-            "-crf",
-            "27",
-            "-pix_fmt",
-            "yuv420p",
-            "-c:a",
-            "aac",
-            "-b:a",
-            "128k",
-            "-shortest",
-            "-movflags",
-            "+faststart",
-            str(output),
-        ],
-        timeout=900,
+    with open(
+        job_dir / "storyboard.json",
+        "w",
+        encoding="utf-8"
+    ) as f:
+
+        json.dump(
+            storyboard,
+            f,
+            ensure_ascii=False,
+            indent=2
+        )
+
+    # ----------------------------------------
+    # 2. TTS
+    # ----------------------------------------
+
+    log.info("TTS_START")
+
+    audio_path = job_dir / "narration.mp3"
+
+    create_tts(
+        narration,
+        audio_path
     )
 
-    return output
+    log.info("TTS_READY")
 
+    # ----------------------------------------
+    # 3. AI VIDEOS
+    # ----------------------------------------
 
-# ============================================================
-# STORY PROCESSOR
-# ============================================================
+    normalized_videos = []
 
-def process_story(
-    story,
-    workdir,
-):
-
-    # -------------------------------
-    # PLAN
-    # -------------------------------
-
-    plan = generate_story_plan(
-        story
-    )
-
-    shots = plan["shots"]
-
-    # -------------------------------
-    # AUDIO
-    # -------------------------------
-
-    audio_paths = []
-    durations = []
-
-    for i, shot in enumerate(
+    for index, shot in enumerate(
         shots,
-        start=1,
+        start=1
     ):
 
-        audio = (
-            workdir /
-            f"audio_{i:02d}.mp3"
+        log.info(
+            "========================================"
         )
 
-        duration = generate_tts(
-            shot["narration"],
-            audio,
+        log.info(
+            "SCENE %s/%s",
+            index,
+            len(shots)
         )
 
-        audio_paths.append(
-            audio
+        prompt = shot.get(
+            "visual_prompt",
+            ""
+        ).strip()
+
+        if not prompt:
+            raise RuntimeError(
+                f"Scene {index} has empty visual prompt."
+            )
+
+        raw_video = (
+            job_dir /
+            f"scene_{index}_raw.mp4"
         )
 
-        durations.append(
-            duration
+        clean_video = (
+            job_dir /
+            f"scene_{index}.mp4"
         )
 
-        cleanup_memory()
-
-    # -------------------------------
-    # SCENES
-    # -------------------------------
-
-    scene_paths = []
-
-    for i, (
-        shot,
-        duration,
-    ) in enumerate(
-        zip(
-            shots,
-            durations,
-        ),
-        start=1,
-    ):
-
-        image = (
-            workdir /
-            f"image_{i:02d}.jpg"
+        # Generate actual AI motion video
+        generate_ai_video(
+            prompt,
+            raw_video,
+            duration=SHOT_DURATION
         )
 
-        scene = (
-            workdir /
-            f"scene_{i:02d}.mp4"
+        # Normalize safely
+        normalize_video(
+            raw_video,
+            clean_video
         )
 
-        logger.info(
-            "========== SCENE %s/%s ==========",
-            i,
-            SHOT_COUNT,
+        normalized_videos.append(
+            clean_video
         )
 
-        # Image
-        generate_pollinations_image(
-            shot,
-            image,
-            i,
-        )
+        # Delete raw huge video immediately
+        try:
+            raw_video.unlink(
+                missing_ok=True
+            )
+        except Exception:
+            pass
 
-        cleanup_memory()
+        gc.collect()
 
-        # Video
-        create_scene_video(
-            image,
-            scene,
-            duration,
-            i,
-        )
+    # ----------------------------------------
+    # 4. CONCAT
+    # ----------------------------------------
 
-        scene_paths.append(
-            scene
-        )
+    log.info("CONCAT_START")
 
-        # Delete image immediately
-        safe_delete(
-            image
-        )
-
-        cleanup_memory()
-
-    # -------------------------------
-    # COMBINE VIDEO
-    # -------------------------------
-
-    combined_video = (
-        workdir /
-        "combined.mp4"
+    joined_video = (
+        job_dir /
+        "joined.mp4"
     )
 
     concat_videos(
-        scene_paths,
-        combined_video,
+        normalized_videos,
+        joined_video,
+        job_dir
     )
 
-    for path in scene_paths:
-        safe_delete(path)
+    # ----------------------------------------
+    # 5. AUDIO
+    # ----------------------------------------
 
-    scene_paths.clear()
-
-    cleanup_memory()
-
-    # -------------------------------
-    # COMBINE AUDIO
-    # -------------------------------
-
-    combined_audio = (
-        workdir /
-        "audio.m4a"
+    final_video = (
+        job_dir /
+        "final_reel.mp4"
     )
 
-    concat_audio(
-        audio_paths,
-        combined_audio,
+    log.info("AUDIO_MUX_START")
+
+    add_audio(
+        joined_video,
+        audio_path,
+        final_video
     )
 
-    for path in audio_paths:
-        safe_delete(path)
+    # ----------------------------------------
+    # 6. CHECK
+    # ----------------------------------------
 
-    audio_paths.clear()
+    if not final_video.exists():
+        raise RuntimeError(
+            "Final Reel does not exist."
+        )
 
-    cleanup_memory()
+    final_size = final_video.stat().st_size
 
-    # -------------------------------
-    # CAPTIONS
-    # -------------------------------
-
-    ass = (
-        workdir /
-        "captions.ass"
+    log.info(
+        "FINAL_VIDEO_SIZE=%s",
+        final_size
     )
 
-    create_ass(
-        shots,
-        durations,
-        ass,
-    )
+    if final_size < 100_000:
+        raise RuntimeError(
+            "Final Reel is suspiciously small."
+        )
 
-    # -------------------------------
-    # FINAL
-    # -------------------------------
+    log.info("========================================")
+    log.info("BUILD_REEL_SUCCESS")
+    log.info("========================================")
 
-    final = (
-        workdir /
-        "FINAL_REEL.mp4"
-    )
-
-    create_final_video(
-        combined_video,
-        combined_audio,
-        ass,
-        final,
-    )
-
-    logger.info(
-        "FINAL_VIDEO=%s",
-        final,
-    )
-
-    logger.info(
-        "FINAL_SIZE=%s",
-        final.stat().st_size,
-    )
-
-    return final, plan
+    return final_video
 
 
 # ============================================================
-# TELEGRAM
+# TELEGRAM HANDLER
 # ============================================================
 
 async def start_command(
-    update,
-    context,
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
 ):
 
     await update.message.reply_text(
@@ -1416,7 +869,7 @@ async def start_command(
 
 async def handle_story(
     update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
+    context: ContextTypes.DEFAULT_TYPE
 ):
 
     if not update.message:
@@ -1426,123 +879,118 @@ async def handle_story(
         update.message.text or ""
     ).strip()
 
-    if len(story) < 80:
+    if not story:
+        return
+
+    if len(story) < 30:
 
         await update.message.reply_text(
-            "📝 ابعت قصة أطول شوي."
+            "✍️ ابعت قصة أطول شوي حتى أقدر "
+            "أبني عليها فيلم."
         )
 
         return
+
+    # ----------------------------------------
+    # ONE JOB AT A TIME
+    # ----------------------------------------
 
     if not JOB_LOCK.acquire(
         blocking=False
     ):
 
         await update.message.reply_text(
-            "⏳ في فيديو ثاني قيد المعالجة."
+            "⏳ في Reel ثاني قيد الإنشاء الآن.\n"
+            "استنى يخلص وبعدها ابعت القصة."
         )
 
         return
 
     job_id = uuid.uuid4().hex[:12]
 
-    workdir = (
+    job_dir = (
         BASE_DIR /
         job_id
     )
 
-    workdir.mkdir(
+    job_dir.mkdir(
         parents=True,
-        exist_ok=True,
+        exist_ok=True
     )
-
-    status = None
 
     try:
 
-        status = await update.message.reply_text(
-            "📝 استلمت القصة.\n"
-            "🧠 جاري بناء السيناريو..."
+        log.info(
+            "JOB_START=%s",
+            job_id
         )
 
-        loop = (
-            asyncio.get_running_loop()
+        await update.message.reply_text(
+            "📝 استلمت القصة.\n\n"
+            "🎬 جاري تحويلها إلى فيلم قصير..."
         )
 
-        final, plan = await loop.run_in_executor(
-            None,
-            process_story,
+        # Build Reel in background thread
+        final_video = await asyncio.to_thread(
+            build_reel,
             story,
-            workdir,
+            job_dir
         )
 
-        await status.edit_text(
-            "✅ خلص الفيديو.\n"
-            "📤 جاري الإرسال..."
+        await update.message.reply_text(
+            "🚀 خلص الفيلم! جاري إرساله..."
         )
 
         with open(
-            final,
-            "rb",
-        ) as video:
+            final_video,
+            "rb"
+        ) as video_file:
 
             await update.message.reply_video(
-                video=video,
-                caption=(
-                    f"🎬 {plan.get('title', 'AI Reel')}"
-                ),
+                video=video_file,
                 supports_streaming=True,
-                width=FINAL_WIDTH,
-                height=FINAL_HEIGHT,
+                caption=(
+                    "🎬 تم إنشاء الـ Reel بنجاح"
+                )
             )
 
-        try:
-            await status.delete()
-        except Exception:
-            pass
+        log.info(
+            "JOB_SUCCESS=%s",
+            job_id
+        )
 
     except Exception as e:
 
-        logger.error(
+        log.error(
             "JOB_FAILED=%s",
-            job_id,
+            job_id
         )
 
-        logger.error(
+        log.error(
             "ERROR_TYPE=%s",
-            type(e).__name__,
+            type(e).__name__
         )
 
-        logger.error(
+        log.error(
             "ERROR_MESSAGE=%s",
-            str(e),
+            str(e)
         )
 
-        logger.error(
-            "TRACEBACK:\n%s",
-            traceback.format_exc(),
+        log.error(
+            traceback.format_exc()
         )
 
+        # Don't expose giant traceback to Telegram
         message = str(e)
 
-        # Do not expose secrets.
-        message = re.sub(
-            r"sk_[A-Za-z0-9_-]+",
-            "[HIDDEN_KEY]",
-            message,
-        )
-
-        message = re.sub(
-            r"pk_[A-Za-z0-9_-]+",
-            "[HIDDEN_KEY]",
-            message,
-        )
+        if len(message) > 1500:
+            message = message[:1500]
 
         try:
 
-            await status.edit_text(
-                "❌ صار خطأ.\n\n"
-                f"{message[:1200]}"
+            await update.message.reply_text(
+                "❌ صار خطأ أثناء صناعة الفيديو.\n\n"
+                f"{message}"
             )
 
         except Exception:
@@ -1550,63 +998,46 @@ async def handle_story(
 
     finally:
 
-        safe_rmtree(
-            workdir
-        )
+        # ----------------------------------------
+        # CLEAN TEMP FILES
+        # ----------------------------------------
 
-        cleanup_memory()
+        try:
+
+            shutil.rmtree(
+                job_dir,
+                ignore_errors=True
+            )
+
+        except Exception:
+            pass
+
+        gc.collect()
 
         JOB_LOCK.release()
 
-
-# ============================================================
-# HEALTH
-# ============================================================
-
-@flask_app.route("/")
-def home():
-
-    return (
-        "Abosaraj Story Reel Bot is alive."
-    )
-
-
-@flask_app.route("/health")
-def health():
-
-    return {
-        "status": "ok",
-        "engine":
-            "Pollinations Image + FFmpeg",
-        "shots":
-            SHOT_COUNT,
-        "resolution":
-            f"{FINAL_WIDTH}x{FINAL_HEIGHT}",
-        "fps":
-            FPS,
-        "pollinations":
-            bool(POLLINATIONS_API_KEY),
-    }
-
-
-# ============================================================
-# FLASK
-# ============================================================
-
-def run_flask():
-
-    port = int(
-        os.getenv(
-            "PORT",
-            "10000",
+        log.info(
+            "JOB_CLEANUP=%s",
+            job_id
         )
+
+
+# ============================================================
+# TELEGRAM ERROR HANDLER
+# ============================================================
+
+async def telegram_error_handler(
+    update,
+    context
+):
+
+    log.error(
+        "TELEGRAM_HANDLER_ERROR=%s",
+        context.error
     )
 
-    flask_app.run(
-        host="0.0.0.0",
-        port=port,
-        threaded=True,
-        use_reloader=False,
+    log.error(
+        traceback.format_exc()
     )
 
 
@@ -1616,17 +1047,13 @@ def run_flask():
 
 def main():
 
-    logger.info(
-        "================================"
-    )
+    log.info("========================================")
+    log.info("ABOSARAJ STARTING")
+    log.info("========================================")
 
-    logger.info(
-        "ABOSARAJ BOT STARTING"
-    )
-
-    logger.info(
-        "================================"
-    )
+    # ----------------------------------------
+    # Validate environment
+    # ----------------------------------------
 
     if not BOT_TOKEN:
         raise RuntimeError(
@@ -1639,48 +1066,54 @@ def main():
         )
 
     if not POLLINATIONS_API_KEY:
-        logger.warning(
-            "POLLINATIONS_API_KEY IS MISSING"
+        raise RuntimeError(
+            "POLLINATIONS_API_KEY is missing."
         )
 
-    logger.info(
-        "GROQ_MODEL=%s",
-        GROQ_MODEL,
+    log.info(
+        "POLLINATIONS_KEY_PRESENT=True"
     )
 
-    logger.info(
-        "POLLINATIONS_MODEL=%s",
-        POLLINATIONS_MODEL,
+    log.info(
+        "VIDEO_MODEL=%s",
+        POLLINATIONS_VIDEO_MODEL
     )
 
-    logger.info(
-        "SHOTS=%s",
-        SHOT_COUNT,
+    log.info(
+        "SHOT_COUNT=%s",
+        SHOT_COUNT
     )
 
-    logger.info(
-        "POLLINATIONS_KEY_PRESENT=%s",
-        bool(POLLINATIONS_API_KEY),
-    )
+    # ----------------------------------------
+    # Health server
+    # ----------------------------------------
 
-    # Flask
-    threading.Thread(
+    flask_thread = threading.Thread(
         target=run_flask,
-        daemon=True,
-    ).start()
+        daemon=True
+    )
 
+    flask_thread.start()
+
+    log.info(
+        "HEALTH_SERVER_STARTED"
+    )
+
+    # ----------------------------------------
     # Telegram
+    # ----------------------------------------
+
     app = (
-        Application.builder()
+        Application
+        .builder()
         .token(BOT_TOKEN)
-        .concurrent_updates(False)
         .build()
     )
 
     app.add_handler(
         CommandHandler(
             "start",
-            start_command,
+            start_command
         )
     )
 
@@ -1688,14 +1121,46 @@ def main():
         MessageHandler(
             filters.TEXT
             & ~filters.COMMAND,
-            handle_story,
+            handle_story
         )
     )
 
+    app.add_error_handler(
+        telegram_error_handler
+    )
+
+    log.info(
+        "TELEGRAM_HANDLERS_READY"
+    )
+
+    log.info(
+        "BOT_START_POLLING"
+    )
+
     app.run_polling(
-        drop_pending_updates=True,
+        drop_pending_updates=True
     )
 
 
+# ============================================================
+# ENTRY
+# ============================================================
+
 if __name__ == "__main__":
-    main()
+
+    try:
+
+        main()
+
+    except Exception as e:
+
+        log.error(
+            "FATAL_ERROR=%s",
+            str(e)
+        )
+
+        log.error(
+            traceback.format_exc()
+        )
+
+        raise
