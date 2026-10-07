@@ -7,13 +7,11 @@ import shutil
 import logging
 import tempfile
 import subprocess
-from pathlib import Path
 
 import requests
 import edge_tts
 
 from flask import Flask, request, jsonify
-
 from groq import Groq
 from gradio_client import Client
 
@@ -117,13 +115,22 @@ def safe_error_text(error):
     text = str(error)
 
     if BOT_TOKEN:
-        text = text.replace(BOT_TOKEN, "[BOT_TOKEN]")
+        text = text.replace(
+            BOT_TOKEN,
+            "[BOT_TOKEN]"
+        )
 
     if GROQ_API_KEY:
-        text = text.replace(GROQ_API_KEY, "[GROQ_API_KEY]")
+        text = text.replace(
+            GROQ_API_KEY,
+            "[GROQ_API_KEY]"
+        )
 
     if HF_TOKEN:
-        text = text.replace(HF_TOKEN, "[HF_TOKEN]")
+        text = text.replace(
+            HF_TOKEN,
+            "[HF_TOKEN]"
+        )
 
     return text[:4000]
 
@@ -132,7 +139,11 @@ def run_cmd(command, check=True):
     """
     تشغيل FFmpeg أو أي أمر خارجي.
     """
-    log.info("RUN_CMD=%s", " ".join(map(str, command)))
+
+    log.info(
+        "RUN_CMD=%s",
+        " ".join(map(str, command))
+    )
 
     result = subprocess.run(
         command,
@@ -142,6 +153,7 @@ def run_cmd(command, check=True):
     )
 
     if result.returncode != 0:
+
         log.error(
             "COMMAND_ERROR=%s",
             result.stderr[-5000:]
@@ -149,8 +161,8 @@ def run_cmd(command, check=True):
 
         if check:
             raise RuntimeError(
-                "COMMAND_FAILED: " +
-                result.stderr[-2000:]
+                "COMMAND_FAILED: "
+                + result.stderr[-2000:]
             )
 
     return result
@@ -160,8 +172,11 @@ def telegram_api(method, data=None):
     """
     Telegram Bot API.
     """
+
     if not BOT_TOKEN:
-        raise RuntimeError("BOT_TOKEN_MISSING")
+        raise RuntimeError(
+            "BOT_TOKEN_MISSING"
+        )
 
     url = (
         f"https://api.telegram.org/bot"
@@ -176,13 +191,16 @@ def telegram_api(method, data=None):
 
     try:
         result = response.json()
+
     except Exception:
+
         result = {
             "ok": False,
             "description": response.text
         }
 
     if not result.get("ok"):
+
         log.error(
             "TELEGRAM_API_ERROR method=%s result=%s",
             method,
@@ -193,6 +211,7 @@ def telegram_api(method, data=None):
 
 
 def send_message(chat_id, text):
+
     return telegram_api(
         "sendMessage",
         {
@@ -202,10 +221,14 @@ def send_message(chat_id, text):
     )
 
 
-def download_telegram_file(file_id, destination):
+def download_telegram_file(
+    file_id,
+    destination
+):
     """
     تنزيل ملف من Telegram.
     """
+
     info = telegram_api(
         "getFile",
         {
@@ -218,7 +241,11 @@ def download_telegram_file(file_id, destination):
             "TELEGRAM_GET_FILE_FAILED"
         )
 
-    file_path = info["result"]["file_path"]
+    file_path = info[
+        "result"
+    ][
+        "file_path"
+    ]
 
     url = (
         f"https://api.telegram.org/file/bot"
@@ -232,8 +259,14 @@ def download_telegram_file(file_id, destination):
 
     response.raise_for_status()
 
-    with open(destination, "wb") as f:
-        f.write(response.content)
+    with open(
+        destination,
+        "wb"
+    ) as f:
+
+        f.write(
+            response.content
+        )
 
     return destination
 
@@ -251,7 +284,9 @@ def send_video(
     إرسال الفيديو النهائي إلى Telegram.
     """
 
-    if not os.path.exists(video_path):
+    if not os.path.exists(
+        video_path
+    ):
         raise RuntimeError(
             "VIDEO_FILE_NOT_FOUND"
         )
@@ -261,7 +296,10 @@ def send_video(
         f"{BOT_TOKEN}/sendVideo"
     )
 
-    with open(video_path, "rb") as video_file:
+    with open(
+        video_path,
+        "rb"
+    ) as video_file:
 
         response = requests.post(
             url,
@@ -271,7 +309,9 @@ def send_video(
             },
             files={
                 "video": (
-                    os.path.basename(video_path),
+                    os.path.basename(
+                        video_path
+                    ),
                     video_file,
                     "video/mp4"
                 )
@@ -280,14 +320,18 @@ def send_video(
         )
 
     try:
+
         result = response.json()
+
     except Exception:
+
         result = {
             "ok": False,
             "description": response.text
         }
 
     if not result.get("ok"):
+
         raise RuntimeError(
             "TELEGRAM_SEND_VIDEO_FAILED: "
             + str(result)
@@ -302,7 +346,8 @@ def send_video(
 
 def extract_json_object(raw):
     """
-    يحاول استخراج JSON من رد Groq حتى لو أضاف Markdown.
+    يحاول استخراج JSON من رد Groq
+    حتى لو أضاف Markdown.
     """
 
     if not raw:
@@ -312,7 +357,6 @@ def extract_json_object(raw):
 
     raw = raw.strip()
 
-    # إزالة ```json ... ```
     raw = re.sub(
         r"^\s*```(?:json)?\s*",
         "",
@@ -335,13 +379,14 @@ def extract_json_object(raw):
             "GROQ_NO_JSON_OBJECT"
         )
 
-    # البحث عن نهاية JSON بطريقة لا تتأثر
-    # بالأقواس الموجودة داخل النصوص
     depth = 0
     in_string = False
     escaped = False
 
-    for i in range(start, len(raw)):
+    for i in range(
+        start,
+        len(raw)
+    ):
 
         char = raw[i]
 
@@ -367,10 +412,14 @@ def extract_json_object(raw):
             depth += 1
 
         elif char == "}":
+
             depth -= 1
 
             if depth == 0:
-                return raw[start:i + 1]
+
+                return raw[
+                    start:i + 1
+                ]
 
     raise RuntimeError(
         "GROQ_UNTERMINATED_JSON"
@@ -381,16 +430,11 @@ def extract_json_object(raw):
 # STORYBOARD
 # ============================================================
 
-def create_storyboard(user_idea):
+def create_storyboard(
+    user_idea
+):
     """
     إنشاء قصة ومشاهد من Groq.
-
-    الإصلاح الأساسي هنا:
-    - JSON صارم
-    - عدم السماح بـ Markdown
-    - استخراج JSON
-    - محاولة إصلاح مشاكل شائعة
-    - تسجيل مكان الخطأ
     """
 
     if not groq_client:
@@ -417,7 +461,8 @@ DO NOT write any explanation before or after the JSON.
 
 Every JSON string MUST be valid JSON.
 
-If you need quotation marks inside Arabic text, use single quotation marks instead of double quotation marks.
+If you need quotation marks inside Arabic text,
+use single quotation marks instead of double quotation marks.
 
 Do not put raw newline characters inside string values.
 
@@ -459,7 +504,6 @@ Rules:
 - Avoid excessive dialogue.
 """
 
-
     user_prompt = f"""
 Create a suspenseful cinematic story based on this idea:
 
@@ -472,7 +516,6 @@ Each scene must be exactly {SHOT_DURATION} seconds.
 Return ONLY valid JSON.
 """
 
-
     try:
 
         log.info(
@@ -480,24 +523,30 @@ Return ONLY valid JSON.
             user_idea[:500]
         )
 
-        response = groq_client.chat.completions.create(
-            model=GROQ_MODEL,
-            messages=[
-                {
-                    "role": "system",
-                    "content": system_prompt
-                },
-                {
-                    "role": "user",
-                    "content": user_prompt
-                }
-            ],
-            temperature=0.65,
-            max_tokens=5000
+        response = (
+            groq_client
+            .chat
+            .completions
+            .create(
+                model=GROQ_MODEL,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": system_prompt
+                    },
+                    {
+                        "role": "user",
+                        "content": user_prompt
+                    }
+                ],
+                temperature=0.65,
+                max_tokens=5000
+            )
         )
 
         raw = (
-            response.choices[0]
+            response
+            .choices[0]
             .message
             .content
             .strip()
@@ -516,8 +565,9 @@ Return ONLY valid JSON.
             "GROQ_RAW_RESPONSE_END"
         )
 
-        # استخراج JSON
-        json_text = extract_json_object(raw)
+        json_text = extract_json_object(
+            raw
+        )
 
         log.info(
             "GROQ_JSON_EXTRACTED_LENGTH=%s",
@@ -559,10 +609,6 @@ Return ONLY valid JSON.
                 f"line {error.lineno} "
                 f"column {error.colno}"
             )
-
-        # ----------------------------------------------------
-        # VALIDATION
-        # ----------------------------------------------------
 
         if not isinstance(
             storyboard,
@@ -617,6 +663,7 @@ Return ONLY valid JSON.
             ).strip()
 
             if not prompt:
+
                 prompt = (
                     "Cinematic realistic moving video, "
                     "natural camera movement, "
@@ -627,6 +674,7 @@ Return ONLY valid JSON.
                 )
 
             if not narration:
+
                 narration = (
                     "لكن شيئًا غريبًا بدأ يحدث."
                 )
@@ -641,6 +689,7 @@ Return ONLY valid JSON.
             )
 
         if not cleaned_scenes:
+
             raise RuntimeError(
                 "GROQ_EMPTY_CLEANED_SCENES"
             )
@@ -703,6 +752,10 @@ Return ONLY valid JSON.
 def create_hf_client():
     """
     إنشاء Gradio client لـ Wan.
+
+    مهم:
+    Gradio الحالي يستخدم token=
+    وليس hf_token=.
     """
 
     log.info(
@@ -711,11 +764,14 @@ def create_hf_client():
     )
 
     if HF_TOKEN:
+
         client = Client(
             HF_SPACE,
-            hf_token=HF_TOKEN
+            token=HF_TOKEN
         )
+
     else:
+
         client = Client(
             HF_SPACE
         )
@@ -738,17 +794,9 @@ def get_hf_api_dict(client):
         "HF_VIEW_API_START"
     )
 
-    try:
-
-        api_dict = client.view_api(
-            return_format="dict"
-        )
-
-    except TypeError:
-
-        api_dict = client.view_api(
-            return_format="dict"
-        )
+    api_dict = client.view_api(
+        return_format="dict"
+    )
 
     if not isinstance(
         api_dict,
@@ -785,12 +833,11 @@ def get_generate_endpoint(
     if endpoint:
         return endpoint
 
-    # fallback
     for name, data in named.items():
 
         if (
-            "generate" in
-            str(name).lower()
+            "generate"
+            in str(name).lower()
         ):
             return data
 
@@ -874,28 +921,37 @@ def build_generate_arguments(
             if choices:
 
                 if "wan-base" in choices:
+
                     value = "wan-base"
 
                 else:
 
                     non_nsfw = [
-                        x for x in choices
-                        if "nsfw" not in str(x).lower()
+                        x
+                        for x in choices
+                        if "nsfw"
+                        not in str(x).lower()
                     ]
 
                     if non_nsfw:
+
                         value = non_nsfw[0]
+
                     else:
+
                         value = choices[0]
 
             else:
+
                 value = (
                     default
                     if has_default
                     else "wan-base"
                 )
 
-            args.append(value)
+            args.append(
+                value
+            )
 
         # ----------------------------------------------------
         # PROMPT
@@ -907,7 +963,9 @@ def build_generate_arguments(
             "text_prompt"
         }:
 
-            args.append(prompt)
+            args.append(
+                prompt
+            )
 
         # ----------------------------------------------------
         # NEGATIVE PROMPT
@@ -1007,18 +1065,17 @@ def build_generate_arguments(
             "lora_strength"
         }:
 
-            if (
-                "lora" in name_lower
-            ):
-                # wan-base لا يحتاج LoRA
-                if has_default:
-                    args.append(
-                        default
-                    )
-                else:
-                    args.append(
-                        1.0
-                    )
+            if has_default:
+
+                args.append(
+                    default
+                )
+
+            else:
+
+                args.append(
+                    1.0
+                )
 
         # ----------------------------------------------------
         # CUSTOM CHECKPOINT
@@ -1045,7 +1102,9 @@ def build_generate_arguments(
             == "boolean"
         ):
 
-            args.append(False)
+            args.append(
+                False
+            )
 
         # ----------------------------------------------------
         # CHOICE
@@ -1075,7 +1134,9 @@ def build_generate_arguments(
             "type"
         ) == "number":
 
-            args.append(0)
+            args.append(
+                0
+            )
 
         # ----------------------------------------------------
         # INTEGER
@@ -1085,7 +1146,9 @@ def build_generate_arguments(
             "type"
         ) == "integer":
 
-            args.append(0)
+            args.append(
+                0
+            )
 
         # ----------------------------------------------------
         # FALLBACK
@@ -1093,7 +1156,9 @@ def build_generate_arguments(
 
         else:
 
-            args.append(None)
+            args.append(
+                None
+            )
 
     log.info(
         "HF_ARGUMENT_COUNT=%s",
@@ -1173,15 +1238,11 @@ def generate_ai_video(
         type(result).__name__
     )
 
-    # --------------------------------------------------------
-    # Gradio result can be:
-    # filepath
-    # tuple
-    # list
-    # dict
-    # --------------------------------------------------------
-
     video_source = None
+
+    # --------------------------------------------------------
+    # String
+    # --------------------------------------------------------
 
     if isinstance(
         result,
@@ -1190,6 +1251,10 @@ def generate_ai_video(
 
         video_source = result
 
+    # --------------------------------------------------------
+    # List / Tuple
+    # --------------------------------------------------------
+
     elif isinstance(
         result,
         (list, tuple)
@@ -1197,10 +1262,13 @@ def generate_ai_video(
 
         for item in result:
 
-            if isinstance(
-                item,
-                str
-            ) and os.path.exists(item):
+            if (
+                isinstance(
+                    item,
+                    str
+                )
+                and os.path.exists(item)
+            ):
 
                 video_source = item
                 break
@@ -1221,8 +1289,13 @@ def generate_ai_video(
                         candidate
                     )
                 ):
+
                     video_source = candidate
                     break
+
+    # --------------------------------------------------------
+    # Dict
+    # --------------------------------------------------------
 
     elif isinstance(
         result,
@@ -1271,6 +1344,7 @@ def generate_ai_video(
             downloaded,
             "wb"
         ) as f:
+
             f.write(
                 response.content
             )
@@ -1280,6 +1354,7 @@ def generate_ai_video(
     if not os.path.exists(
         video_source
     ):
+
         raise RuntimeError(
             "HF_VIDEO_FILE_MISSING"
         )
@@ -1345,7 +1420,9 @@ def normalize_video(
         output_path
     ]
 
-    run_cmd(command)
+    run_cmd(
+        command
+    )
 
     return output_path
 
@@ -1412,7 +1489,9 @@ def concat_videos(
         output_path
     ]
 
-    run_cmd(command)
+    run_cmd(
+        command
+    )
 
     return output_path
 
@@ -1444,6 +1523,7 @@ def generate_tts(
     import asyncio
 
     if not text.strip():
+
         raise RuntimeError(
             "TTS_EMPTY_TEXT"
         )
@@ -1458,6 +1538,7 @@ def generate_tts(
     if not os.path.exists(
         output_path
     ):
+
         raise RuntimeError(
             "TTS_OUTPUT_MISSING"
         )
@@ -1495,10 +1576,13 @@ def get_duration(
     )
 
     try:
+
         return float(
             result.stdout.strip()
         )
+
     except Exception:
+
         return 0.0
 
 
@@ -1556,7 +1640,9 @@ def concat_audio(
         output_path
     ]
 
-    run_cmd(command)
+    run_cmd(
+        command
+    )
 
     return output_path
 
@@ -1604,7 +1690,9 @@ def mux_audio(
         output_path
     ]
 
-    run_cmd(command)
+    run_cmd(
+        command
+    )
 
     return output_path
 
@@ -1642,10 +1730,12 @@ def find_arabic_font():
             path
             and os.path.exists(path)
         ):
+
             log.info(
                 "ARABIC_FONT=%s",
                 path
             )
+
             return path
 
     return None
@@ -1678,20 +1768,26 @@ def format_srt_time(
 
     millis = int(
         round(
-            (seconds - int(seconds))
+            (
+                seconds
+                - int(seconds)
+            )
             * 1000
         )
     )
 
     if millis >= 1000:
+
         secs += 1
         millis = 0
 
     if secs >= 60:
+
         minutes += 1
         secs = 0
 
     if minutes >= 60:
+
         hours += 1
         minutes = 0
 
@@ -1816,7 +1912,9 @@ def burn_captions(
         output_path
     ]
 
-    run_cmd(command)
+    run_cmd(
+        command
+    )
 
     return output_path
 
@@ -1902,6 +2000,7 @@ def create_reel(
             )
 
         if not normalized_videos:
+
             raise RuntimeError(
                 "NO_GENERATED_VIDEOS"
             )
@@ -1965,6 +2064,7 @@ def create_reel(
             )
 
             if duration <= 0:
+
                 duration = float(
                     SHOT_DURATION
                 )
@@ -1997,6 +2097,7 @@ def create_reel(
             )
 
         if not audio_paths:
+
             raise RuntimeError(
                 "NO_TTS_AUDIO"
             )
@@ -2019,7 +2120,6 @@ def create_reel(
             and video_duration > 0
         ):
 
-            # لا نريد CTA خارج الفيديو
             cta_start = max(
                 0,
                 video_duration - 2.5
@@ -2101,6 +2201,7 @@ def create_reel(
         if not os.path.exists(
             final_path
         ):
+
             raise RuntimeError(
                 "FINAL_VIDEO_NOT_CREATED"
             )
@@ -2134,12 +2235,13 @@ def create_reel(
             exc_info=True
         )
 
-        # نحذف المجلد هنا فقط عند الفشل
         try:
+
             shutil.rmtree(
                 work_dir,
                 ignore_errors=True
             )
+
         except Exception:
             pass
 
@@ -2218,7 +2320,7 @@ def process_message(
                 chat_id,
                 (
                     "✅ HF API شغال\n"
-                    f"Endpoint: /generate\n"
+                    "Endpoint: /generate\n"
                     f"Parameters: "
                     f"{len(endpoint.get('parameters', []))}"
                 )
@@ -2263,6 +2365,7 @@ def process_message(
                 "parameters",
                 []
             ):
+
                 names.append(
                     p.get(
                         "parameter_name"
@@ -2298,8 +2401,10 @@ def process_message(
 
         send_message(
             chat_id,
-            "🎬 اختبار Wan بدأ...\n"
-            "هذا الاختبار يستخدم مشهداً واحداً."
+            (
+                "🎬 اختبار Wan بدأ...\n"
+                "هذا الاختبار يستخدم مشهداً واحداً."
+            )
         )
 
         test_dir = tempfile.mkdtemp(
@@ -2420,7 +2525,6 @@ def process_message(
             caption
         )
 
-        # بعد نجاح الإرسال
         shutil.rmtree(
             work_dir,
             ignore_errors=True
@@ -2460,6 +2564,7 @@ def telegram_webhook():
         )
 
         if not update:
+
             return jsonify(
                 {
                     "ok": True
@@ -2475,6 +2580,7 @@ def telegram_webhook():
         )
 
         if message:
+
             process_message(
                 message
             )
@@ -2533,9 +2639,11 @@ def health():
 def setup_webhook():
 
     if not BOT_TOKEN:
+
         log.warning(
             "WEBHOOK_NOT_SET: BOT_TOKEN missing"
         )
+
         return
 
     render_url = os.getenv(
@@ -2628,10 +2736,12 @@ if __name__ == "__main__":
         "========================================"
     )
 
-    # إعطاء Flask فرصة بسيطة ثم ضبط Webhook
     try:
+
         setup_webhook()
+
     except Exception as error:
+
         log.error(
             "WEBHOOK_SETUP_ERROR=%s",
             safe_error_text(error),
