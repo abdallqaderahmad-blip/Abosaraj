@@ -8,16 +8,15 @@ import logging
 import traceback
 import subprocess
 import threading
-
+import gc
+import time
 from pathlib import Path
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from urllib.parse import quote
 
 import requests
 import edge_tts
-import fal_client
 
 from groq import Groq
-
 from flask import Flask
 
 from telegram import Update
@@ -29,48 +28,58 @@ from telegram.ext import (
     filters,
 )
 
-
 # ============================================================
 # CONFIG
 # ============================================================
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
+
 GROQ_MODEL = os.getenv(
     "GROQ_MODEL",
     "llama-3.3-70b-versatile"
 ).strip()
 
-FAL_KEY = os.getenv("FAL_KEY", "").strip()
+# Optional Pollinations key.
+# The bot first tries the legacy endpoint that previously worked
+# in this project, then uses the new authenticated endpoint if key exists.
+POLLINATIONS_API_KEY = os.getenv(
+    "POLLINATIONS_API_KEY",
+    ""
+).strip()
 
-VOICE = "ar-SA-HamedNeural"
+POLLINATIONS_MODEL = os.getenv(
+    "POLLINATIONS_MODEL",
+    "flux"
+).strip()
 
-# ------------------------------------------------------------
-# WAN 2.1
-# ------------------------------------------------------------
+VOICE = os.getenv(
+    "VOICE",
+    "ar-SA-HamedNeural"
+).strip()
 
-WAN_MODEL = "fal-ai/wan-t2v"
+# ============================================================
+# VIDEO SETTINGS
+# ============================================================
 
-WAN_FRAMES = 81
-WAN_FPS = 16
-WAN_RESOLUTION = "480p"
+FINAL_WIDTH = 720
+FINAL_HEIGHT = 1280
+FPS = 30
 
-# Number of AI video shots
-SHOT_COUNT = 14
-
-# Maximum parallel video generations
-MAX_PARALLEL_WAN = 3
-
-# ------------------------------------------------------------
-# Story limits
-# ------------------------------------------------------------
+# Better storytelling without killing Render RAM
+SHOT_COUNT = 10
 
 MIN_WORDS = 145
 MAX_WORDS = 185
 
-# ------------------------------------------------------------
-# Directories
-# ------------------------------------------------------------
+# Image generation resolution.
+# Keep moderate because Render has only 512 MB RAM.
+IMAGE_WIDTH = 768
+IMAGE_HEIGHT = 1365
+
+# ============================================================
+# DIRECTORIES
+# ============================================================
 
 BASE_DIR = Path("/tmp/story_bot")
 BASE_DIR.mkdir(
@@ -78,15 +87,22 @@ BASE_DIR.mkdir(
     exist_ok=True,
 )
 
-# ------------------------------------------------------------
-# Flask
-# ------------------------------------------------------------
+# ============================================================
+# GLOBAL JOB LOCK
+# ============================================================
+
+# Render should process ONE story at a time.
+JOB_LOCK = threading.Lock()
+
+# ============================================================
+# FLASK
+# ============================================================
 
 flask_app = Flask(__name__)
 
-# ------------------------------------------------------------
-# Logging
-# ------------------------------------------------------------
+# ============================================================
+# LOGGING
+# ============================================================
 
 logging.basicConfig(
     level=logging.INFO,
@@ -149,12 +165,12 @@ def run_cmd(
     if result.returncode != 0:
         logger.error(
             "CMD_STDOUT=%s",
-            result.stdout[-5000:],
+            result.stdout[-4000:],
         )
 
         logger.error(
             "CMD_STDERR=%s",
-            result.stderr[-5000:],
+            result.stderr[-6000:],
         )
 
         raise RuntimeError(
@@ -164,10 +180,7 @@ def run_cmd(
     return result
 
 
-def get_duration(
-    path: Path,
-) -> float:
-
+def get_duration(path: Path) -> float:
     result = run_cmd(
         [
             "ffprobe",
@@ -187,13 +200,27 @@ def get_duration(
     )
 
 
+def safe_delete(path: Path):
+    try:
+        if path.exists():
+            path.unlink()
+    except Exception as e:
+        logger.warning(
+            "DELETE_FAILED %s: %s",
+            path,
+            e,
+        )
+
+
+def cleanup_memory():
+    gc.collect()
+
+
 # ============================================================
 # GROQ — AI DIRECTOR
 # ============================================================
 
-def generate_story_plan(
-    story: str,
-):
+def generate_story_plan(story: str):
 
     logger.info(
         "========== GROQ DIRECTOR =========="
@@ -209,77 +236,82 @@ def generate_story_plan(
     )
 
     system_prompt = f"""
-أنت مخرج أفلام قصيرة محترف متخصص في TikTok وInstagram Reels وYouTube Shorts.
+أنت مخرج Reels محترف متخصص في قصص الرعب والغموض.
 
-مهمتك تحويل القصة العربية إلى فيديو رعب/غموض سينمائي احترافي.
+حوّل القصة العربية إلى فيديو قصير سينمائي مناسب لـ
+TikTok / Instagram Reels / YouTube Shorts.
 
-نحن نريد بالضبط {SHOT_COUNT} لقطات فيديو حقيقية.
+نريد بالضبط {SHOT_COUNT} مشاهد.
 
-ممنوع عمل Slideshow.
-ممنوع صور ثابتة.
-ممنوع وصف Zoom على صورة.
+مهم جداً:
+هذه النسخة تستخدم صور AI متحركة بواسطة FFmpeg،
+لذلك يجب أن تكون كل صورة قوية بصرياً وقابلة للتحريك بالكاميرا.
 
-كل Shot يجب أن يكون فيه ACTION حقيقي.
+ممنوع:
+- slideshow عادي
+- صور عامة لا علاقة لها بالقصة
+- تكرار نفس الكادر
+- شخص واقف بدون حدث
+- نص داخل الصورة
+- subtitles
+- logos
+- watermarks
 
-أمثلة:
-- الرجل يمشي باتجاه الباب.
-- مقبض الباب يهتز.
-- الهاتف يهتز ويرن.
-- الرجل يلتفت فجأة.
-- الكاميرا تتحرك داخل الممر.
-- ظل يمر خلف الباب.
-- الشرطة تدخل.
-- الرجل ينظر للهاتف.
-- دمعة تنزل.
-- الباب يفتح ببطء.
-
-الشخصية الرئيسية يجب أن تبقى متقاربة بصرياً في كل اللقطات:
+الشخصية الرئيسية يجب أن تكون ثابتة بصرياً:
 
 رجل عربي في أوائل الثلاثينات،
 شعر أسود قصير،
 لحية سوداء خفيفة،
 ملابس منزلية داكنة،
-مظهر واقعي.
+ملامح واقعية.
 
-الزوجة:
+الزوجة عند ظهورها:
+
 امرأة عربية في الثلاثينات،
 شعر أسود طويل،
-مظهر واقعي،
-هادئة ومخيفة عند ظهورها.
+ملامح واقعية.
 
 المكان:
 شقة عربية قديمة،
 ليل،
 إضاءة منخفضة،
-أجواء رعب واقعية.
+ظلال قوية،
+جو رعب وغموض واقعي.
 
 STYLE:
 
 photorealistic live action,
-cinematic thriller,
-realistic human movement,
-realistic physics,
-dark atmospheric lighting,
-shallow depth of field,
+cinematic horror thriller,
 professional cinematography,
-vertical 9:16,
-high detail,
-real camera movement.
+realistic human anatomy,
+realistic skin,
+natural lighting,
+dramatic shadows,
+shallow depth of field,
+film still,
+35mm cinematic photography,
+vertical composition,
+9:16,
+high detail.
 
-لا تضف:
-subtitles
-captions
-text
-logos
-watermarks
+كل مشهد يجب أن يحتوي على حدث بصري واضح.
 
-الصوت سيتم توليده منفصلاً بواسطة Edge TTS.
+أمثلة:
+
+رجل يمسك مقبض الباب.
+هاتف يهتز على الطاولة.
+الرجل يلتفت نحو الممر.
+ظل يظهر خلف الباب.
+امرأة تقف في نهاية الممر.
+الرجل يركض.
+الباب يفتح.
+الهاتف يسقط.
+الرجل يرى شيئاً مرعباً.
+الكاميرا تقترب من وجهه.
 
 ابدأ بأقوى Hook ممكن.
 
-كل لقطة يجب أن تحرك القصة.
-
-آخر لقطة يجب أن تحتوي على الـTWIST.
+آخر مشهد يجب أن يكون Twist قوي.
 
 الناتج JSON فقط.
 
@@ -294,28 +326,28 @@ watermarks
       "narration": "...",
       "prompt": "...",
       "camera": "...",
-      "action": "...",
+      "motion": "...",
       "mood": "..."
     }}
   ]
 }}
 
-قواعد مهمة:
+القواعد:
 
-- عدد shots = {SHOT_COUNT}
+- عدد المشاهد = {SHOT_COUNT}
 - مجموع narration بين {MIN_WORDS} و {MAX_WORDS} كلمة.
-- narration عربية.
-- prompt باللغة الإنجليزية.
-- camera باللغة الإنجليزية.
-- action باللغة الإنجليزية.
-- mood باللغة الإنجليزية.
-- كل لقطة مناسبة تقريباً لـ4-6 ثواني.
-- لا تجعل كل لقطة مجرد شخص واقف.
-- اجعل الحركة واضحة ومباشرة.
+- narration بالعربية.
+- prompt بالإنجليزية.
+- camera بالإنجليزية.
+- motion بالإنجليزية.
+- mood بالإنجليزية.
+- كل مشهد مناسب تقريباً لـ 5-8 ثواني.
+- كل مشهد يجب أن يغير حالة القصة.
+- لا تكرر نفس زاوية الكاميرا في مشهدين متتاليين.
 """
 
     user_prompt = f"""
-حوّل القصة التالية إلى Reel سينمائي احترافي:
+حوّل القصة التالية إلى Reel رعب سينمائي:
 
 {story}
 """
@@ -323,7 +355,7 @@ watermarks
     response = client.chat.completions.create(
         model=GROQ_MODEL,
         temperature=0.85,
-        max_tokens=7000,
+        max_tokens=6000,
         response_format={
             "type": "json_object"
         },
@@ -357,7 +389,7 @@ watermarks
 
     if len(shots) != SHOT_COUNT:
         raise RuntimeError(
-            f"Groq returned {len(shots)} shots, expected {SHOT_COUNT}."
+            f"Groq returned {len(shots)} shots, expected {SHOT_COUNT}"
         )
 
     narration = " ".join(
@@ -384,33 +416,18 @@ watermarks
         words,
     )
 
-    if words < MIN_WORDS:
-        logger.warning(
-            "Narration is shorter than target: %s",
-            words,
-        )
-
-    if words > MAX_WORDS:
-        logger.warning(
-            "Narration is longer than target: %s",
-            words,
-        )
-
     required_fields = [
         "id",
         "narration",
         "prompt",
         "camera",
-        "action",
+        "motion",
         "mood",
     ]
 
     for shot in shots:
-
         for field in required_fields:
-
             if not shot.get(field):
-
                 raise RuntimeError(
                     f"Shot {shot.get('id')} missing field: {field}"
                 )
@@ -457,7 +474,6 @@ def generate_tts(
     def worker():
 
         try:
-
             asyncio.run(
                 generate_tts_async(
                     text,
@@ -466,7 +482,6 @@ def generate_tts(
             )
 
         except Exception as e:
-
             result["error"] = e
 
     thread = threading.Thread(
@@ -478,19 +493,14 @@ def generate_tts(
     thread.join()
 
     if result["error"]:
-
         raise result["error"]
 
     if not output_path.exists():
-
         raise RuntimeError(
             "TTS file was not created."
         )
 
-    size = output_path.stat().st_size
-
-    if size < 1000:
-
+    if output_path.stat().st_size < 1000:
         raise RuntimeError(
             "TTS file is suspiciously small."
         )
@@ -508,289 +518,465 @@ def generate_tts(
 
 
 # ============================================================
-# WAN 2.1
+# POLLINATIONS IMAGE
 # ============================================================
 
-def build_wan_prompt(
+def build_image_prompt(
     shot,
 ):
 
     return f"""
-Vertical 9:16 cinematic live-action horror thriller.
+Photorealistic cinematic live-action horror thriller film still.
+
+VERTICAL 9:16.
 
 CHARACTER CONTINUITY:
-
 A realistic Arab man in his early 30s,
 short black hair,
 short dark beard,
-dark home clothes.
+dark home clothes,
+natural realistic face,
+realistic skin texture.
 
 ENVIRONMENT:
-
-Old Arabic apartment at night.
-Realistic interior.
-Low cinematic lighting.
-Deep shadows.
-Photorealistic environment.
+Old Arabic apartment at night,
+realistic interior,
+low cinematic lighting,
+deep shadows,
+moody atmosphere,
+realistic architecture.
 
 SCENE:
-
 {shot["prompt"]}
 
-ACTION:
-
-{shot["action"]}
+VISIBLE ACTION:
+{shot["motion"]}
 
 CAMERA:
-
 {shot["camera"]}
 
 MOOD:
-
 {shot["mood"]}
 
-The action must visibly happen during the video.
+Professional movie cinematography,
+35mm lens,
+shallow depth of field,
+dramatic composition,
+realistic lighting,
+natural human anatomy,
+photorealistic,
+high detail.
 
-Natural human body movement.
-Natural physics.
-Realistic facial expressions.
-Realistic object movement.
-Cinematic camera movement.
-Photorealistic live action.
-Professional horror movie cinematography.
+No text,
+no subtitles,
+no captions,
+no logo,
+no watermark,
+no illustration,
+no cartoon,
+no anime,
+no painting,
+no distorted face,
+no extra fingers,
+no extra limbs,
+no duplicate person.
+""".strip()
 
-No talking to camera.
-No subtitles.
-No captions.
-No text.
-No logo.
-No watermark.
-"""
 
-
-def generate_wan_video(
+def generate_pollinations_image(
     shot,
     output_path: Path,
     shot_number: int,
 ):
 
     logger.info(
-        "========== WAN SHOT %s/%s ==========",
+        "========== IMAGE GENERATION %s/%s ==========",
         shot_number,
         SHOT_COUNT,
     )
 
-    prompt = build_wan_prompt(
+    prompt = build_image_prompt(
         shot
     )
 
-    negative_prompt = """
-bright colors,
-overexposed,
-static,
-blurred details,
-subtitles,
-captions,
-text,
-logo,
-watermark,
-painting,
-illustration,
-anime,
-cartoon,
-still image,
-still picture,
-slideshow,
-low quality,
-JPEG artifacts,
-deformed face,
-bad hands,
-extra fingers,
-extra limbs,
-fused fingers,
-duplicate person,
-duplicate body,
-unnatural motion,
-floating objects,
-walking backwards,
-three legs,
-many people in background
-"""
+    seed = int(
+        time.time() * 1000
+    ) % 2147483647
+
+    # Add shot number so scenes remain deterministic within a job.
+    seed = (
+        seed + shot_number * 7919
+    ) % 2147483647
 
     logger.info(
-        "WAN_PROMPT_LENGTH=%s",
-        len(prompt),
+        "IMAGE_SEED=%s",
+        seed,
+    )
+
+    encoded_prompt = quote(
+        prompt,
+        safe=""
+    )
+
+    # --------------------------------------------------------
+    # FIRST:
+    # Legacy endpoint that was previously working in this bot.
+    # --------------------------------------------------------
+
+    legacy_url = (
+        f"https://image.pollinations.ai/prompt/"
+        f"{encoded_prompt}"
+    )
+
+    params = {
+        "model": POLLINATIONS_MODEL,
+        "width": IMAGE_WIDTH,
+        "height": IMAGE_HEIGHT,
+        "seed": seed,
+        "nologo": "true",
+        "enhance": "true",
+    }
+
+    headers = {
+        "User-Agent": "Abosaraj-Story-Reel-Bot/1.0"
+    }
+
+    if POLLINATIONS_API_KEY:
+        headers[
+            "Authorization"
+        ] = f"Bearer {POLLINATIONS_API_KEY}"
+
+    logger.info(
+        "IMAGE_URL=%s",
+        legacy_url[:180],
     )
 
     try:
 
-        result = fal_client.subscribe(
-            WAN_MODEL,
-            arguments={
-                "prompt": prompt,
-                "negative_prompt": negative_prompt,
-
-                # Official Wan 2.1 range:
-                # 81-100
-                "num_frames": WAN_FRAMES,
-
-                "frames_per_second": WAN_FPS,
-
-                "resolution": WAN_RESOLUTION,
-
-                "aspect_ratio": "9:16",
-
-                "num_inference_steps": 30,
-
-                "enable_safety_checker": True,
-
-                "enable_prompt_expansion": False,
-
-                "turbo_mode": True,
-            },
-
-            with_logs=True,
-        )
-
-        if not result:
-
-            raise RuntimeError(
-                "Wan returned empty result."
-            )
-
-        video = result.get(
-            "video"
-        )
-
-        if not video:
-
-            raise RuntimeError(
-                f"Wan returned no video: {result}"
-            )
-
-        video_url = video.get(
-            "url"
-        )
-
-        if not video_url:
-
-            raise RuntimeError(
-                f"Wan returned no video URL: {result}"
-            )
-
-        logger.info(
-            "WAN_VIDEO_URL_RECEIVED shot=%s",
-            shot_number,
-        )
-
         response = requests.get(
-            video_url,
-            timeout=300,
+            legacy_url,
+            params=params,
+            headers=headers,
+            timeout=180,
         )
-
-        response.raise_for_status()
-
-        output_path.write_bytes(
-            response.content
-        )
-
-        if not output_path.exists():
-
-            raise RuntimeError(
-                "Wan output file missing."
-            )
-
-        file_size = (
-            output_path.stat().st_size
-        )
-
-        if file_size < 10000:
-
-            raise RuntimeError(
-                "Wan output file is too small."
-            )
 
         logger.info(
-            "WAN_SUCCESS shot=%s size=%s",
-            shot_number,
-            file_size,
+            "IMAGE_HTTP_STATUS=%s",
+            response.status_code,
         )
 
-        return output_path
+        if response.status_code == 200:
+
+            output_path.write_bytes(
+                response.content
+            )
+
+            size = output_path.stat().st_size
+
+            logger.info(
+                "IMAGE_FILE_SIZE=%s",
+                size,
+            )
+
+            if size > 5000:
+
+                logger.info(
+                    "IMAGE_SUCCESS=%s",
+                    output_path,
+                )
+
+                cleanup_memory()
+
+                return output_path
+
+        logger.warning(
+            "LEGACY_IMAGE_FAILED status=%s body=%s",
+            response.status_code,
+            response.text[:300],
+        )
 
     except Exception as e:
 
-        logger.error(
-            "WAN_ERROR shot=%s",
-            shot_number,
-        )
-
-        logger.error(
-            "WAN_ERROR_TYPE=%s",
-            type(e).__name__,
-        )
-
-        logger.error(
-            "WAN_ERROR_MESSAGE=%s",
+        logger.warning(
+            "LEGACY_IMAGE_ERROR=%s",
             str(e),
         )
 
-        logger.error(
-            "WAN_TRACEBACK:\n%s",
-            traceback.format_exc(),
+    # --------------------------------------------------------
+    # SECOND:
+    # New official endpoint when a Pollinations key exists.
+    # --------------------------------------------------------
+
+    if POLLINATIONS_API_KEY:
+
+        new_url = (
+            f"https://gen.pollinations.ai/image/"
+            f"{encoded_prompt}"
         )
 
-        raise
+        new_params = {
+            "model": POLLINATIONS_MODEL,
+            "width": IMAGE_WIDTH,
+            "height": IMAGE_HEIGHT,
+            "seed": seed,
+        }
+
+        new_headers = {
+            "Authorization":
+                f"Bearer {POLLINATIONS_API_KEY}",
+            "User-Agent":
+                "Abosaraj-Story-Reel-Bot/1.0",
+        }
+
+        logger.info(
+            "TRYING_NEW_POLLINATIONS_ENDPOINT"
+        )
+
+        try:
+
+            response = requests.get(
+                new_url,
+                params=new_params,
+                headers=new_headers,
+                timeout=180,
+            )
+
+            logger.info(
+                "NEW_IMAGE_HTTP_STATUS=%s",
+                response.status_code,
+            )
+
+            if response.status_code == 200:
+
+                output_path.write_bytes(
+                    response.content
+                )
+
+                size = output_path.stat().st_size
+
+                logger.info(
+                    "NEW_IMAGE_FILE_SIZE=%s",
+                    size,
+                )
+
+                if size > 5000:
+
+                    logger.info(
+                        "IMAGE_SUCCESS=%s",
+                        output_path,
+                    )
+
+                    cleanup_memory()
+
+                    return output_path
+
+            else:
+
+                logger.error(
+                    "NEW_IMAGE_FAILED status=%s body=%s",
+                    response.status_code,
+                    response.text[:500],
+                )
+
+        except Exception as e:
+
+            logger.error(
+                "NEW_IMAGE_ERROR=%s",
+                str(e),
+            )
+
+    raise RuntimeError(
+        "Pollinations image generation failed."
+    )
 
 
 # ============================================================
-# NORMALIZE VIDEO
+# CREATE ANIMATED SCENE
 # ============================================================
 
-def normalize_video(
-    input_path: Path,
+def create_scene_video(
+    image_path: Path,
     output_path: Path,
+    duration: float,
+    shot_number: int,
 ):
+
+    # Different camera movement for different scenes.
+    movements = [
+        "zoom_in",
+        "zoom_out",
+        "pan_left",
+        "pan_right",
+        "push_left",
+        "push_right",
+        "zoom_in",
+        "pan_right",
+        "zoom_out",
+        "push_in",
+    ]
+
+    movement = movements[
+        (shot_number - 1) % len(movements)
+    ]
+
+    frames = max(
+        1,
+        int(duration * FPS)
+    )
+
+    if movement == "zoom_in":
+
+        zoom_expr = (
+            "min(zoom+0.0015,1.16)"
+        )
+
+        x_expr = (
+            "(iw-iw/zoom)/2"
+        )
+
+        y_expr = (
+            "(ih-ih/zoom)/2"
+        )
+
+    elif movement == "zoom_out":
+
+        zoom_expr = (
+            "if(eq(on,1),1.16,max(zoom-0.0015,1.0))"
+        )
+
+        x_expr = (
+            "(iw-iw/zoom)/2"
+        )
+
+        y_expr = (
+            "(ih-ih/zoom)/2"
+        )
+
+    elif movement == "pan_left":
+
+        zoom_expr = "1.12"
+
+        x_expr = (
+            "(iw-iw/zoom)*"
+            "(1-on/total)"
+        )
+
+        y_expr = (
+            "(ih-ih/zoom)/2"
+        )
+
+    elif movement == "pan_right":
+
+        zoom_expr = "1.12"
+
+        x_expr = (
+            "(iw-iw/zoom)*"
+            "(on/total)"
+        )
+
+        y_expr = (
+            "(ih-ih/zoom)/2"
+        )
+
+    elif movement == "push_left":
+
+        zoom_expr = (
+            "min(zoom+0.001,1.10)"
+        )
+
+        x_expr = (
+            "(iw-iw/zoom)*"
+            "(1-on/total)"
+        )
+
+        y_expr = (
+            "(ih-ih/zoom)/2"
+        )
+
+    elif movement == "push_right":
+
+        zoom_expr = (
+            "min(zoom+0.001,1.10)"
+        )
+
+        x_expr = (
+            "(iw-iw/zoom)*"
+            "(on/total)"
+        )
+
+        y_expr = (
+            "(ih-ih/zoom)/2"
+        )
+
+    else:
+
+        zoom_expr = (
+            "min(zoom+0.001,1.10)"
+        )
+
+        x_expr = (
+            "(iw-iw/zoom)/2"
+        )
+
+        y_expr = (
+            "(ih-ih/zoom)/2"
+        )
+
+    filter_complex = (
+        f"scale=800:1422:force_original_aspect_ratio=increase,"
+        f"crop=800:1422,"
+        f"zoompan="
+        f"z='{zoom_expr}':"
+        f"x='{x_expr}':"
+        f"y='{y_expr}':"
+        f"d={frames}:"
+        f"s=720x1280:"
+        f"fps={FPS},"
+        f"setsar=1"
+    )
+
+    logger.info(
+        "SCENE_MOVEMENT=%s duration=%.2f",
+        movement,
+        duration,
+    )
 
     run_cmd(
         [
             "ffmpeg",
             "-y",
-
+            "-loop",
+            "1",
             "-i",
-            str(input_path),
-
+            str(image_path),
             "-vf",
-            (
-                "scale=720:1280:"
-                "force_original_aspect_ratio=increase,"
-                "crop=720:1280,"
-                "setsar=1"
-            ),
-
-            "-r",
-            "30",
-
+            filter_complex,
+            "-t",
+            f"{duration:.3f}",
             "-an",
-
             "-c:v",
             "libx264",
-
             "-preset",
-            "veryfast",
-
+            "ultrafast",
             "-crf",
-            "23",
-
+            "27",
             "-pix_fmt",
             "yuv420p",
-
             "-movflags",
             "+faststart",
-
             str(output_path),
         ],
-        timeout=600,
+        timeout=300,
+    )
+
+    if not output_path.exists():
+        raise RuntimeError(
+            "Scene video was not created."
+        )
+
+    logger.info(
+        "SCENE_VIDEO_SUCCESS=%s",
+        output_path,
     )
 
     return output_path
@@ -832,22 +1018,16 @@ def concatenate_videos(
         [
             "ffmpeg",
             "-y",
-
             "-f",
             "concat",
-
             "-safe",
             "0",
-
             "-i",
             str(concat_file),
-
             "-c",
             "copy",
-
             "-movflags",
             "+faststart",
-
             str(output_path),
         ],
         timeout=600,
@@ -892,22 +1072,16 @@ def concatenate_audio(
         [
             "ffmpeg",
             "-y",
-
             "-f",
             "concat",
-
             "-safe",
             "0",
-
             "-i",
             str(concat_file),
-
             "-c:a",
             "aac",
-
             "-b:a",
-            "192k",
-
+            "128k",
             str(output_path),
         ],
         timeout=600,
@@ -932,7 +1106,6 @@ def find_arabic_font():
     for font in candidates:
 
         if Path(font).exists():
-
             return font
 
     return None
@@ -942,9 +1115,7 @@ def find_arabic_font():
 # ASS TIME
 # ============================================================
 
-def ass_time(
-    seconds: float,
-):
+def ass_time(seconds: float):
 
     hours = int(
         seconds // 3600
@@ -1045,7 +1216,6 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
         words = caption.split()
 
-        # Split long captions into two lines
         if len(words) > 9:
 
             middle = (
@@ -1091,12 +1261,6 @@ def create_final_video(
     output_path: Path,
 ):
 
-    # IMPORTANT:
-    # Do NOT put .replace("\\", "\\:")
-    # directly inside an f-string.
-    # Python 3.11 throws:
-    # SyntaxError: f-string expression part cannot include a backslash
-
     ass_filter_path = str(
         ass_path
     ).replace(
@@ -1129,6 +1293,7 @@ def create_final_video(
 
             "-map",
             "0:v:0",
+
             "-map",
             "1:a:0",
 
@@ -1136,10 +1301,10 @@ def create_final_video(
             "libx264",
 
             "-preset",
-            "veryfast",
+            "ultrafast",
 
             "-crf",
-            "22",
+            "27",
 
             "-pix_fmt",
             "yuv420p",
@@ -1148,7 +1313,7 @@ def create_final_video(
             "aac",
 
             "-b:a",
-            "192k",
+            "128k",
 
             "-shortest",
 
@@ -1200,7 +1365,7 @@ def process_story(
     )
 
     # --------------------------------------------------------
-    # 2. TTS PER SHOT
+    # 2. TTS
     # --------------------------------------------------------
 
     logger.info(
@@ -1233,6 +1398,8 @@ def process_story(
             duration
         )
 
+        cleanup_memory()
+
     total_audio = sum(
         audio_durations
     )
@@ -1243,120 +1410,83 @@ def process_story(
     )
 
     # --------------------------------------------------------
-    # 3. WAN VIDEOS
+    # 3. GENERATE IMAGE + VIDEO ONE BY ONE
     # --------------------------------------------------------
 
     logger.info(
-        "========== WAN VIDEO =========="
+        "========== SCENES =========="
     )
 
-    raw_paths = []
+    scene_paths = []
 
-    for index in range(
-        1,
-        len(shots) + 1,
-    ):
-
-        raw_paths.append(
-            workdir /
-            f"wan_{index:02d}.mp4"
-        )
-
-    logger.info(
-        "WAN_PARALLEL_WORKERS=%s",
-        min(
-            MAX_PARALLEL_WAN,
-            len(shots),
+    for index, (
+        shot,
+        duration,
+    ) in enumerate(
+        zip(
+            shots,
+            audio_durations,
         ),
-    )
-
-    with ThreadPoolExecutor(
-        max_workers=min(
-            MAX_PARALLEL_WAN,
-            len(shots),
-        )
-    ) as executor:
-
-        futures = {}
-
-        for index, (
-            shot,
-            output_path,
-        ) in enumerate(
-            zip(
-                shots,
-                raw_paths,
-            ),
-            start=1,
-        ):
-
-            future = executor.submit(
-                generate_wan_video,
-                shot,
-                output_path,
-                index,
-            )
-
-            futures[future] = index
-
-        for future in as_completed(
-            futures
-        ):
-
-            shot_number = futures[
-                future
-            ]
-
-            try:
-
-                future.result()
-
-                logger.info(
-                    "WAN_COMPLETED=%s/%s",
-                    shot_number,
-                    len(shots),
-                )
-
-            except Exception:
-
-                logger.error(
-                    "WAN_FAILED=%s",
-                    shot_number,
-                )
-
-                raise
-
-    # --------------------------------------------------------
-    # 4. NORMALIZE
-    # --------------------------------------------------------
-
-    logger.info(
-        "========== NORMALIZE =========="
-    )
-
-    normalized_paths = []
-
-    for index, raw_path in enumerate(
-        raw_paths,
         start=1,
     ):
 
-        normalized_path = (
+        image_path = (
             workdir /
-            f"normalized_{index:02d}.mp4"
+            f"scene_{index:02d}.jpg"
         )
 
-        normalize_video(
-            raw_path,
-            normalized_path,
+        scene_path = (
+            workdir /
+            f"video_{index:02d}.mp4"
         )
 
-        normalized_paths.append(
-            normalized_path
+        logger.info(
+            "========================================"
+        )
+
+        logger.info(
+            "SCENE %s/%s",
+            index,
+            len(shots),
+        )
+
+        # IMAGE
+        generate_pollinations_image(
+            shot,
+            image_path,
+            index,
+        )
+
+        cleanup_memory()
+
+        # VIDEO
+        create_scene_video(
+            image_path,
+            scene_path,
+            duration,
+            index,
+        )
+
+        scene_paths.append(
+            scene_path
+        )
+
+        # CRITICAL:
+        # Delete source image immediately.
+        safe_delete(
+            image_path
+        )
+
+        cleanup_memory()
+
+        logger.info(
+            "SCENE_COMPLETE=%s/%s",
+            index,
+            len(shots),
         )
 
     # --------------------------------------------------------
-    # 5. CONCAT VIDEO
+    # 4. CONCAT VIDEO
     # --------------------------------------------------------
 
     logger.info(
@@ -1369,12 +1499,21 @@ def process_story(
     )
 
     concatenate_videos(
-        normalized_paths,
+        scene_paths,
         combined_video,
     )
 
+    # We can now delete individual scenes
+    # to reduce disk usage.
+    for scene in scene_paths:
+        safe_delete(scene)
+
+    scene_paths.clear()
+
+    cleanup_memory()
+
     # --------------------------------------------------------
-    # 6. CONCAT AUDIO
+    # 5. CONCAT AUDIO
     # --------------------------------------------------------
 
     logger.info(
@@ -1391,8 +1530,16 @@ def process_story(
         combined_audio,
     )
 
+    # Individual audio files no longer needed.
+    for audio in audio_paths:
+        safe_delete(audio)
+
+    audio_paths.clear()
+
+    cleanup_memory()
+
     # --------------------------------------------------------
-    # 7. CAPTIONS
+    # 6. CAPTIONS
     # --------------------------------------------------------
 
     logger.info(
@@ -1411,7 +1558,7 @@ def process_story(
     )
 
     # --------------------------------------------------------
-    # 8. FINAL VIDEO
+    # 7. FINAL VIDEO
     # --------------------------------------------------------
 
     logger.info(
@@ -1472,8 +1619,7 @@ async def start_command(
 
     await update.message.reply_text(
         "🎬 أهلاً!\n\n"
-        "ابعتلي قصة، وأنا أحولها إلى Reel سينمائي AI "
-        "بمشاهد فيديو حقيقية."
+        "ابعتلي قصة وأنا أحولها إلى Reel سينمائي."
     )
 
 
@@ -1493,7 +1639,7 @@ async def handle_story(
 
         await update.message.reply_text(
             "📝 ابعت قصة أطول شوي، "
-            "عشان نقدر نبني منها مشاهد حقيقية."
+            "عشان نقدر نبني منها فيديو."
         )
 
         return
@@ -1514,10 +1660,17 @@ async def handle_story(
 
         return
 
-    if not FAL_KEY:
+    # --------------------------------------------------------
+    # ONE JOB ONLY
+    # --------------------------------------------------------
+
+    if not JOB_LOCK.acquire(
+        blocking=False
+    ):
 
         await update.message.reply_text(
-            "❌ FAL_KEY غير موجود في Render."
+            "⏳ في فيديو ثاني قيد المعالجة حالياً.\n"
+            "استنى يخلص وبعدين ابعت القصة."
         )
 
         return
@@ -1541,7 +1694,7 @@ async def handle_story(
 
     status = await update.message.reply_text(
         "🎬 استلمت القصة.\n\n"
-        "🧠 جاري تحويلها إلى سيناريو سينمائي..."
+        "🧠 جاري بناء السيناريو..."
     )
 
     try:
@@ -1558,8 +1711,8 @@ async def handle_story(
         )
 
         await status.edit_text(
-            "🎬 خلص التوليد.\n"
-            "📤 جاري تجهيز الفيديو للإرسال..."
+            "🎬 الفيديو خلص.\n"
+            "📤 جاري إرساله..."
         )
 
         title = plan.get(
@@ -1581,8 +1734,8 @@ async def handle_story(
                 video=video_file,
                 caption=caption,
                 supports_streaming=True,
-                width=720,
-                height=1280,
+                width=FINAL_WIDTH,
+                height=FINAL_HEIGHT,
             )
 
         try:
@@ -1622,7 +1775,7 @@ async def handle_story(
             await status.edit_text(
                 "❌ صار خطأ أثناء صناعة الفيديو.\n\n"
                 f"{type(e).__name__}: "
-                f"{str(e)[:1000]}"
+                f"{str(e)[:800]}"
             )
 
         except Exception:
@@ -1640,6 +1793,10 @@ async def handle_story(
         except Exception:
             pass
 
+        cleanup_memory()
+
+        JOB_LOCK.release()
+
 
 # ============================================================
 # FLASK HEALTH
@@ -1649,7 +1806,7 @@ async def handle_story(
 def home():
 
     return (
-        "Story Reel Bot is running."
+        "Abosaraj Story Reel Bot is alive."
     )
 
 
@@ -1658,10 +1815,37 @@ def health():
 
     return {
         "status": "ok",
-        "model": WAN_MODEL,
+        "engine": "Pollinations Image + FFmpeg",
         "shots": SHOT_COUNT,
-        "resolution": WAN_RESOLUTION,
+        "resolution": f"{FINAL_WIDTH}x{FINAL_HEIGHT}",
+        "fps": FPS,
     }
+
+
+# ============================================================
+# FLASK THREAD
+# ============================================================
+
+def run_flask():
+
+    port = int(
+        os.getenv(
+            "PORT",
+            "10000",
+        )
+    )
+
+    logger.info(
+        "FLASK_START port=%s",
+        port,
+    )
+
+    flask_app.run(
+        host="0.0.0.0",
+        port=port,
+        threaded=True,
+        use_reloader=False,
+    )
 
 
 # ============================================================
@@ -1683,21 +1867,13 @@ def main():
     )
 
     if not BOT_TOKEN:
-
         raise RuntimeError(
             "BOT_TOKEN is missing."
         )
 
     if not GROQ_API_KEY:
-
         raise RuntimeError(
             "GROQ_API_KEY is missing."
-        )
-
-    if not FAL_KEY:
-
-        raise RuntimeError(
-            "FAL_KEY is missing."
         )
 
     logger.info(
@@ -1706,23 +1882,8 @@ def main():
     )
 
     logger.info(
-        "WAN_MODEL=%s",
-        WAN_MODEL,
-    )
-
-    logger.info(
-        "WAN_RESOLUTION=%s",
-        WAN_RESOLUTION,
-    )
-
-    logger.info(
-        "WAN_FRAMES=%s",
-        WAN_FRAMES,
-    )
-
-    logger.info(
-        "WAN_FPS=%s",
-        WAN_FPS,
+        "POLLINATIONS_MODEL=%s",
+        POLLINATIONS_MODEL,
     )
 
     logger.info(
@@ -1730,9 +1891,42 @@ def main():
         SHOT_COUNT,
     )
 
+    logger.info(
+        "IMAGE_SIZE=%sx%s",
+        IMAGE_WIDTH,
+        IMAGE_HEIGHT,
+    )
+
+    logger.info(
+        "VIDEO_SIZE=%sx%s",
+        FINAL_WIDTH,
+        FINAL_HEIGHT,
+    )
+
+    logger.info(
+        "POLLINATIONS_KEY=%s",
+        "YES" if POLLINATIONS_API_KEY else "NO",
+    )
+
+    # --------------------------------------------------------
+    # Start Flask in background
+    # --------------------------------------------------------
+
+    flask_thread = threading.Thread(
+        target=run_flask,
+        daemon=True,
+    )
+
+    flask_thread.start()
+
+    # --------------------------------------------------------
+    # Telegram
+    # --------------------------------------------------------
+
     application = (
         Application.builder()
         .token(BOT_TOKEN)
+        .concurrent_updates(False)
         .build()
     )
 
@@ -1757,5 +1951,4 @@ def main():
 
 
 if __name__ == "__main__":
-
     main()
