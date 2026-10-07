@@ -11,7 +11,6 @@ import subprocess
 import time
 import gc
 from pathlib import Path
-from urllib.parse import quote
 
 import requests
 import edge_tts
@@ -26,33 +25,37 @@ from telegram.ext import (
     filters,
 )
 
+from gradio_client import Client
+
+
 # ============================================================
 # CONFIG
 # ============================================================
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
-
-POLLINATIONS_API_KEY = (
-    os.getenv("POLLINATIONS_API_KEY", "").strip()
-    or os.getenv("POLLINATIONS_KEY", "").strip()
-)
+HF_TOKEN = os.getenv("HF_TOKEN", "").strip()
 
 GROQ_MODEL = os.getenv(
     "GROQ_MODEL",
     "llama-3.3-70b-versatile"
 )
 
-# Direct AI video model
-POLLINATIONS_VIDEO_MODEL = os.getenv(
-    "POLLINATIONS_VIDEO_MODEL",
-    "alibaba/wan-2.2-fast"
+# Hugging Face Space
+HF_SPACE = os.getenv(
+    "HF_SPACE",
+    "numanajmal0/wan-video-api"
+)
+
+HF_API_NAME = os.getenv(
+    "HF_API_NAME",
+    "/generate"
 )
 
 # Number of cinematic shots
 SHOT_COUNT = 8
 
-# AI video duration per shot
+# AI video duration
 SHOT_DURATION = 5
 
 # Final Reel
@@ -67,9 +70,17 @@ TTS_VOICE = os.getenv(
 )
 
 BASE_DIR = Path("/tmp/abosaraj")
-BASE_DIR.mkdir(parents=True, exist_ok=True)
+BASE_DIR.mkdir(
+    parents=True,
+    exist_ok=True
+)
 
 JOB_LOCK = threading.Lock()
+
+
+# ============================================================
+# LOGGING
+# ============================================================
 
 logging.basicConfig(
     level=logging.INFO,
@@ -96,12 +107,18 @@ def health():
     return {
         "status": "ok",
         "bot": "online",
-        "video_engine": "pollinations"
+        "video_engine": "huggingface_zero_gpu",
+        "space": HF_SPACE
     }, 200
 
 
 def run_flask():
-    port = int(os.getenv("PORT", "10000"))
+    port = int(
+        os.getenv(
+            "PORT",
+            "10000"
+        )
+    )
 
     flask_app.run(
         host="0.0.0.0",
@@ -115,9 +132,14 @@ def run_flask():
 # ============================================================
 
 def run_command(cmd, timeout=900):
-    log.info("RUN_COMMAND=%s", " ".join(map(str, cmd)))
+
+    log.info(
+        "RUN_COMMAND=%s",
+        " ".join(map(str, cmd))
+    )
 
     try:
+
         result = subprocess.run(
             cmd,
             stdout=subprocess.PIPE,
@@ -125,12 +147,15 @@ def run_command(cmd, timeout=900):
             text=True,
             timeout=timeout
         )
+
     except subprocess.TimeoutExpired:
+
         raise RuntimeError(
             f"Command timed out after {timeout} seconds"
         )
 
     if result.returncode != 0:
+
         log.error(
             "COMMAND_EXIT=%s",
             result.returncode
@@ -154,9 +179,11 @@ def run_command(cmd, timeout=900):
 # ============================================================
 
 def clean_json(text):
+
     text = text.strip()
 
     if text.startswith("```"):
+
         text = re.sub(
             r"^```(?:json)?",
             "",
@@ -174,7 +201,10 @@ def clean_json(text):
 
 
 def create_storyboard(story):
-    client = Groq(api_key=GROQ_API_KEY)
+
+    client = Groq(
+        api_key=GROQ_API_KEY
+    )
 
     system_prompt = f"""
 You are a professional cinematic director for TikTok, Instagram Reels and YouTube Shorts.
@@ -184,7 +214,7 @@ Convert the Arabic story into exactly {SHOT_COUNT} cinematic AI VIDEO shots.
 IMPORTANT:
 
 - This is NOT a slideshow.
-- Every shot must describe real physical movement.
+- Every shot must contain real physical movement.
 - Every shot must be visually filmable.
 - Characters must remain visually consistent.
 - Avoid impossible camera movement.
@@ -260,9 +290,12 @@ Story:
         len(raw or "")
     )
 
-    data = json.loads(clean_json(raw))
+    data = json.loads(
+        clean_json(raw)
+    )
 
     if not isinstance(data, dict):
+
         raise RuntimeError(
             "Groq returned invalid storyboard."
         )
@@ -270,18 +303,23 @@ Story:
     shots = data.get("shots")
 
     if not isinstance(shots, list):
+
         raise RuntimeError(
             "Storyboard does not contain shots."
         )
 
     if len(shots) < SHOT_COUNT:
+
         raise RuntimeError(
             f"Groq returned only {len(shots)} shots."
         )
 
     data["shots"] = shots[:SHOT_COUNT]
 
-    narration = data.get("narration", "").strip()
+    narration = data.get(
+        "narration",
+        ""
+    ).strip()
 
     if not narration:
         narration = story
@@ -292,23 +330,594 @@ Story:
 
 
 # ============================================================
-# POLLINATIONS VIDEO GENERATOR
+# HUGGING FACE / GRADIO HELPERS
 # ============================================================
 
-def generate_ai_video(prompt, output_path, duration=SHOT_DURATION):
-    if not POLLINATIONS_API_KEY:
+def get_hf_client():
+
+    if not HF_TOKEN:
+
         raise RuntimeError(
-            "POLLINATIONS_API_KEY is missing. "
-            "Add it to Render Environment Variables."
+            "HF_TOKEN is missing. "
+            "Add your Hugging Face Read token "
+            "to Render Environment Variables."
         )
 
-    # Extra quality instructions
+    log.info(
+        "HF_CONNECT_SPACE=%s",
+        HF_SPACE
+    )
+
+    try:
+
+        client = Client(
+            HF_SPACE,
+            hf_token=HF_TOKEN
+        )
+
+        log.info(
+            "HF_CLIENT_CONNECTED=True"
+        )
+
+        return client
+
+    except Exception as e:
+
+        raise RuntimeError(
+            f"Could not connect to Hugging Face Space: {e}"
+        )
+
+
+def normalize_label(value):
+
+    if value is None:
+        return ""
+
+    return re.sub(
+        r"[^a-z0-9]+",
+        "_",
+        str(value).lower()
+    ).strip("_")
+
+
+def get_api_schema(client):
+
+    try:
+
+        info = client.view_api()
+
+        log.info(
+            "HF_API_SCHEMA_RECEIVED"
+        )
+
+        log.info(
+            "HF_API_SCHEMA=%s",
+            str(info)[:12000]
+        )
+
+        return info
+
+    except Exception as e:
+
+        raise RuntimeError(
+            f"Could not read Hugging Face API schema: {e}"
+        )
+
+
+def extract_generate_dependency(api_info):
+
+    """
+    Gradio versions return slightly different structures.
+
+    We search recursively for the endpoint named /generate.
+    """
+
+    found = []
+
+    def walk(obj):
+
+        if isinstance(obj, dict):
+
+            api_name = (
+                obj.get("api_name")
+                or obj.get("endpoint")
+                or obj.get("name")
+            )
+
+            if api_name == HF_API_NAME:
+
+                found.append(obj)
+
+            for value in obj.values():
+                walk(value)
+
+        elif isinstance(obj, list):
+
+            for value in obj:
+                walk(value)
+
+    walk(api_info)
+
+    if found:
+
+        return found[0]
+
+    return None
+
+
+def choose_value_from_parameter(
+    parameter,
+    prompt,
+    negative_prompt
+):
+
+    """
+    Converts a Gradio parameter description into
+    a safe value.
+
+    We intentionally use schema information instead
+    of assuming the exact parameter order.
+    """
+
+    if not isinstance(parameter, dict):
+
+        return ""
+
+    label = " ".join([
+        str(parameter.get("label", "")),
+        str(parameter.get("name", "")),
+        str(parameter.get("parameter_name", "")),
+        str(parameter.get("display_name", ""))
+    ])
+
+    normalized = normalize_label(label)
+
+    # --------------------------------------------------------
+    # PROMPT
+    # --------------------------------------------------------
+
+    if (
+        "negative" in normalized
+        or "negative_prompt" in normalized
+    ):
+
+        return negative_prompt
+
+    if (
+        "prompt" in normalized
+        or "description" in normalized
+    ):
+
+        return prompt
+
+    # --------------------------------------------------------
+    # MODEL
+    # --------------------------------------------------------
+
+    if "model" in normalized:
+
+        default = parameter.get(
+            "default",
+            None
+        )
+
+        if default not in (
+            None,
+            "",
+            []
+        ):
+
+            return default
+
+        choices = parameter.get(
+            "choices",
+            None
+        )
+
+        if isinstance(choices, list) and choices:
+
+            return choices[0]
+
+        return "Wan 2.1 T2V 1.3B"
+
+    # --------------------------------------------------------
+    # DURATION
+    # --------------------------------------------------------
+
+    if (
+        "duration" in normalized
+        or "seconds" in normalized
+        or normalized == "length"
+    ):
+
+        return SHOT_DURATION
+
+    # --------------------------------------------------------
+    # FPS
+    # --------------------------------------------------------
+
+    if (
+        normalized == "fps"
+        or "frame_rate" in normalized
+    ):
+
+        return 16
+
+    # --------------------------------------------------------
+    # WIDTH
+    # --------------------------------------------------------
+
+    if "width" in normalized:
+
+        return 480
+
+    # --------------------------------------------------------
+    # HEIGHT
+    # --------------------------------------------------------
+
+    if "height" in normalized:
+
+        return 832
+
+    # --------------------------------------------------------
+    # SEED
+    # --------------------------------------------------------
+
+    if "seed" in normalized:
+
+        return -1
+
+    # --------------------------------------------------------
+    # STEPS
+    # --------------------------------------------------------
+
+    if (
+        "step" in normalized
+        or "inference" in normalized
+    ):
+
+        default = parameter.get(
+            "default",
+            None
+        )
+
+        if default is not None:
+            return default
+
+        return 20
+
+    # --------------------------------------------------------
+    # CFG / GUIDANCE
+    # --------------------------------------------------------
+
+    if (
+        "cfg" in normalized
+        or "guidance" in normalized
+        or "scale" in normalized
+    ):
+
+        default = parameter.get(
+            "default",
+            None
+        )
+
+        if default is not None:
+            return default
+
+        return 5.0
+
+    # --------------------------------------------------------
+    # NUM FRAMES
+    # --------------------------------------------------------
+
+    if (
+        "frame" in normalized
+        or "frames" in normalized
+    ):
+
+        default = parameter.get(
+            "default",
+            None
+        )
+
+        if default is not None:
+            return default
+
+        return 81
+
+    # --------------------------------------------------------
+    # BOOLEAN
+    # --------------------------------------------------------
+
+    component = str(
+        parameter.get(
+            "component",
+            ""
+        )
+    ).lower()
+
+    if (
+        component == "checkbox"
+        or "checkbox" in normalized
+    ):
+
+        return parameter.get(
+            "default",
+            False
+        )
+
+    # --------------------------------------------------------
+    # DEFAULT
+    # --------------------------------------------------------
+
+    if "default" in parameter:
+
+        return parameter["default"]
+
+    # --------------------------------------------------------
+    # CHOICES
+    # --------------------------------------------------------
+
+    choices = parameter.get(
+        "choices",
+        None
+    )
+
+    if isinstance(choices, list) and choices:
+
+        return choices[0]
+
+    # --------------------------------------------------------
+    # LAST RESORT
+    # --------------------------------------------------------
+
+    return ""
+
+
+def build_generate_arguments(
+    api_info,
+    prompt,
+    negative_prompt
+):
+
+    dependency = extract_generate_dependency(
+        api_info
+    )
+
+    if dependency is None:
+
+        raise RuntimeError(
+            f"Could not find Hugging Face endpoint "
+            f"{HF_API_NAME} in API schema."
+        )
+
+    log.info(
+        "HF_GENERATE_DEPENDENCY_FOUND"
+    )
+
+    # Different Gradio versions expose inputs
+    # under different keys.
+
+    parameters = (
+        dependency.get("parameters")
+        or dependency.get("inputs")
+        or dependency.get("input_components")
+        or []
+    )
+
+    if not isinstance(parameters, list):
+
+        parameters = []
+
+    args = []
+
+    for index, parameter in enumerate(parameters):
+
+        value = choose_value_from_parameter(
+            parameter,
+            prompt,
+            negative_prompt
+        )
+
+        log.info(
+            "HF_ARG index=%s label=%s value=%s",
+            index,
+            parameter.get("label", ""),
+            value
+        )
+
+        args.append(value)
+
+    if not args:
+
+        raise RuntimeError(
+            "Hugging Face /generate endpoint "
+            "returned no input parameters."
+        )
+
+    return args
+
+
+# ============================================================
+# EXTRACT GENERATED VIDEO
+# ============================================================
+
+def find_video_value(value):
+
+    """
+    Gradio can return:
+      - local filepath
+      - URL
+      - dict
+      - list/tuple
+      - nested values
+    """
+
+    if value is None:
+        return None
+
+    if isinstance(value, str):
+
+        lower = value.lower()
+
+        if (
+            lower.startswith("http://")
+            or lower.startswith("https://")
+        ):
+
+            return value
+
+        if (
+            lower.endswith(".mp4")
+            or lower.endswith(".webm")
+            or lower.endswith(".mov")
+            or lower.endswith(".avi")
+        ):
+
+            return value
+
+        return None
+
+    if isinstance(value, dict):
+
+        for key in (
+            "video",
+            "path",
+            "url",
+            "value",
+            "file",
+            "name"
+        ):
+
+            if key in value:
+
+                result = find_video_value(
+                    value[key]
+                )
+
+                if result:
+                    return result
+
+        for item in value.values():
+
+            result = find_video_value(
+                item
+            )
+
+            if result:
+                return result
+
+        return None
+
+    if isinstance(value, (list, tuple)):
+
+        for item in value:
+
+            result = find_video_value(
+                item
+            )
+
+            if result:
+                return result
+
+    return None
+
+
+def download_video_result(
+    result,
+    output_path
+):
+
+    video_value = find_video_value(
+        result
+    )
+
+    if not video_value:
+
+        raise RuntimeError(
+            "Hugging Face generated a response, "
+            "but no video file was found."
+        )
+
+    log.info(
+        "HF_VIDEO_RESULT=%s",
+        video_value
+    )
+
+    # --------------------------------------------------------
+    # URL
+    # --------------------------------------------------------
+
+    if isinstance(
+        video_value,
+        str
+    ) and video_value.startswith(
+        ("http://", "https://")
+    ):
+
+        response = requests.get(
+            video_value,
+            timeout=600,
+            stream=True
+        )
+
+        response.raise_for_status()
+
+        with open(
+            output_path,
+            "wb"
+        ) as f:
+
+            for chunk in response.iter_content(
+                chunk_size=1024 * 1024
+            ):
+
+                if chunk:
+                    f.write(chunk)
+
+        return output_path
+
+    # --------------------------------------------------------
+    # Local file
+    # --------------------------------------------------------
+
+    source = Path(
+        str(video_value)
+    )
+
+    if not source.exists():
+
+        raise RuntimeError(
+            f"Hugging Face returned a video path "
+            f"that does not exist: {source}"
+        )
+
+    shutil.copyfile(
+        source,
+        output_path
+    )
+
+    return output_path
+
+
+# ============================================================
+# HUGGING FACE VIDEO GENERATOR
+# ============================================================
+
+def generate_ai_video(
+    prompt,
+    output_path,
+    duration=SHOT_DURATION
+):
+
     final_prompt = f"""
 {prompt}
 
 Professional cinematic live-action video.
 
-Vertical 9:16 composition.
+Vertical social media composition.
+
+9:16 framing.
 
 Realistic human motion.
 
@@ -341,122 +950,88 @@ No morphing faces.
 Maintain consistent character appearance.
 """
 
-    encoded_prompt = quote(
+    negative_prompt = """
+text, subtitles, captions, watermark, logo,
+distorted face, deformed face, duplicate person,
+extra limbs, extra fingers, bad hands,
+flickering, morphing, unnatural motion,
+cartoon, anime, illustration, low quality,
+blurry, static image
+"""
+
+    log.info(
+        "HF_VIDEO_GENERATION_START"
+    )
+
+    log.info(
+        "HF_PROMPT=%s",
+        final_prompt[:3000]
+    )
+
+    client = get_hf_client()
+
+    api_info = get_api_schema(
+        client
+    )
+
+    args = build_generate_arguments(
+        api_info,
         final_prompt.strip(),
-        safe=""
+        negative_prompt.strip()
     )
 
-    url = (
-        "https://gen.pollinations.ai/video/"
-        + encoded_prompt
+    log.info(
+        "HF_GENERATE_START args_count=%s",
+        len(args)
     )
-
-    params = {
-        "model": POLLINATIONS_VIDEO_MODEL,
-        "duration": str(duration)
-    }
-
-    headers = {
-        "Authorization": f"Bearer {POLLINATIONS_API_KEY}",
-        "Accept": "video/mp4"
-    }
 
     last_error = None
 
-    for attempt in range(1, 4):
-
-        log.info(
-            "VIDEO_ATTEMPT=%s MODEL=%s",
-            attempt,
-            POLLINATIONS_VIDEO_MODEL
-        )
+    for attempt in range(1, 3):
 
         try:
 
-            response = requests.get(
-                url,
-                params=params,
-                headers=headers,
-                timeout=600,
-                stream=True
+            log.info(
+                "HF_VIDEO_ATTEMPT=%s",
+                attempt
+            )
+
+            result = client.predict(
+                *args,
+                api_name=HF_API_NAME
             )
 
             log.info(
-                "VIDEO_HTTP_STATUS=%s",
-                response.status_code
+                "HF_GENERATE_RESULT=%s",
+                str(result)[:6000]
             )
 
-            content_type = response.headers.get(
-                "content-type",
-                ""
+            download_video_result(
+                result,
+                output_path
             )
 
-            log.info(
-                "VIDEO_CONTENT_TYPE=%s",
-                content_type
-            )
-
-            if response.status_code == 401:
-                raise RuntimeError(
-                    "Pollinations authentication failed (401). "
-                    "Check POLLINATIONS_API_KEY."
-                )
-
-            if response.status_code == 402:
-                raise RuntimeError(
-                    "Pollinations returned 402. "
-                    "The account does not have enough Pollen/budget "
-                    "for this video generation."
-                )
-
-            if response.status_code == 403:
-                raise RuntimeError(
-                    "Pollinations rejected the request (403)."
-                )
-
-            if response.status_code == 429:
-                raise RuntimeError(
-                    "Pollinations rate limit reached (429)."
-                )
-
-            if response.status_code >= 500:
-                raise RuntimeError(
-                    f"Pollinations server error: "
-                    f"{response.status_code}"
-                )
-
-            if response.status_code != 200:
-                body = response.text[:1000]
+            if not output_path.exists():
 
                 raise RuntimeError(
-                    f"Pollinations video failed: "
-                    f"HTTP {response.status_code} "
-                    f"{body}"
+                    "Hugging Face video was not created."
                 )
-
-            with open(output_path, "wb") as f:
-
-                for chunk in response.iter_content(
-                    chunk_size=1024 * 1024
-                ):
-
-                    if chunk:
-                        f.write(chunk)
 
             size = output_path.stat().st_size
 
             log.info(
-                "VIDEO_FILE_SIZE=%s",
+                "HF_VIDEO_FILE_SIZE=%s",
                 size
             )
 
             if size < 50_000:
+
                 raise RuntimeError(
-                    "Generated video file is suspiciously small."
+                    "Generated video is suspiciously small."
                 )
 
             log.info(
-                "VIDEO_SUCCESS=%s",
+                "HF_VIDEO_SUCCESS=%s",
                 output_path
             )
 
@@ -467,15 +1042,22 @@ Maintain consistent character appearance.
             last_error = e
 
             log.error(
-                "VIDEO_ATTEMPT_FAILED=%s",
+                "HF_VIDEO_ATTEMPT_FAILED=%s",
                 str(e)
             )
 
-            if attempt < 3:
-                time.sleep(4 * attempt)
+            if attempt < 2:
+
+                time.sleep(5)
+
+                # Reconnect on retry
+                try:
+                    client = get_hf_client()
+                except Exception:
+                    pass
 
     raise RuntimeError(
-        f"Pollinations video generation failed: "
+        f"Hugging Face video generation failed: "
         f"{last_error}"
     )
 
@@ -484,16 +1066,26 @@ Maintain consistent character appearance.
 # TTS
 # ============================================================
 
-async def create_tts_async(text, output_path):
+async def create_tts_async(
+    text,
+    output_path
+):
+
     communicate = edge_tts.Communicate(
         text,
         TTS_VOICE
     )
 
-    await communicate.save(str(output_path))
+    await communicate.save(
+        str(output_path)
+    )
 
 
-def create_tts(text, output_path):
+def create_tts(
+    text,
+    output_path
+):
+
     asyncio.run(
         create_tts_async(
             text,
@@ -502,11 +1094,13 @@ def create_tts(text, output_path):
     )
 
     if not output_path.exists():
+
         raise RuntimeError(
             "TTS file was not created."
         )
 
     if output_path.stat().st_size < 1000:
+
         raise RuntimeError(
             "TTS file is too small."
         )
@@ -516,16 +1110,10 @@ def create_tts(text, output_path):
 # NORMALIZE VIDEO
 # ============================================================
 
-def normalize_video(input_path, output_path):
-    """
-    Normalize every generated AI clip into exactly:
-    720x1280
-    30fps
-    H264
-    yuv420p
-
-    This avoids the previous zoompan/libx264 failure.
-    """
+def normalize_video(
+    input_path,
+    output_path
+):
 
     vf = (
         "scale=720:1280:"
@@ -566,9 +1154,13 @@ def normalize_video(input_path, output_path):
         str(output_path)
     ]
 
-    run_command(cmd, timeout=300)
+    run_command(
+        cmd,
+        timeout=300
+    )
 
     if not output_path.exists():
+
         raise RuntimeError(
             "Normalized video was not created."
         )
@@ -578,15 +1170,28 @@ def normalize_video(input_path, output_path):
 # CONCAT VIDEOS
 # ============================================================
 
-def concat_videos(video_files, output_path, work_dir):
+def concat_videos(
+    video_files,
+    output_path,
+    work_dir
+):
 
-    concat_file = work_dir / "videos.txt"
+    concat_file = (
+        work_dir /
+        "videos.txt"
+    )
 
-    with open(concat_file, "w", encoding="utf-8") as f:
+    with open(
+        concat_file,
+        "w",
+        encoding="utf-8"
+    ) as f:
 
         for video in video_files:
 
-            safe_path = str(video).replace(
+            safe_path = str(
+                video
+            ).replace(
                 "'",
                 "'\\''"
             )
@@ -614,9 +1219,13 @@ def concat_videos(video_files, output_path, work_dir):
         str(output_path)
     ]
 
-    run_command(cmd, timeout=600)
+    run_command(
+        cmd,
+        timeout=600
+    )
 
     if not output_path.exists():
+
         raise RuntimeError(
             "Concatenated video was not created."
         )
@@ -626,7 +1235,11 @@ def concat_videos(video_files, output_path, work_dir):
 # ADD AUDIO
 # ============================================================
 
-def add_audio(video_path, audio_path, output_path):
+def add_audio(
+    video_path,
+    audio_path,
+    output_path
+):
 
     cmd = [
         "ffmpeg",
@@ -661,9 +1274,13 @@ def add_audio(video_path, audio_path, output_path):
         str(output_path)
     ]
 
-    run_command(cmd, timeout=600)
+    run_command(
+        cmd,
+        timeout=600
+    )
 
     if not output_path.exists():
+
         raise RuntimeError(
             "Final video was not created."
         )
@@ -673,21 +1290,38 @@ def add_audio(video_path, audio_path, output_path):
 # MAIN VIDEO PIPELINE
 # ============================================================
 
-def build_reel(story, job_dir):
+def build_reel(
+    story,
+    job_dir
+):
 
-    log.info("========================================")
-    log.info("BUILD_REEL_START")
-    log.info("========================================")
+    log.info(
+        "========================================"
+    )
 
-    # ----------------------------------------
+    log.info(
+        "BUILD_REEL_START"
+    )
+
+    log.info(
+        "========================================"
+    )
+
+    # --------------------------------------------------------
     # 1. STORYBOARD
-    # ----------------------------------------
+    # --------------------------------------------------------
 
-    storyboard = create_storyboard(story)
+    storyboard = create_storyboard(
+        story
+    )
 
-    narration = storyboard["narration"]
+    narration = storyboard[
+        "narration"
+    ]
 
-    shots = storyboard["shots"]
+    shots = storyboard[
+        "shots"
+    ]
 
     log.info(
         "STORYBOARD_READY shots=%s",
@@ -707,24 +1341,31 @@ def build_reel(story, job_dir):
             indent=2
         )
 
-    # ----------------------------------------
+    # --------------------------------------------------------
     # 2. TTS
-    # ----------------------------------------
+    # --------------------------------------------------------
 
-    log.info("TTS_START")
+    log.info(
+        "TTS_START"
+    )
 
-    audio_path = job_dir / "narration.mp3"
+    audio_path = (
+        job_dir /
+        "narration.mp3"
+    )
 
     create_tts(
         narration,
         audio_path
     )
 
-    log.info("TTS_READY")
+    log.info(
+        "TTS_READY"
+    )
 
-    # ----------------------------------------
+    # --------------------------------------------------------
     # 3. AI VIDEOS
-    # ----------------------------------------
+    # --------------------------------------------------------
 
     normalized_videos = []
 
@@ -749,6 +1390,7 @@ def build_reel(story, job_dir):
         ).strip()
 
         if not prompt:
+
             raise RuntimeError(
                 f"Scene {index} has empty visual prompt."
             )
@@ -763,14 +1405,14 @@ def build_reel(story, job_dir):
             f"scene_{index}.mp4"
         )
 
-        # Generate actual AI motion video
+        # Generate AI motion video
         generate_ai_video(
             prompt,
             raw_video,
             duration=SHOT_DURATION
         )
 
-        # Normalize safely
+        # Normalize
         normalize_video(
             raw_video,
             clean_video
@@ -780,21 +1422,25 @@ def build_reel(story, job_dir):
             clean_video
         )
 
-        # Delete raw huge video immediately
+        # Delete raw video immediately
         try:
+
             raw_video.unlink(
                 missing_ok=True
             )
+
         except Exception:
             pass
 
         gc.collect()
 
-    # ----------------------------------------
+    # --------------------------------------------------------
     # 4. CONCAT
-    # ----------------------------------------
+    # --------------------------------------------------------
 
-    log.info("CONCAT_START")
+    log.info(
+        "CONCAT_START"
+    )
 
     joined_video = (
         job_dir /
@@ -807,16 +1453,18 @@ def build_reel(story, job_dir):
         job_dir
     )
 
-    # ----------------------------------------
+    # --------------------------------------------------------
     # 5. AUDIO
-    # ----------------------------------------
+    # --------------------------------------------------------
 
     final_video = (
         job_dir /
         "final_reel.mp4"
     )
 
-    log.info("AUDIO_MUX_START")
+    log.info(
+        "AUDIO_MUX_START"
+    )
 
     add_audio(
         joined_video,
@@ -824,16 +1472,19 @@ def build_reel(story, job_dir):
         final_video
     )
 
-    # ----------------------------------------
+    # --------------------------------------------------------
     # 6. CHECK
-    # ----------------------------------------
+    # --------------------------------------------------------
 
     if not final_video.exists():
+
         raise RuntimeError(
             "Final Reel does not exist."
         )
 
-    final_size = final_video.stat().st_size
+    final_size = (
+        final_video.stat().st_size
+    )
 
     log.info(
         "FINAL_VIDEO_SIZE=%s",
@@ -841,13 +1492,22 @@ def build_reel(story, job_dir):
     )
 
     if final_size < 100_000:
+
         raise RuntimeError(
             "Final Reel is suspiciously small."
         )
 
-    log.info("========================================")
-    log.info("BUILD_REEL_SUCCESS")
-    log.info("========================================")
+    log.info(
+        "========================================"
+    )
+
+    log.info(
+        "BUILD_REEL_SUCCESS"
+    )
+
+    log.info(
+        "========================================"
+    )
 
     return final_video
 
@@ -891,9 +1551,9 @@ async def handle_story(
 
         return
 
-    # ----------------------------------------
+    # --------------------------------------------------------
     # ONE JOB AT A TIME
-    # ----------------------------------------
+    # --------------------------------------------------------
 
     if not JOB_LOCK.acquire(
         blocking=False
@@ -930,7 +1590,6 @@ async def handle_story(
             "🎬 جاري تحويلها إلى فيلم قصير..."
         )
 
-        # Build Reel in background thread
         final_video = await asyncio.to_thread(
             build_reel,
             story,
@@ -980,7 +1639,6 @@ async def handle_story(
             traceback.format_exc()
         )
 
-        # Don't expose giant traceback to Telegram
         message = str(e)
 
         if len(message) > 1500:
@@ -997,10 +1655,6 @@ async def handle_story(
             pass
 
     finally:
-
-        # ----------------------------------------
-        # CLEAN TEMP FILES
-        # ----------------------------------------
 
         try:
 
@@ -1047,36 +1701,52 @@ async def telegram_error_handler(
 
 def main():
 
-    log.info("========================================")
-    log.info("ABOSARAJ STARTING")
-    log.info("========================================")
+    log.info(
+        "========================================"
+    )
 
-    # ----------------------------------------
+    log.info(
+        "ABOSARAJ STARTING"
+    )
+
+    log.info(
+        "========================================"
+    )
+
+    # --------------------------------------------------------
     # Validate environment
-    # ----------------------------------------
+    # --------------------------------------------------------
 
     if not BOT_TOKEN:
+
         raise RuntimeError(
             "BOT_TOKEN is missing."
         )
 
     if not GROQ_API_KEY:
+
         raise RuntimeError(
             "GROQ_API_KEY is missing."
         )
 
-    if not POLLINATIONS_API_KEY:
+    if not HF_TOKEN:
+
         raise RuntimeError(
-            "POLLINATIONS_API_KEY is missing."
+            "HF_TOKEN is missing."
         )
 
     log.info(
-        "POLLINATIONS_KEY_PRESENT=True"
+        "HF_TOKEN_PRESENT=True"
     )
 
     log.info(
-        "VIDEO_MODEL=%s",
-        POLLINATIONS_VIDEO_MODEL
+        "HF_SPACE=%s",
+        HF_SPACE
+    )
+
+    log.info(
+        "HF_API_NAME=%s",
+        HF_API_NAME
     )
 
     log.info(
@@ -1084,9 +1754,9 @@ def main():
         SHOT_COUNT
     )
 
-    # ----------------------------------------
+    # --------------------------------------------------------
     # Health server
-    # ----------------------------------------
+    # --------------------------------------------------------
 
     flask_thread = threading.Thread(
         target=run_flask,
@@ -1099,9 +1769,9 @@ def main():
         "HEALTH_SERVER_STARTED"
     )
 
-    # ----------------------------------------
+    # --------------------------------------------------------
     # Telegram
-    # ----------------------------------------
+    # --------------------------------------------------------
 
     app = (
         Application
