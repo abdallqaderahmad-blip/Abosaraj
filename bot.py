@@ -36,7 +36,7 @@ FPS = 30
 
 SCENE_COUNT = 4
 
-# عدد الكلمات المطلوب للنص
+# عدد الكلمات المطلوب
 MIN_WORDS = 150
 MAX_WORDS = 190
 
@@ -44,14 +44,19 @@ MAX_WORDS = 190
 MIN_VIDEO_SECONDS = 60
 MAX_VIDEO_SECONDS = 90
 
+# الصوت
 VOICE = "ar-SA-HamedNeural"
 
+# مجلد العمل
 BASE_DIR = Path("/tmp/story_bot")
-BASE_DIR.mkdir(parents=True, exist_ok=True)
+BASE_DIR.mkdir(
+    parents=True,
+    exist_ok=True,
+)
 
 LOG_LEVEL = os.getenv(
     "LOG_LEVEL",
-    "INFO"
+    "INFO",
 ).upper()
 
 
@@ -72,7 +77,9 @@ logging.basicConfig(
     ),
 )
 
-logger = logging.getLogger("story_bot")
+logger = logging.getLogger(
+    "story_bot"
+)
 
 
 # =========================================================
@@ -194,7 +201,7 @@ def check_environment():
 
 
 # =========================================================
-# GROQ
+# GROQ CLIENT
 # =========================================================
 
 groq_client = Groq(
@@ -286,7 +293,7 @@ ARABIC_FONT_PATH = find_arabic_font()
 
 
 def get_font_family(
-    font_path
+    font_path,
 ):
 
     try:
@@ -338,7 +345,7 @@ logger.info(
 # =========================================================
 
 def extract_json_from_text(
-    text
+    text,
 ):
 
     if not text:
@@ -414,7 +421,7 @@ def extract_json_from_text(
 # =========================================================
 
 def normalize_story_plan(
-    data
+    data,
 ):
 
     if isinstance(
@@ -510,7 +517,9 @@ def normalize_story_plan(
 # WORD COUNT
 # =========================================================
 
-def count_words(text):
+def count_words(
+    text,
+):
 
     if not text:
         return 0
@@ -525,7 +534,7 @@ def count_words(text):
 
 
 def total_story_words(
-    scenes
+    scenes,
 ):
 
     total = 0
@@ -547,7 +556,7 @@ def total_story_words(
 # =========================================================
 
 def validate_story_plan(
-    scenes
+    scenes,
 ):
 
     if len(scenes) != SCENE_COUNT:
@@ -628,7 +637,7 @@ def validate_story_plan(
 # =========================================================
 
 def generate_story_plan(
-    user_story
+    user_story,
 ):
 
     logger.info(
@@ -657,7 +666,7 @@ def generate_story_plan(
 - اجعل النهاية قوية ومفاجئة.
 - narration باللغة العربية.
 - image_prompt باللغة الإنجليزية.
-- image_prompt يجب أن يكون وصفاً بصرياً سينمائياً.
+- image_prompt وصف بصري سينمائي مفصل.
 - الصور واقعية.
 - الصور عمودية 9:16.
 - لا يوجد أي نص داخل الصور.
@@ -812,7 +821,7 @@ def generate_story_plan(
 
 def build_image_prompt(
     scene,
-    index
+    index,
 ):
 
     prompt = scene[
@@ -849,13 +858,13 @@ Make it visually powerful and immediately interesting.
 
 
 # =========================================================
-# POLLINATIONS
+# POLLINATIONS IMAGE
 # =========================================================
 
 def generate_image(
     prompt,
     output_path,
-    seed
+    seed,
 ):
 
     logger.info(
@@ -967,7 +976,7 @@ def generate_image(
 
 async def generate_tts_async(
     text,
-    output_path
+    output_path,
 ):
 
     communicate = edge_tts.Communicate(
@@ -985,7 +994,7 @@ async def generate_tts_async(
 
 def generate_tts(
     text,
-    output_path
+    output_path,
 ):
 
     logger.info(
@@ -1002,14 +1011,40 @@ def generate_tts(
         count_words(text),
     )
 
+    result = {
+        "error": None,
+    }
+
+    def tts_worker():
+
+        try:
+
+            # هذا الـThread له event loop مستقل.
+            asyncio.run(
+                generate_tts_async(
+                    text,
+                    output_path,
+                )
+            )
+
+        except Exception as e:
+
+            result["error"] = e
+
     try:
 
-        asyncio.run(
-            generate_tts_async(
-                text,
-                output_path,
-            )
+        thread = threading.Thread(
+            target=tts_worker,
+            daemon=True,
         )
+
+        thread.start()
+
+        thread.join()
+
+        if result["error"] is not None:
+
+            raise result["error"]
 
         if not output_path.exists():
 
@@ -1023,6 +1058,12 @@ def generate_tts(
             "TTS_FILE_SIZE=%s",
             size,
         )
+
+        if size < 1000:
+
+            raise RuntimeError(
+                "TTS file is suspiciously small."
+            )
 
         logger.info(
             "TTS_SUCCESS"
@@ -1051,12 +1092,12 @@ def generate_tts(
 
 
 # =========================================================
-# COMMAND
+# FFMPEG
 # =========================================================
 
 def run_command(
     command,
-    stage="UNKNOWN"
+    stage="UNKNOWN",
 ):
 
     logger.info(
@@ -1137,7 +1178,7 @@ def run_command(
 # =========================================================
 
 def get_duration(
-    file_path
+    file_path,
 ):
 
     try:
@@ -1178,7 +1219,12 @@ def get_duration(
     except Exception as e:
 
         logger.error(
-            "DURATION_ERROR=%s",
+            "DURATION_ERROR_TYPE=%s",
+            type(e).__name__,
+        )
+
+        logger.error(
+            "DURATION_ERROR_MESSAGE=%s",
             str(e),
         )
 
@@ -1191,7 +1237,7 @@ def get_duration(
 
 def calculate_scene_durations(
     scenes,
-    total_duration
+    total_duration,
 ):
 
     weights = []
@@ -1236,7 +1282,7 @@ def create_scene_video(
     image_path,
     output_path,
     duration,
-    motion_type
+    motion_type,
 ):
 
     logger.info(
@@ -1248,7 +1294,7 @@ def create_scene_video(
         1,
         int(
             duration * FPS
-        )
+        ),
     )
 
     zoom_step = 0.0008
@@ -1346,7 +1392,7 @@ def create_scene_video(
 
 def concatenate_videos(
     video_paths,
-    output_path
+    output_path,
 ):
 
     logger.info(
@@ -1424,7 +1470,7 @@ def concatenate_videos(
 def add_audio(
     video_path,
     audio_path,
-    output_path
+    output_path,
 ):
 
     command = [
@@ -1457,11 +1503,11 @@ def add_audio(
 
 
 # =========================================================
-# ASS
+# ASS CAPTIONS
 # =========================================================
 
 def escape_ass_text(
-    text
+    text,
 ):
 
     text = text.replace(
@@ -1489,7 +1535,7 @@ def escape_ass_text(
 
 def split_caption_text(
     text,
-    max_words=12
+    max_words=12,
 ):
 
     words = text.split()
@@ -1524,7 +1570,7 @@ def split_caption_text(
 
 
 def ass_time(
-    seconds
+    seconds,
 ):
 
     hours = int(
@@ -1550,7 +1596,7 @@ def ass_time(
 def create_ass_file(
     scenes,
     scene_durations,
-    ass_path
+    ass_path,
 ):
 
     logger.info(
@@ -1628,13 +1674,13 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
 
 # =========================================================
-# CAPTIONS
+# ADD CAPTIONS
 # =========================================================
 
 def add_captions(
     video_path,
     ass_path,
-    output_path
+    output_path,
 ):
 
     logger.info(
@@ -1686,7 +1732,7 @@ def add_captions(
 
 def build_video(
     scenes,
-    workdir
+    workdir,
 ):
 
     logger.info(
@@ -1703,17 +1749,17 @@ def build_video(
 
     try:
 
-        # -------------------------------------------------
+        # ---------------------------------------------
         # Validate
-        # -------------------------------------------------
+        # ---------------------------------------------
 
         validate_story_plan(
             scenes
         )
 
-        # -------------------------------------------------
+        # ---------------------------------------------
         # Narration
-        # -------------------------------------------------
+        # ---------------------------------------------
 
         full_narration = "\n".join(
             scene["narration"]
@@ -1729,9 +1775,9 @@ def build_video(
             total_words,
         )
 
-        # -------------------------------------------------
+        # ---------------------------------------------
         # TTS
-        # -------------------------------------------------
+        # ---------------------------------------------
 
         audio_path = (
             workdir
@@ -1755,13 +1801,13 @@ def build_video(
         if audio_duration < 50:
 
             logger.warning(
-                "WARNING: TTS is very short: %.2f seconds",
+                "TTS is very short: %.2f seconds",
                 audio_duration,
             )
 
-        # -------------------------------------------------
+        # ---------------------------------------------
         # Scene durations
-        # -------------------------------------------------
+        # ---------------------------------------------
 
         scene_durations = (
             calculate_scene_durations(
@@ -1781,9 +1827,9 @@ def build_video(
             ],
         )
 
-        # -------------------------------------------------
-        # Images
-        # -------------------------------------------------
+        # ---------------------------------------------
+        # Images + scene videos
+        # ---------------------------------------------
 
         scene_videos = []
 
@@ -1823,11 +1869,9 @@ def build_video(
                 )
             )
 
-            prompt = (
-                build_image_prompt(
-                    scene,
-                    index,
-                )
+            prompt = build_image_prompt(
+                scene,
+                index,
             )
 
             seed = (
@@ -1854,9 +1898,9 @@ def build_video(
                 video_path
             )
 
-        # -------------------------------------------------
+        # ---------------------------------------------
         # Concat
-        # -------------------------------------------------
+        # ---------------------------------------------
 
         silent_video = (
             workdir
@@ -1868,9 +1912,9 @@ def build_video(
             silent_video,
         )
 
-        # -------------------------------------------------
+        # ---------------------------------------------
         # Audio
-        # -------------------------------------------------
+        # ---------------------------------------------
 
         video_with_audio = (
             workdir
@@ -1883,9 +1927,9 @@ def build_video(
             video_with_audio,
         )
 
-        # -------------------------------------------------
+        # ---------------------------------------------
         # Captions
-        # -------------------------------------------------
+        # ---------------------------------------------
 
         ass_path = (
             workdir
@@ -1898,9 +1942,9 @@ def build_video(
             ass_path,
         )
 
-        # -------------------------------------------------
+        # ---------------------------------------------
         # Final
-        # -------------------------------------------------
+        # ---------------------------------------------
 
         final_video = (
             workdir
@@ -1974,7 +2018,7 @@ def build_video(
 
 
 # =========================================================
-# TELEGRAM
+# TELEGRAM START
 # =========================================================
 
 async def start_command(
@@ -1986,6 +2030,10 @@ async def start_command(
         "👋 ابعتلي القصة وأنا أحولها لفيديو قصصي."
     )
 
+
+# =========================================================
+# TELEGRAM STORY
+# =========================================================
 
 async def handle_story(
     update: Update,
@@ -2035,9 +2083,9 @@ async def handle_story(
             exist_ok=True,
         )
 
-        # -------------------------------------------------
+        # ---------------------------------------------
         # Groq
-        # -------------------------------------------------
+        # ---------------------------------------------
 
         scenes = (
             generate_story_plan(
@@ -2055,9 +2103,9 @@ async def handle_story(
             "🖼️ جاري تجهيز المشاهد..."
         )
 
-        # -------------------------------------------------
-        # Build
-        # -------------------------------------------------
+        # ---------------------------------------------
+        # Build video
+        # ---------------------------------------------
 
         final_video = build_video(
             scenes,
@@ -2068,9 +2116,9 @@ async def handle_story(
             final_video
         )
 
-        # -------------------------------------------------
-        # Telegram
-        # -------------------------------------------------
+        # ---------------------------------------------
+        # Send
+        # ---------------------------------------------
 
         await status_message.edit_text(
             "🎞️ الفيديو جاهز.\n"
@@ -2102,10 +2150,6 @@ async def handle_story(
         )
 
     except Exception as e:
-
-        # =================================================
-        # IMPORTANT ERROR LOG
-        # =================================================
 
         logger.error(
             "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
@@ -2142,7 +2186,6 @@ async def handle_story(
             "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
         )
 
-        # رسالة للمستخدم
         try:
 
             await status_message.edit_text(
@@ -2155,7 +2198,7 @@ async def handle_story(
         except Exception as telegram_error:
 
             logger.error(
-                "Could not send error message: %s",
+                "Telegram error message failed: %s",
                 telegram_error,
             )
 
@@ -2264,7 +2307,7 @@ async def main():
 
 
 # =========================================================
-# START
+# START APPLICATION
 # =========================================================
 
 if __name__ == "__main__":
