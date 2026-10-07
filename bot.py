@@ -1,19 +1,18 @@
 import os
 import re
 import json
-import time
 import uuid
 import asyncio
 import logging
 import subprocess
+import threading
 from pathlib import Path
 
 import requests
 import edge_tts
-
 from flask import Flask
 from groq import Groq
-from gradio_client import Client, handle_file
+from gradio_client import Client
 
 from telegram import Update
 from telegram.ext import (
@@ -38,19 +37,40 @@ HF_SPACE = os.getenv(
     "numanajmal0/wan-video-api"
 ).strip()
 
-HF_API_NAME = os.getenv("HF_API_NAME", "").strip()
+HF_API_NAME = os.getenv(
+    "HF_API_NAME",
+    ""
+).strip()
 
 GROQ_MODEL = os.getenv(
     "GROQ_MODEL",
     "llama-3.3-70b-versatile"
 ).strip()
 
+# ---------------------------------------------------------
+# TEST SETTINGS
+# ---------------------------------------------------------
+
+# حالياً نختبر مشهد واحد حتى نتأكد أن Wan يعمل.
+# بعد نجاح الاختبار سنرفعها إلى إنتاج 90-120 ثانية.
 SHOT_COUNT = int(os.getenv("SHOT_COUNT", "1"))
-SHOT_DURATION = int(os.getenv("SHOT_DURATION", "5"))
+
+SHOT_DURATION = int(
+    os.getenv("SHOT_DURATION", "5")
+)
+
+# ---------------------------------------------------------
+# FINAL VIDEO
+# ---------------------------------------------------------
 
 FINAL_WIDTH = 720
 FINAL_HEIGHT = 1280
-FPS = 16
+
+# Wan generation
+GEN_WIDTH = 576
+GEN_HEIGHT = 832
+GEN_FRAMES = 81
+GEN_FPS = 16
 
 TTS_VOICE = os.getenv(
     "TTS_VOICE",
@@ -58,7 +78,10 @@ TTS_VOICE = os.getenv(
 ).strip()
 
 BASE_DIR = Path("/tmp/abosaraj")
-BASE_DIR.mkdir(parents=True, exist_ok=True)
+BASE_DIR.mkdir(
+    parents=True,
+    exist_ok=True
+)
 
 
 # =========================================================
@@ -91,9 +114,13 @@ def health():
 
 
 def start_health_server():
-    port = int(os.getenv("PORT", "10000"))
 
-    import threading
+    port = int(
+        os.getenv(
+            "PORT",
+            "10000"
+        )
+    )
 
     thread = threading.Thread(
         target=lambda: app.run(
@@ -114,23 +141,25 @@ def start_health_server():
 
 
 # =========================================================
-# SECURITY / ERROR CLEANING
+# SECURITY
 # =========================================================
 
 def safe_error_text(error):
+
     text = str(error)
 
-    secrets = [
+    for secret in [
         BOT_TOKEN,
         GROQ_API_KEY,
-        HF_TOKEN,
-    ]
+        HF_TOKEN
+    ]:
 
-    for secret in secrets:
         if secret:
-            text = text.replace(secret, "[REDACTED]")
+            text = text.replace(
+                secret,
+                "[REDACTED]"
+            )
 
-    # Hide Telegram bot token if it appears inside URLs
     text = re.sub(
         r"/bot\d+:[A-Za-z0-9_-]+/",
         "/bot[REDACTED]/",
@@ -140,14 +169,23 @@ def safe_error_text(error):
     return text
 
 
+# =========================================================
+# COMMAND EXECUTION
+# =========================================================
+
 def run_command(command):
-    safe_command = " ".join(command)
+
+    safe_command = " ".join(
+        str(x)
+        for x in command
+    )
 
     for secret in [
         BOT_TOKEN,
         GROQ_API_KEY,
-        HF_TOKEN,
+        HF_TOKEN
     ]:
+
         if secret:
             safe_command = safe_command.replace(
                 secret,
@@ -167,27 +205,37 @@ def run_command(command):
     )
 
     if result.returncode != 0:
+
         raise RuntimeError(
-            f"Command failed: {safe_error_text(result.stderr)}"
+            safe_error_text(
+                result.stderr
+            )
         )
 
     return result
 
 
 # =========================================================
-# TELEGRAM CONNECTION CHECK
+# TELEGRAM CONNECTION
 # =========================================================
 
 def check_telegram_connection():
+
     if not BOT_TOKEN:
-        log.error("BOT_TOKEN_MISSING")
+        log.error(
+            "BOT_TOKEN_MISSING"
+        )
         return
 
     try:
-        log.info("TELEGRAM_CONNECTION_CHECK_START")
+
+        log.info(
+            "TELEGRAM_CONNECTION_CHECK_START"
+        )
 
         response = requests.get(
-            f"https://api.telegram.org/bot{BOT_TOKEN}/getWebhookInfo",
+            "https://api.telegram.org/"
+            f"bot{BOT_TOKEN}/getWebhookInfo",
             timeout=20
         )
 
@@ -197,19 +245,37 @@ def check_telegram_connection():
         )
 
         if response.status_code != 200:
+
             log.warning(
                 "TELEGRAM_API_RESPONSE=%s",
-                safe_error_text(response.text)
+                safe_error_text(
+                    response.text
+                )
             )
+
             return
 
         data = response.json()
 
-        result = data.get("result", {})
+        result = data.get(
+            "result",
+            {}
+        )
 
-        webhook_url = result.get("url") or "<EMPTY>"
-        pending = result.get("pending_update_count", 0)
-        ip = result.get("ip_address") or "<NONE>"
+        webhook_url = (
+            result.get("url")
+            or "<EMPTY>"
+        )
+
+        pending = result.get(
+            "pending_update_count",
+            0
+        )
+
+        ip = (
+            result.get("ip_address")
+            or "<NONE>"
+        )
 
         log.info(
             "TELEGRAM_WEBHOOK url=%s pending=%s ip=%s",
@@ -218,10 +284,14 @@ def check_telegram_connection():
             ip
         )
 
-        if not webhook_url or webhook_url == "<EMPTY>":
-            log.info("TELEGRAM_WEBHOOK_IS_EMPTY")
+        if webhook_url == "<EMPTY>":
+
+            log.info(
+                "TELEGRAM_WEBHOOK_IS_EMPTY"
+            )
 
     except Exception as e:
+
         log.error(
             "TELEGRAM_CONNECTION_CHECK_ERROR=%s",
             safe_error_text(e)
@@ -229,11 +299,13 @@ def check_telegram_connection():
 
 
 # =========================================================
-# GROQ
+# GROQ CLIENT
 # =========================================================
 
 def get_groq_client():
+
     if not GROQ_API_KEY:
+
         raise RuntimeError(
             "GROQ_API_KEY is missing"
         )
@@ -243,45 +315,58 @@ def get_groq_client():
     )
 
 
+# =========================================================
+# STORYBOARD
+# =========================================================
+
 def generate_storyboard(story):
+
     client = get_groq_client()
 
     prompt = f"""
-You are the cinematic director of a professional short-form video factory.
+You are the cinematic director of a professional
+TikTok and Instagram Reels content factory.
 
-Convert the following Arabic story into exactly {SHOT_COUNT} cinematic video scene(s).
+Convert the Arabic story below into exactly
+{SHOT_COUNT} cinematic video scene(s).
 
-The video is for TikTok / Instagram Reels.
+Each scene should be approximately
+{SHOT_DURATION} seconds.
 
-IMPORTANT:
-- This is fictional unless the story explicitly states otherwise.
-- Do not invent claims that make fiction look like a real news event.
-- Focus on visual storytelling.
-- Every scene must be visually understandable.
-- Use realistic human behavior.
-- Use realistic robotics and technology.
-- Avoid text appearing inside the generated video.
-- Avoid logos.
-- Avoid subtitles.
-- Avoid UI screenshots.
-- Avoid static slideshow composition.
-- Camera movement should feel cinematic.
-- Characters should look realistic.
-- Lighting should be cinematic.
-- The scene should feel like live-action science fiction.
-- Maintain character and environment continuity.
+The content should feel like realistic live-action
+cinematic science fiction.
+
+Rules:
+
+- Strong visual storytelling.
+- No slideshow feeling.
+- Realistic humans.
+- Realistic robots.
+- Cinematic camera movement.
+- Cinematic lighting.
+- Realistic environments.
+- Maintain character continuity.
+- No subtitles inside the generated video.
+- No logos.
+- No watermark.
+- No text inside the generated video.
+- No UI screenshots.
+- No cartoon/anime style.
 - Build suspense.
-- Make the final scene visually strong.
+- Make the final visual memorable.
+
+The story is fictional unless explicitly stated otherwise.
+Do not present fictional events as real news.
 
 Return ONLY valid JSON.
 
-Required format:
+Format:
 
 [
   {{
     "scene": 1,
     "duration": {SHOT_DURATION},
-    "prompt": "English cinematic video prompt"
+    "prompt": "English cinematic video generation prompt"
   }}
 ]
 
@@ -297,8 +382,9 @@ STORY:
             {
                 "role": "system",
                 "content": (
-                    "You are an expert cinematic AI video director. "
-                    "Return valid JSON only."
+                    "You are an expert cinematic "
+                    "AI video director. "
+                    "Return JSON only."
                 )
             },
             {
@@ -308,9 +394,14 @@ STORY:
         ]
     )
 
-    content = response.choices[0].message.content.strip()
+    content = (
+        response
+        .choices[0]
+        .message
+        .content
+        .strip()
+    )
 
-    # Remove markdown fences if model adds them
     content = re.sub(
         r"^```(?:json)?\s*",
         "",
@@ -324,14 +415,21 @@ STORY:
         content
     )
 
-    scenes = json.loads(content)
+    scenes = json.loads(
+        content
+    )
 
-    if not isinstance(scenes, list):
+    if not isinstance(
+        scenes,
+        list
+    ):
+
         raise RuntimeError(
             "Groq storyboard is not a list"
         )
 
     if not scenes:
+
         raise RuntimeError(
             "Groq returned no scenes"
         )
@@ -340,11 +438,13 @@ STORY:
 
 
 # =========================================================
-# HUGGING FACE
+# HUGGING FACE CLIENT
 # =========================================================
 
 def get_hf_client():
+
     if not HF_TOKEN:
+
         raise RuntimeError(
             "HF_TOKEN is missing"
         )
@@ -366,7 +466,12 @@ def get_hf_client():
     return client
 
 
+# =========================================================
+# HF API SCHEMA
+# =========================================================
+
 def get_api_schema(client):
+
     log.info(
         "HF_VIEW_API_START"
     )
@@ -383,13 +488,13 @@ def get_api_schema(client):
 
 
 # =========================================================
-# HF ENDPOINT DISCOVERY
+# HF ENDPOINT
 # =========================================================
 
-def resolve_endpoint(client, info):
-    """
-    Automatically find a usable Gradio named endpoint.
-    """
+def resolve_endpoint(
+    client,
+    info
+):
 
     candidates = []
 
@@ -398,12 +503,20 @@ def resolve_endpoint(client, info):
         {}
     )
 
-    if isinstance(named_endpoints, dict):
-        for name, endpoint in named_endpoints.items():
+    if isinstance(
+        named_endpoints,
+        dict
+    ):
+
+        for name, endpoint in (
+            named_endpoints.items()
+        ):
 
             score = 0
 
-            text = str(name).lower()
+            text = str(
+                name
+            ).lower()
 
             if "generate" in text:
                 score += 100
@@ -422,7 +535,6 @@ def resolve_endpoint(client, info):
                 )
             )
 
-    # Some Gradio versions expose named endpoints differently
     if not candidates:
 
         endpoints = info.get(
@@ -430,13 +542,18 @@ def resolve_endpoint(client, info):
             []
         )
 
-        if isinstance(endpoints, list):
+        if isinstance(
+            endpoints,
+            list
+        ):
 
             for endpoint in endpoints:
 
-                name = endpoint.get(
-                    "api_name",
-                    ""
+                name = (
+                    endpoint.get(
+                        "api_name",
+                        ""
+                    )
                 )
 
                 if not name:
@@ -444,7 +561,9 @@ def resolve_endpoint(client, info):
 
                 score = 0
 
-                text = str(name).lower()
+                text = str(
+                    name
+                ).lower()
 
                 if "generate" in text:
                     score += 100
@@ -461,8 +580,9 @@ def resolve_endpoint(client, info):
                 )
 
     if not candidates:
+
         raise RuntimeError(
-            "Could not find a named Hugging Face endpoint."
+            "Could not find Hugging Face endpoint."
         )
 
     candidates.sort(
@@ -470,40 +590,36 @@ def resolve_endpoint(client, info):
         reverse=True
     )
 
-    score, name, endpoint = candidates[0]
+    score, name, endpoint = (
+        candidates[0]
+    )
+
+    endpoint_name = (
+        name
+        if str(name).startswith("/")
+        else "/" + str(name)
+    )
 
     log.info(
-        "HF_ENDPOINT_AUTO_SELECTED=%s",
-        name
+        "HF_ENDPOINT_AUTO_SELECTED=%s score=%s",
+        endpoint_name,
+        score
     )
 
     return (
-        name
-        if str(name).startswith("/")
-        else "/" + str(name),
+        endpoint_name,
         endpoint
     )
 
 
 # =========================================================
-# PARAMETER VALUE SELECTION
+# PARAMETER HELPERS
 # =========================================================
 
-def choose_value_from_parameter(parameter):
-    """
-    Choose safe values based on the parameter name.
+def parameter_name(parameter):
 
-    Wan 2.1 ZeroGPU currently rejects:
-    - frames > 81
-    - height > 832
-    """
-
-    name = str(
+    return str(
         parameter.get(
-            "label",
-            ""
-        )
-        or parameter.get(
             "parameter_name",
             ""
         )
@@ -511,7 +627,48 @@ def choose_value_from_parameter(parameter):
             "name",
             ""
         )
+        or parameter.get(
+            "label",
+            ""
+        )
+    ).strip()
+
+
+def get_choices(parameter):
+
+    for key in [
+        "enum",
+        "choices",
+        "values"
+    ]:
+
+        value = parameter.get(
+            key
+        )
+
+        if isinstance(
+            value,
+            list
+        ):
+
+            return value
+
+    return []
+
+
+# =========================================================
+# CHOOSE PARAMETER VALUE
+# =========================================================
+
+def choose_value_from_parameter(
+    parameter
+):
+
+    name = parameter_name(
+        parameter
     ).lower()
+
+    combined = name
 
     minimum = parameter.get(
         "minimum"
@@ -521,10 +678,96 @@ def choose_value_from_parameter(parameter):
         "maximum"
     )
 
-    combined = name
+    choices = get_choices(
+        parameter
+    )
 
     # -----------------------------------------------------
-    # NUMBER OF FRAMES
+    # MODEL
+    # -----------------------------------------------------
+
+    if (
+        "model" in combined
+        and choices
+    ):
+
+        # IMPORTANT:
+        # Always choose the normal Wan model.
+        if "wan-base" in choices:
+
+            value = "wan-base"
+
+        else:
+
+            # Prefer a non-NSFW option.
+            normal_choices = [
+                x
+                for x in choices
+                if "nsfw" not in str(x).lower()
+            ]
+
+            if normal_choices:
+                value = normal_choices[0]
+
+            else:
+                value = choices[0]
+
+        log.info(
+            "HF_MODEL_SELECTED=%s",
+            value
+        )
+
+        return value
+
+    # -----------------------------------------------------
+    # ENUM / CHOICES
+    # -----------------------------------------------------
+
+    if choices:
+
+        # Try to find a sensible text choice.
+        if "wan-base" in choices:
+
+            value = "wan-base"
+
+        else:
+
+            value = choices[0]
+
+        log.info(
+            "HF_CHOICE_PARAMETER name=%s value=%s",
+            name,
+            value
+        )
+
+        return value
+
+    # -----------------------------------------------------
+    # PROMPT
+    # -----------------------------------------------------
+
+    if (
+        "prompt" in combined
+        and "negative" not in combined
+    ):
+
+        return "__PROMPT__"
+
+    # -----------------------------------------------------
+    # NEGATIVE PROMPT
+    # -----------------------------------------------------
+
+    if "negative" in combined:
+
+        return (
+            "blurry, low quality, distorted, "
+            "deformed, duplicate person, "
+            "extra limbs, text, subtitles, "
+            "logo, watermark, cartoon, anime"
+        )
+
+    # -----------------------------------------------------
+    # FRAMES
     # -----------------------------------------------------
 
     if (
@@ -532,24 +775,27 @@ def choose_value_from_parameter(parameter):
         or "number of frames" in combined
         or "frames" in combined
     ):
-        value = 81
+
+        value = GEN_FRAMES
 
     # -----------------------------------------------------
     # WIDTH
     # -----------------------------------------------------
 
     elif "width" in combined:
-        value = 576
+
+        value = GEN_WIDTH
 
     # -----------------------------------------------------
     # HEIGHT
     # -----------------------------------------------------
 
     elif "height" in combined:
-        value = 832
+
+        value = GEN_HEIGHT
 
     # -----------------------------------------------------
-    # INFERENCE STEPS
+    # STEPS
     # -----------------------------------------------------
 
     elif (
@@ -557,6 +803,7 @@ def choose_value_from_parameter(parameter):
         or "num_inference_steps" in combined
         or "inference steps" in combined
     ):
+
         value = 20
 
     # -----------------------------------------------------
@@ -566,9 +813,9 @@ def choose_value_from_parameter(parameter):
     elif (
         "guidance" in combined
         or "guidance scale" in combined
-        or combined == "cfg"
-        or "cfg scale" in combined
+        or "cfg" in combined
     ):
+
         value = 5.0
 
     # -----------------------------------------------------
@@ -576,6 +823,7 @@ def choose_value_from_parameter(parameter):
     # -----------------------------------------------------
 
     elif "seed" in combined:
+
         value = 0
 
     # -----------------------------------------------------
@@ -586,162 +834,119 @@ def choose_value_from_parameter(parameter):
         "fps" in combined
         or "frame rate" in combined
     ):
-        value = 16
+
+        value = GEN_FPS
 
     # -----------------------------------------------------
-    # UNKNOWN NUMERIC PARAMETER
+    # BOOLEAN
+    # -----------------------------------------------------
+
+    elif parameter.get(
+        "type"
+    ) == "boolean":
+
+        value = False
+
+    # -----------------------------------------------------
+    # UNKNOWN
     # -----------------------------------------------------
 
     else:
 
         if minimum is not None:
+
             value = minimum
 
         elif maximum is not None:
+
             value = maximum
 
         else:
+
             value = 0
 
     # -----------------------------------------------------
-    # RESPECT MAXIMUM
+    # CLAMP NUMBERS
     # -----------------------------------------------------
 
-    if maximum is not None:
+    if isinstance(
+        value,
+        (int, float)
+    ):
 
-        try:
-            value = min(
-                value,
-                maximum
-            )
-        except Exception:
-            pass
+        if maximum is not None:
 
-    # -----------------------------------------------------
-    # RESPECT MINIMUM
-    # -----------------------------------------------------
+            try:
+                value = min(
+                    value,
+                    maximum
+                )
+            except Exception:
+                pass
 
-    if minimum is not None:
+        if minimum is not None:
 
-        try:
-            value = max(
-                value,
-                minimum
-            )
-        except Exception:
-            pass
+            try:
+                value = max(
+                    value,
+                    minimum
+                )
+            except Exception:
+                pass
 
     return value
 
 
 # =========================================================
-# BUILD GENERATE ARGUMENTS
+# BUILD HF ARGUMENTS
 # =========================================================
 
-def build_generate_arguments(endpoint_info, prompt):
-    """
-    Build arguments according to the discovered endpoint.
-    """
+def build_generate_arguments(
+    endpoint_info,
+    prompt
+):
 
     parameters = endpoint_info.get(
         "parameters",
         []
     )
 
-    if not isinstance(parameters, list):
+    if not isinstance(
+        parameters,
+        list
+    ):
+
         parameters = []
 
     args = []
 
     for parameter in parameters:
 
-        if not isinstance(parameter, dict):
+        if not isinstance(
+            parameter,
+            dict
+        ):
             continue
 
-        name = (
-            parameter.get("parameter_name")
-            or parameter.get("name")
-            or parameter.get("label")
-            or ""
+        name = parameter_name(
+            parameter
         )
 
-        name_lower = str(name).lower()
+        value = choose_value_from_parameter(
+            parameter
+        )
 
         # -------------------------------------------------
-        # PROMPT
+        # PROMPT PLACEHOLDER
         # -------------------------------------------------
 
-        if (
-            "prompt" in name_lower
-            and "negative" not in name_lower
-        ):
+        if value == "__PROMPT__":
+
             value = prompt
 
-        # -------------------------------------------------
-        # NEGATIVE PROMPT
-        # -------------------------------------------------
-
-        elif "negative" in name_lower:
-
-            value = (
-                "blurry, low quality, distorted, "
-                "deformed, duplicate person, "
-                "extra limbs, text, subtitles, logo, "
-                "watermark, cartoon, anime"
-            )
-
-        # -------------------------------------------------
-        # MODEL SELECTOR
-        # -------------------------------------------------
-
-        elif (
-            "model" in name_lower
-            and isinstance(
-                parameter.get("enum"),
-                list
-            )
-        ):
-
-            choices = parameter.get(
-                "enum",
-                []
-            )
-
-            value = choices[0] if choices else None
-
-        # -------------------------------------------------
-        # BOOLEAN
-        # -------------------------------------------------
-
-        elif parameter.get("type") == "boolean":
-
-            value = False
-
-        # -------------------------------------------------
-        # FILE
-        # -------------------------------------------------
-
-        elif (
-            "image" in name_lower
-            or "video" in name_lower
-        ):
-
-            # Do not invent a file for optional file inputs.
-            if parameter.get("optional", False):
-                value = None
-            else:
-                value = None
-
-        # -------------------------------------------------
-        # NUMERIC
-        # -------------------------------------------------
-
-        else:
-            value = choose_value_from_parameter(
-                parameter
-            )
-
-        args.append(value)
+        args.append(
+            value
+        )
 
         log.info(
             "HF_PARAMETER name=%s value=%s",
@@ -753,30 +958,39 @@ def build_generate_arguments(endpoint_info, prompt):
 
 
 # =========================================================
-# FIND VIDEO VALUE
+# FIND VIDEO RESULT
 # =========================================================
 
-def find_video_value(value):
-    """
-    Search recursively for a generated video/file.
-    """
+def find_video_value(
+    value
+):
 
     if value is None:
         return None
 
-    if isinstance(value, str):
+    if isinstance(
+        value,
+        str
+    ):
 
-        # Direct path / URL
         if (
-            value.startswith("http://")
-            or value.startswith("https://")
+            value.startswith(
+                "http://"
+            )
+            or value.startswith(
+                "https://"
+            )
             or os.path.exists(value)
         ):
+
             return value
 
         return None
 
-    if isinstance(value, dict):
+    if isinstance(
+        value,
+        dict
+    ):
 
         for key in [
             "video",
@@ -807,7 +1021,10 @@ def find_video_value(value):
 
         return None
 
-    if isinstance(value, (list, tuple)):
+    if isinstance(
+        value,
+        (list, tuple)
+    ):
 
         for item in value:
 
@@ -822,31 +1039,44 @@ def find_video_value(value):
 
 
 # =========================================================
-# DOWNLOAD FILE
+# DOWNLOAD RESULT
 # =========================================================
 
-def download_file(source, destination):
-    if not source:
+def download_file(
+    source,
+    destination
+):
+
+    if source is None:
+
         raise RuntimeError(
-            "HF returned an empty video result"
+            "Hugging Face returned empty video."
         )
 
-    if isinstance(source, str):
+    if isinstance(
+        source,
+        str
+    ):
 
-        if source.startswith(
-            "http://"
-        ) or source.startswith(
-            "https://"
+        if (
+            source.startswith(
+                "http://"
+            )
+            or source.startswith(
+                "https://"
+            )
         ):
 
             response = requests.get(
                 source,
-                timeout=300
+                timeout=600
             )
 
             response.raise_for_status()
 
-            Path(destination).write_bytes(
+            Path(
+                destination
+            ).write_bytes(
                 response.content
             )
 
@@ -854,27 +1084,36 @@ def download_file(source, destination):
 
         if os.path.exists(source):
 
-            Path(destination).write_bytes(
+            Path(
+                destination
+            ).write_bytes(
                 Path(source).read_bytes()
             )
 
             return destination
 
-    # Gradio FileData-like object
-    if hasattr(source, "path"):
+    if hasattr(
+        source,
+        "path"
+    ):
 
         path = source.path
 
-        if path and os.path.exists(path):
+        if (
+            path
+            and os.path.exists(path)
+        ):
 
-            Path(destination).write_bytes(
+            Path(
+                destination
+            ).write_bytes(
                 Path(path).read_bytes()
             )
 
             return destination
 
     raise RuntimeError(
-        "Could not download Hugging Face video result"
+        "Could not download HF video."
     )
 
 
@@ -882,16 +1121,22 @@ def download_file(source, destination):
 # GENERATE AI VIDEO
 # =========================================================
 
-def generate_ai_video(prompt, output_path):
+def generate_ai_video(
+    prompt,
+    output_path
+):
+
     client = get_hf_client()
 
     info = get_api_schema(
         client
     )
 
-    endpoint_name, endpoint_info = resolve_endpoint(
-        client,
-        info
+    endpoint_name, endpoint_info = (
+        resolve_endpoint(
+            client,
+            info
+        )
     )
 
     log.info(
@@ -906,6 +1151,11 @@ def generate_ai_video(prompt, output_path):
 
     log.info(
         "HF_GENERATE_START"
+    )
+
+    log.info(
+        "HF_ARGUMENT_COUNT=%s",
+        len(args)
     )
 
     result = client.predict(
@@ -923,17 +1173,6 @@ def generate_ai_video(prompt, output_path):
 
     if video_value is None:
 
-        # Sometimes Gradio returns FileData
-        if isinstance(result, tuple):
-            for item in result:
-                video_value = find_video_value(
-                    item
-                )
-
-                if video_value:
-                    break
-
-    if video_value is None:
         raise RuntimeError(
             "Hugging Face returned no video file."
         )
@@ -943,12 +1182,20 @@ def generate_ai_video(prompt, output_path):
         output_path
     )
 
-    if not os.path.exists(output_path):
+    if not os.path.exists(
+        output_path
+    ):
+
         raise RuntimeError(
-            "Generated video file does not exist."
+            "Generated video does not exist."
         )
 
-    if os.path.getsize(output_path) < 1000:
+    size = os.path.getsize(
+        output_path
+    )
+
+    if size < 1000:
+
         raise RuntimeError(
             "Generated video file is too small."
         )
@@ -956,14 +1203,14 @@ def generate_ai_video(prompt, output_path):
     log.info(
         "HF_VIDEO_READY path=%s size=%s",
         output_path,
-        os.path.getsize(output_path)
+        size
     )
 
     return output_path
 
 
 # =========================================================
-# FFMPEG NORMALIZE VIDEO
+# NORMALIZE VIDEO
 # =========================================================
 
 def normalize_video(
@@ -977,6 +1224,7 @@ def normalize_video(
             "-y",
             "-i",
             input_path,
+
             "-vf",
             (
                 f"scale={FINAL_WIDTH}:{FINAL_HEIGHT}:"
@@ -984,17 +1232,24 @@ def normalize_video(
                 f"pad={FINAL_WIDTH}:{FINAL_HEIGHT}:"
                 "(ow-iw)/2:(oh-ih)/2"
             ),
+
             "-r",
-            str(FPS),
+            str(GEN_FPS),
+
             "-c:v",
             "libx264",
+
             "-preset",
             "veryfast",
+
             "-crf",
             "23",
+
             "-pix_fmt",
             "yuv420p",
+
             "-an",
+
             output_path
         ]
     )
@@ -1003,7 +1258,7 @@ def normalize_video(
 
 
 # =========================================================
-# CONCAT VIDEOS
+# CONCAT
 # =========================================================
 
 def concat_videos(
@@ -1011,8 +1266,9 @@ def concat_videos(
     output_path
 ):
 
-    concat_file = BASE_DIR / (
-        f"concat_{uuid.uuid4().hex}.txt"
+    concat_file = (
+        BASE_DIR
+        / f"concat_{uuid.uuid4().hex}.txt"
     )
 
     lines = []
@@ -1055,7 +1311,7 @@ def concat_videos(
 
 
 # =========================================================
-# TEXT TO SPEECH
+# TTS
 # =========================================================
 
 async def generate_tts(
@@ -1093,17 +1349,24 @@ def mux_audio(
             video_path,
             "-i",
             audio_path,
+
             "-map",
             "0:v:0",
+
             "-map",
             "1:a:0",
+
             "-c:v",
             "copy",
+
             "-c:a",
             "aac",
+
             "-b:a",
             "128k",
+
             "-shortest",
+
             output_path
         ]
     )
@@ -1112,15 +1375,18 @@ def mux_audio(
 
 
 # =========================================================
-# FULL VIDEO PIPELINE
+# CREATE REEL
 # =========================================================
 
-async def create_reel(story):
+async def create_reel(
+    story
+):
 
     job_id = uuid.uuid4().hex
 
     work_dir = (
-        BASE_DIR / job_id
+        BASE_DIR
+        / job_id
     )
 
     work_dir.mkdir(
@@ -1136,7 +1402,7 @@ async def create_reel(story):
         )
 
         # -------------------------------------------------
-        # 1. GROQ STORYBOARD
+        # GROQ
         # -------------------------------------------------
 
         scenes = generate_storyboard(
@@ -1151,7 +1417,7 @@ async def create_reel(story):
         generated_videos = []
 
         # -------------------------------------------------
-        # 2. GENERATE VIDEO SCENES
+        # WAN SCENES
         # -------------------------------------------------
 
         for index, scene in enumerate(
@@ -1159,20 +1425,24 @@ async def create_reel(story):
             start=1
         ):
 
-            prompt = scene.get(
-                "prompt",
-                ""
+            prompt = str(
+                scene.get(
+                    "prompt",
+                    ""
+                )
             ).strip()
 
             if not prompt:
                 continue
 
-            raw_video = work_dir / (
-                f"scene_{index}_raw.mp4"
+            raw_video = (
+                work_dir
+                / f"scene_{index}_raw.mp4"
             )
 
-            normalized_video = work_dir / (
-                f"scene_{index}.mp4"
+            normalized_video = (
+                work_dir
+                / f"scene_{index}.mp4"
             )
 
             log.info(
@@ -1200,19 +1470,23 @@ async def create_reel(story):
             )
 
         if not generated_videos:
+
             raise RuntimeError(
-                "No video scenes were generated."
+                "No video scenes generated."
             )
 
         # -------------------------------------------------
-        # 3. CONCAT
+        # CONCAT
         # -------------------------------------------------
 
-        combined_video = work_dir / (
-            "combined.mp4"
+        combined_video = (
+            work_dir
+            / "combined.mp4"
         )
 
-        if len(generated_videos) == 1:
+        if len(
+            generated_videos
+        ) == 1:
 
             combined_video.write_bytes(
                 Path(
@@ -1228,11 +1502,12 @@ async def create_reel(story):
             )
 
         # -------------------------------------------------
-        # 4. TTS
+        # TTS
         # -------------------------------------------------
 
-        audio_file = work_dir / (
-            "narration.mp3"
+        audio_file = (
+            work_dir
+            / "narration.mp3"
         )
 
         await generate_tts(
@@ -1241,11 +1516,12 @@ async def create_reel(story):
         )
 
         # -------------------------------------------------
-        # 5. FINAL MUX
+        # FINAL
         # -------------------------------------------------
 
-        final_video = work_dir / (
-            "final_reel.mp4"
+        final_video = (
+            work_dir
+            / "final_reel.mp4"
         )
 
         mux_audio(
@@ -1259,7 +1535,9 @@ async def create_reel(story):
             job_id
         )
 
-        return str(final_video)
+        return str(
+            final_video
+        )
 
     except Exception as e:
 
@@ -1273,7 +1551,7 @@ async def create_reel(story):
 
 
 # =========================================================
-# TELEGRAM HANDLERS
+# TELEGRAM /START
 # =========================================================
 
 async def start_command(
@@ -1281,10 +1559,18 @@ async def start_command(
     context: ContextTypes.DEFAULT_TYPE
 ):
 
+    if not update.message:
+        return
+
     await update.message.reply_text(
-        "🤖 أهلاً! ابعتلي القصة، وأنا أحولها لفيديو Reel."
+        "🤖 أهلاً! ابعتلي القصة، "
+        "وأحولها إلى Reel."
     )
 
+
+# =========================================================
+# TELEGRAM MESSAGE
+# =========================================================
 
 async def handle_message(
     update: Update,
@@ -1302,14 +1588,14 @@ async def handle_message(
     if not story:
         return
 
-    # Limit extremely large inputs
     if len(story) > 12000:
+
         story = story[:12000]
 
     await update.message.reply_text(
         "🎬 وصلت القصة.\n"
-        "🧠 بجهز المشاهد...\n"
-        "⏳ وبعدها بصنع الفيديو."
+        "🧠 بجهز المشهد...\n"
+        "🤖 أرسلها لمحرك الفيديو..."
     )
 
     try:
@@ -1321,14 +1607,16 @@ async def handle_message(
         await update.message.reply_video(
             video=final_video,
             caption=(
-                "🎬 تم تجهيز الفيديو بنجاح."
+                "🎬 تم تجهيز الفيديو."
             ),
             supports_streaming=True
         )
 
     except Exception as e:
 
-        error = safe_error_text(e)
+        error = safe_error_text(
+            e
+        )
 
         log.error(
             "TELEGRAM_HANDLER_ERROR=%s",
@@ -1366,6 +1654,7 @@ async def telegram_error_handler(
 def main():
 
     if not BOT_TOKEN:
+
         raise RuntimeError(
             "BOT_TOKEN is missing"
         )
@@ -1416,6 +1705,10 @@ def main():
         allowed_updates=Update.ALL_TYPES
     )
 
+
+# =========================================================
+# START
+# =========================================================
 
 if __name__ == "__main__":
     main()
