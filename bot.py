@@ -76,18 +76,19 @@ if not BOT_WEBHOOK_SECRET and BOT_TOKEN:
 # VIDEO SETTINGS
 # =========================================================
 
-# أول Pipeline حقيقي:
-# 3 مشاهد × 5 ثواني = حوالي 15 ثانية
+# أول اختبار كامل للـPipeline:
+# 2 مشاهد × 5 ثواني ≈ 10 ثواني
 #
-# لاحقاً نرفعها تدريجياً:
-# 6 scenes = 30s
-# 12 scenes = 60s
-# 18 scenes = 90s
+# بعد نجاح الاختبار:
+# 3 scenes = ~15s
+# 6 scenes = ~30s
+# 12 scenes = ~60s
+# 18 scenes = ~90s
 #
 # يمكن تغييرها من Render Environment Variables.
 
 SHOT_COUNT = int(
-    os.getenv("SHOT_COUNT", "3")
+    os.getenv("SHOT_COUNT", "2")
 )
 
 SHOT_DURATION = int(
@@ -328,54 +329,87 @@ def create_storyboard(user_text):
         SHOT_COUNT * SHOT_DURATION
     )
 
+    # تقدير تقريبي لعدد الكلمات حتى يكون الصوت
+    # قريباً من مدة الفيديو.
+    target_words = max(
+        18,
+        int(total_seconds * 2.2)
+    )
+
     system_prompt = f"""
 You are the lead writer and cinematic AI video director
 for a professional TikTok / Instagram Reels channel.
 
-Create a highly engaging fictional cinematic sci-fi story.
+Create a highly engaging FICTIONAL cinematic sci-fi story.
 
 IMPORTANT:
 The story is FICTIONAL unless the user explicitly asks
 for a real event.
 
-TARGET:
+TARGET VIDEO:
 Approximately {total_seconds} seconds.
 
 Create EXACTLY {SHOT_COUNT} scenes.
 
+Each scene is approximately {SHOT_DURATION} seconds.
+
 The story must have:
 
-1. A very strong hook in the first seconds.
+1. A very strong hook immediately.
 2. Clear escalation.
-3. Something strange or unexpected.
+3. A strange or unexpected development.
 4. A strong ending or mini-twist.
 5. Smooth continuity between scenes.
-6. Natural Arabic narration.
-7. Visual prompts written in English for an AI video model.
+6. One consistent main character.
+7. One consistent environment.
+8. Cinematic realistic movement.
+9. No slideshow feeling.
+10. No claims that fictional events are real.
 
-The final video should feel like a real cinematic movie scene,
-NOT a slideshow.
+VERY IMPORTANT LANGUAGE RULE:
 
-Characters and environment must remain visually consistent.
+The narration is Arabic.
 
-For every scene include:
+The visual prompts for the video model are English.
+
+NEVER put English visual instructions inside Arabic narration.
+
+The narration must sound natural when spoken by an
+Arabic male narrator.
+
+TARGET:
+The complete narration should be approximately
+{target_words} Arabic words.
+
+Keep each scene narration short enough for its scene.
+
+For every scene provide:
 
 - scene number
 - duration
 - English cinematic video prompt
-- Arabic narration for that scene
+- Arabic narration
+- short Arabic caption for on-screen text
 
-The Arabic narration must describe what the viewer needs
-to understand from the story.
+The caption should be short, punchy and readable.
 
-DO NOT put visual prompt instructions inside narration.
+Do NOT make the caption a giant paragraph.
 
-The narration must sound natural when spoken by an Arabic
-male narrator.
+The visual prompt should describe:
 
-Keep the narration concise enough to fit the target duration.
+- subject
+- environment
+- action
+- camera movement
+- lighting
+- realistic physical motion
+- cinematic composition
+- continuity
 
-At the end include a very short CTA.
+Do not put text, subtitles, logos or watermarks
+inside the generated video.
+
+At the end provide a very short Arabic CTA.
 
 Return ONLY valid JSON.
 
@@ -383,7 +417,7 @@ EXACT JSON STRUCTURE:
 
 {{
   "title": "short Arabic title",
-  "hook": "short Arabic hook",
+  "hook": "very short Arabic hook",
   "narration": "complete Arabic narration",
   "cta": "short Arabic CTA",
   "scenes": [
@@ -391,10 +425,15 @@ EXACT JSON STRUCTURE:
       "scene": 1,
       "duration": {SHOT_DURATION},
       "prompt": "detailed English cinematic video prompt",
-      "narration": "Arabic narration for this scene"
+      "narration": "short natural Arabic narration for this scene",
+      "caption": "short Arabic on-screen caption"
     }}
   ]
 }}
+
+Do not return markdown.
+Do not return explanations.
+Return JSON only.
 """
 
     user_prompt = f"""
@@ -442,6 +481,15 @@ Create the cinematic story based on this idea:
 
     content = content.strip()
 
+    # Sometimes the model can accidentally return text
+    # before or after JSON. Try to isolate the JSON object.
+    if not content.startswith("{"):
+        first = content.find("{")
+        last = content.rfind("}")
+
+        if first >= 0 and last > first:
+            content = content[first:last + 1]
+
     data = json.loads(
         content
     )
@@ -463,7 +511,21 @@ Create the cinematic story based on this idea:
             f"received={len(scenes)}"
         )
 
-    # Make sure every scene has narration
+    if not data.get(
+        "hook"
+    ):
+        raise RuntimeError(
+            "GROQ_HOOK_EMPTY"
+        )
+
+    if not data.get(
+        "narration"
+    ):
+        raise RuntimeError(
+            "GROQ_NARRATION_EMPTY"
+        )
+
+    # Validate every scene.
     for index, scene in enumerate(
         scenes,
         start=1
@@ -481,6 +543,30 @@ Create the cinematic story based on this idea:
             raise RuntimeError(
                 f"GROQ_SCENE_{index}_NARRATION_EMPTY"
             )
+
+        if not scene.get(
+            "caption"
+        ):
+            # Fallback so the pipeline does not break
+            # if Groq forgets the caption.
+            scene["caption"] = (
+                scene["narration"][:80]
+            )
+
+        scene["duration"] = SHOT_DURATION
+
+    if not data.get(
+        "cta"
+    ):
+        data["cta"] = CTA_TEXT
+
+    # Ensure global narration exists.
+    # We intentionally keep it separate from the
+    # English visual prompts.
+    data["narration"] = (
+        str(data["narration"])
+        .strip()
+    )
 
     return data
 
@@ -1136,12 +1222,6 @@ def normalize_video(
     input_path,
     output_path
 ):
-    # Crop to exact 9:16 instead of adding black bars.
-    #
-    # Wan output is close to vertical.
-    # We scale enough to cover 720x1280,
-    # then crop the sides.
-
     video_filter = (
         f"scale={FINAL_WIDTH}:{FINAL_HEIGHT}:"
         "force_original_aspect_ratio=increase,"
@@ -1389,6 +1469,8 @@ def mux_audio(
         "-b:a",
         "128k",
         "-shortest",
+        "-movflags",
+        "+faststart",
         str(output_path)
     ]
 
@@ -1460,37 +1542,39 @@ def format_srt_time(
         float(seconds)
     )
 
-    hours = int(
-        seconds // 3600
+    total_millis = int(
+        round(seconds * 1000)
     )
 
-    minutes = int(
-        (seconds % 3600)
-        // 60
+    hours = (
+        total_millis
+        // 3600000
     )
 
-    secs = int(
-        seconds % 60
+    remaining = (
+        total_millis
+        % 3600000
     )
 
-    millis = int(
-        round(
-            (seconds - int(seconds))
-            * 1000
-        )
+    minutes = (
+        remaining
+        // 60000
     )
 
-    if millis >= 1000:
-        secs += 1
-        millis -= 1000
+    remaining = (
+        remaining
+        % 60000
+    )
 
-    if secs >= 60:
-        minutes += 1
-        secs -= 60
+    secs = (
+        remaining
+        // 1000
+    )
 
-    if minutes >= 60:
-        hours += 1
-        minutes -= 60
+    millis = (
+        remaining
+        % 1000
+    )
 
     return (
         f"{hours:02d}:"
@@ -1508,7 +1592,7 @@ def create_srt(
     subtitle_items,
     output_path,
     cta_text=None,
-    cta_duration=2.5
+    cta_duration=2.2
 ):
     lines = []
 
@@ -1531,6 +1615,9 @@ def create_srt(
         if not text:
             continue
 
+        if end <= start:
+            continue
+
         lines.append(
             str(counter)
         )
@@ -1548,36 +1635,35 @@ def create_srt(
 
         counter += 1
 
-    if cta_text:
-        if subtitle_items:
-            last_end = max(
-                float(
-                    x["end"]
-                )
-                for x in subtitle_items
+    # CTA is added as a separate final overlay.
+    if cta_text and subtitle_items:
+        last_end = max(
+            float(
+                x["end"]
             )
-        else:
-            last_end = 0.0
+            for x in subtitle_items
+        )
 
         cta_start = max(
             0.0,
             last_end - cta_duration
         )
 
-        lines.append(
-            str(counter)
-        )
+        if cta_start < last_end:
+            lines.append(
+                str(counter)
+            )
 
-        lines.append(
-            f"{format_srt_time(cta_start)} --> "
-            f"{format_srt_time(last_end)}"
-        )
+            lines.append(
+                f"{format_srt_time(cta_start)} --> "
+                f"{format_srt_time(last_end)}"
+            )
 
-        lines.append(
-            cta_text
-        )
+            lines.append(
+                cta_text
+            )
 
-        lines.append("")
+            lines.append("")
 
     Path(
         output_path
@@ -1592,6 +1678,35 @@ def create_srt(
 
 
 # =========================================================
+# ESCAPE SUBTITLE FILTER PATH
+# =========================================================
+
+def escape_ffmpeg_filter_path(
+    path
+):
+    value = str(
+        Path(path).resolve()
+    )
+
+    value = value.replace(
+        "\\",
+        "\\\\"
+    )
+
+    value = value.replace(
+        ":",
+        "\\:"
+    )
+
+    value = value.replace(
+        "'",
+        "\\'"
+    )
+
+    return value
+
+
+# =========================================================
 # ADD ARABIC CAPTIONS
 # =========================================================
 
@@ -1602,28 +1717,44 @@ def burn_captions(
 ):
     font_path = find_arabic_font()
 
-    # First try libass subtitles.
-    #
-    # This is much better for Arabic than drawtext
-    # because libass handles shaping and RTL.
+    subtitle_path = (
+        escape_ffmpeg_filter_path(
+            srt_path
+        )
+    )
 
     if font_path:
-        font_dir = str(
-            Path(font_path).parent
+        font_dir = (
+            escape_ffmpeg_filter_path(
+                Path(font_path).parent
+            )
         )
 
         subtitle_filter = (
             "subtitles="
-            + str(srt_path)
-            + ":"
-            + "fontsdir="
+            + subtitle_path
+            + ":fontsdir="
             + font_dir
+            + ":force_style="
+            + "'FontSize=28,"
+            + "Alignment=2,"
+            + "MarginV=90,"
+            + "Outline=3,"
+            + "Shadow=1,"
+            + "Bold=1'"
         )
 
     else:
         subtitle_filter = (
             "subtitles="
-            + str(srt_path)
+            + subtitle_path
+            + ":force_style="
+            + "'FontSize=28,"
+            + "Alignment=2,"
+            + "MarginV=90,"
+            + "Outline=3,"
+            + "Shadow=1,"
+            + "Bold=1'"
         )
 
     command = [
@@ -1643,6 +1774,8 @@ def burn_captions(
         "yuv420p",
         "-c:a",
         "copy",
+        "-movflags",
+        "+faststart",
         str(output_path)
     ]
 
@@ -1693,7 +1826,7 @@ async def create_reel(
     )
 
     # =====================================================
-    # 1. GROQ STORY
+    # 1. GROQ STORYBOARD
     # =====================================================
 
     storyboard = create_storyboard(
@@ -1719,6 +1852,8 @@ async def create_reel(
     # =====================================================
 
     generated_videos = []
+
+    scene_durations = []
 
     gpu_total = 0.0
 
@@ -1771,6 +1906,27 @@ async def create_reel(
             normalized_path
         )
 
+        actual_duration = (
+            get_video_duration(
+                normalized_path
+            )
+        )
+
+        if actual_duration <= 0:
+            actual_duration = float(
+                SHOT_DURATION
+            )
+
+        scene_durations.append(
+            actual_duration
+        )
+
+        log.info(
+            "SCENE_DURATION=%s actual=%.2f",
+            index,
+            actual_duration
+        )
+
         log.info(
             "SCENE_FINISHED=%s",
             index
@@ -1800,12 +1956,23 @@ async def create_reel(
             combined_video
         )
 
+    combined_duration = (
+        get_video_duration(
+            combined_video
+        )
+    )
+
+    log.info(
+        "COMBINED_VIDEO_DURATION=%.2f",
+        combined_duration
+    )
+
     # =====================================================
     # 4. TTS PER SCENE
     #
-    # This is important:
-    # Each scene gets its own narration audio.
-    # This lets us create accurate subtitle timing.
+    # IMPORTANT:
+    # We use ONLY Arabic scene narration.
+    # Never use the English visual prompt.
     # =====================================================
 
     scene_audio_paths = []
@@ -1827,7 +1994,9 @@ async def create_reel(
         )
 
         if not narration:
-            continue
+            raise RuntimeError(
+                f"SCENE_{index}_NARRATION_EMPTY"
+            )
 
         audio_path = (
             job_dir
@@ -1853,27 +2022,51 @@ async def create_reel(
                 f"TTS_DURATION_FAILED_SCENE_{index}"
             )
 
-        scene_audio_paths.append(
-            audio_path
+        scene_video_duration = (
+            scene_durations[index - 1]
         )
+
+        # Do not allow subtitle timing to run
+        # beyond the actual video scene.
+        subtitle_end = min(
+            current_time
+            + audio_duration,
+            current_time
+            + scene_video_duration
+        )
+
+        caption_text = (
+            scene.get(
+                "caption",
+                ""
+            )
+            .strip()
+        )
+
+        if not caption_text:
+            caption_text = narration
 
         subtitle_items.append(
             {
                 "start": current_time,
-                "end": (
-                    current_time
-                    + audio_duration
-                ),
-                "text": narration
+                "end": subtitle_end,
+                "text": caption_text
             }
         )
 
-        current_time += audio_duration
+        scene_audio_paths.append(
+            audio_path
+        )
+
+        current_time += scene_video_duration
 
         log.info(
-            "TTS_FINISHED_SCENE=%s duration=%.2f",
+            "TTS_FINISHED_SCENE=%s "
+            "audio_duration=%.2f "
+            "video_duration=%.2f",
             index,
-            audio_duration
+            audio_duration,
+            scene_video_duration
         )
 
     if not scene_audio_paths:
@@ -1900,6 +2093,17 @@ async def create_reel(
             voice_audio
         )
 
+    voice_duration = (
+        get_video_duration(
+            voice_audio
+        )
+    )
+
+    log.info(
+        "VOICE_FULL_DURATION=%.2f",
+        voice_duration
+    )
+
     # =====================================================
     # 6. CREATE CAPTIONS
     # =====================================================
@@ -1918,11 +2122,39 @@ async def create_reel(
         or CTA_TEXT
     )
 
+    # Make CTA fit inside actual video.
+    subtitle_video_end = min(
+        combined_duration,
+        current_time
+    )
+
+    adjusted_subtitles = []
+
+    for item in subtitle_items:
+        start = min(
+            float(item["start"]),
+            subtitle_video_end
+        )
+
+        end = min(
+            float(item["end"]),
+            subtitle_video_end
+        )
+
+        if end > start:
+            adjusted_subtitles.append(
+                {
+                    "start": start,
+                    "end": end,
+                    "text": item["text"]
+                }
+            )
+
     create_srt(
-        subtitle_items,
+        adjusted_subtitles,
         srt_path,
         cta_text=cta,
-        cta_duration=2.5
+        cta_duration=2.2
     )
 
     log.info(
@@ -1943,6 +2175,17 @@ async def create_reel(
         combined_video,
         voice_audio,
         voiced_video
+    )
+
+    voiced_duration = (
+        get_video_duration(
+            voiced_video
+        )
+    )
+
+    log.info(
+        "VOICED_VIDEO_DURATION=%.2f",
+        voiced_duration
     )
 
     # =====================================================
@@ -1981,9 +2224,18 @@ async def create_reel(
         final_video
     )
 
+    file_size = (
+        final_video.stat().st_size
+    )
+
     log.info(
         "FINAL_VIDEO_DURATION=%.2f",
         final_duration
+    )
+
+    log.info(
+        "FINAL_VIDEO_SIZE_MB=%.2f",
+        file_size / 1024 / 1024
     )
 
     log.info(
@@ -2042,10 +2294,11 @@ async def message_handler(
     processing_message = (
         await update.message.reply_text(
             "🎬 وصلت الفكرة.\n\n"
-            "🧠 بكتب القصة...\n"
-            "🎥 بجهز المشاهد...\n"
-            "🗣️ بجهز الصوت...\n"
-            "📝 بجهز الكتابة...\n\n"
+            "🧠 بكتب القصة بالعربي...\n"
+            "🎥 بجهز المشاهد السينمائية...\n"
+            "🗣️ بجهز الصوت العربي...\n"
+            "📝 بجهز الكتابة العربية...\n"
+            "📱 بجهز الـReel...\n\n"
             "استنى شوي 🔥"
         )
     )
@@ -2081,7 +2334,7 @@ async def message_handler(
                     f"⏱ المدة: "
                     f"{final_duration:.1f} ثانية\n"
                     "🎙️ صوت عربي\n"
-                    "📝 كابشن عربي\n"
+                    "📝 كتابة عربية\n"
                     "📱 9:16\n\n"
                     "🔥 تابعنا، لأن القصة الجاية أخطر."
                 )
