@@ -73,7 +73,6 @@ BOT_WEBHOOK_SECRET = os.getenv(
 ).strip()
 
 if not BOT_WEBHOOK_SECRET and BOT_TOKEN:
-
     BOT_WEBHOOK_SECRET = hashlib.sha256(
         BOT_TOKEN.encode("utf-8")
     ).hexdigest()[:32]
@@ -154,13 +153,11 @@ app = Flask(__name__)
 
 @app.route("/")
 def home():
-
     return "ABOSARAJ OK", 200
 
 
 @app.route("/health")
 def health():
-
     return "OK", 200
 
 
@@ -191,7 +188,6 @@ def safe_error_text(error):
     for secret in secrets:
 
         if secret:
-
             text = text.replace(
                 secret,
                 "[REDACTED]"
@@ -226,12 +222,9 @@ def run_command(command):
     ]:
 
         if secret:
-
-            visible_command = (
-                visible_command.replace(
-                    secret,
-                    "[REDACTED]"
-                )
+            visible_command = visible_command.replace(
+                secret,
+                "[REDACTED]"
             )
 
     log.info(
@@ -632,9 +625,7 @@ def resolve_endpoint(
         reverse=True
     )
 
-    score, name, endpoint = (
-        candidates[0]
-    )
+    score, name, endpoint = candidates[0]
 
     endpoint_name = (
         name
@@ -830,8 +821,7 @@ def build_generate_arguments(
 
         elif (
             "num_frames" in name_lower
-            or "number of frames"
-            in name_lower
+            or "number of frames" in name_lower
             or name_lower == "frames"
         ):
 
@@ -843,10 +833,8 @@ def build_generate_arguments(
 
         elif (
             "steps" in name_lower
-            or "inference_steps"
-            in name_lower
-            or "inference steps"
-            in name_lower
+            or "inference_steps" in name_lower
+            or "inference steps" in name_lower
         ):
 
             value = 20
@@ -857,8 +845,7 @@ def build_generate_arguments(
 
         elif (
             "guidance" in name_lower
-            or "guidance_scale"
-            in name_lower
+            or "guidance_scale" in name_lower
             or "cfg" in name_lower
         ):
 
@@ -885,10 +872,8 @@ def build_generate_arguments(
         # =================================================
 
         elif (
-            "custom_ckpt"
-            in name_lower
-            or "custom checkpoint"
-            in name_lower
+            "custom_ckpt" in name_lower
+            or "custom checkpoint" in name_lower
         ):
 
             value = None
@@ -957,7 +942,6 @@ def build_generate_arguments(
 def find_video_value(value):
 
     if value is None:
-
         return None
 
     if isinstance(
@@ -966,15 +950,9 @@ def find_video_value(value):
     ):
 
         if (
-            value.startswith(
-                "http://"
-            )
-            or value.startswith(
-                "https://"
-            )
-            or os.path.exists(
-                value
-            )
+            value.startswith("http://")
+            or value.startswith("https://")
+            or os.path.exists(value)
         ):
 
             return value
@@ -1002,7 +980,6 @@ def find_video_value(value):
                 )
 
                 if found:
-
                     return found
 
         for item in value.values():
@@ -1012,7 +989,6 @@ def find_video_value(value):
             )
 
             if found:
-
                 return found
 
         return None
@@ -1029,7 +1005,6 @@ def find_video_value(value):
             )
 
             if found:
-
                 return found
 
     return None
@@ -1056,12 +1031,8 @@ def download_file(
     ):
 
         if (
-            source.startswith(
-                "http://"
-            )
-            or source.startswith(
-                "https://"
-            )
+            source.startswith("http://")
+            or source.startswith("https://")
         ):
 
             response = requests.get(
@@ -1079,16 +1050,12 @@ def download_file(
 
             return destination
 
-        if os.path.exists(
-            source
-        ):
+        if os.path.exists(source):
 
             Path(
                 destination
             ).write_bytes(
-                Path(
-                    source
-                ).read_bytes()
+                Path(source).read_bytes()
             )
 
             return destination
@@ -1108,9 +1075,7 @@ def download_file(
             Path(
                 destination
             ).write_bytes(
-                Path(
-                    path
-                ).read_bytes()
+                Path(path).read_bytes()
             )
 
             return destination
@@ -1286,9 +1251,7 @@ def concat_videos(
     for path in video_paths:
 
         safe_path = str(
-            Path(
-                path
-            ).resolve()
+            Path(path).resolve()
         ).replace(
             "'",
             "'\\''"
@@ -1430,7 +1393,6 @@ async def create_reel(
             ).strip()
 
             if not prompt:
-
                 continue
 
             raw_video = (
@@ -1548,7 +1510,6 @@ async def start_command(
 ):
 
     if not update.message:
-
         return
 
     await update.message.reply_text(
@@ -1558,7 +1519,7 @@ async def start_command(
 
 
 # =========================================================
-# HF API TEST
+# HF API TEST 2
 # =========================================================
 
 async def hf_test_command(
@@ -1567,42 +1528,159 @@ async def hf_test_command(
 ):
 
     if not update.message:
-
         return
 
+    # =====================================================
+    # VERY CLEAR VERSION MARKER
+    # =====================================================
+
+    log.warning(
+        "🔥🔥🔥 HFTЕST2_NEW_CODE_2026 🔥🔥🔥"
+    )
+
     await update.message.reply_text(
-        "🔎 بفحص API الخاصة بـ Hugging Face..."
+        "🧪 HFTЕST2 وصل للنسخة الجديدة من الكود ✅"
     )
 
     try:
 
         client = get_hf_client()
 
-        info = get_api_schema(
-            client
+        log.warning(
+            "🚨 HFTЕST2_HF_CLIENT_CREATED 🚨"
         )
 
-        log.info(
-            "========== HF_API_SCHEMA =========="
-        )
+        # =================================================
+        # RAW API
+        # =================================================
 
-        log.info(
-            "%s",
-            json.dumps(
-                info,
-                ensure_ascii=False,
-                indent=2,
-                default=str
+        try:
+
+            api_text = client.view_api()
+
+            log.warning(
+                "========== HFTЕST2_API_TEXT =========="
             )
+
+            log.warning(
+                "TYPE=%s",
+                type(api_text).__name__
+            )
+
+            log.warning(
+                "%r",
+                api_text
+            )
+
+            log.warning(
+                "========== HFTЕST2_API_TEXT_END =========="
+            )
+
+        except Exception as e:
+
+            log.error(
+                "HFTЕST2_VIEW_API_ERROR=%s",
+                safe_error_text(e),
+                exc_info=True
+            )
+
+        # =================================================
+        # DICT API
+        # =================================================
+
+        try:
+
+            api_dict = client.view_api(
+                return_format="dict"
+            )
+
+            log.warning(
+                "========== HFTЕST2_API_DICT =========="
+            )
+
+            log.warning(
+                "TYPE=%s",
+                type(api_dict).__name__
+            )
+
+            log.warning(
+                "%s",
+                json.dumps(
+                    api_dict,
+                    ensure_ascii=False,
+                    indent=2,
+                    default=str
+                )
+            )
+
+            log.warning(
+                "========== HFTЕST2_API_DICT_END =========="
+            )
+
+        except Exception as e:
+
+            log.error(
+                "HFTЕST2_DICT_ERROR=%s",
+                safe_error_text(e),
+                exc_info=True
+            )
+
+        # =================================================
+        # CLIENT ENDPOINTS
+        # =================================================
+
+        try:
+
+            endpoints = getattr(
+                client,
+                "endpoints",
+                None
+            )
+
+            log.warning(
+                "========== HFTЕST2_CLIENT_ENDPOINTS =========="
+            )
+
+            log.warning(
+                "%r",
+                endpoints
+            )
+
+            log.warning(
+                "========== HFTЕST2_CLIENT_ENDPOINTS_END =========="
+            )
+
+        except Exception as e:
+
+            log.error(
+                "HFTЕST2_ENDPOINTS_ERROR=%s",
+                safe_error_text(e),
+                exc_info=True
+            )
+
+        # =================================================
+        # CLIENT INFO
+        # =================================================
+
+        log.warning(
+            "HFTЕST2_SPACE=%s",
+            HF_SPACE
         )
 
-        log.info(
-            "========== HF_API_SCHEMA_END =========="
+        log.warning(
+            "HFTЕST2_API_NAME=%s",
+            HF_API_NAME or "<AUTO>"
+        )
+
+        log.warning(
+            "🔥🔥🔥 HFTЕST2_FINISHED 🔥🔥🔥"
         )
 
         await update.message.reply_text(
-            "✅ خلص فحص Hugging Face.\n"
-            "شوف Logs في Render وابعتلي الناتج."
+            "✅ HFTЕST2 خلص.\n\n"
+            "افتح Render Logs وابحث عن:\n\n"
+            "HFTЕST2_NEW_CODE_2026\n\n"
+            "وبعدها ابعتلي كل أسطر HFTЕST2."
         )
 
     except Exception as e:
@@ -1612,13 +1690,13 @@ async def hf_test_command(
         )
 
         log.error(
-            "HF_SCHEMA_TEST_ERROR=%s",
+            "HFTЕST2_ERROR=%s",
             error,
             exc_info=True
         )
 
         await update.message.reply_text(
-            "❌ فشل فحص HF:\n\n"
+            "❌ HFTЕST2 ERROR:\n\n"
             + error[:1500]
         )
 
@@ -1633,7 +1711,6 @@ async def handle_message(
 ):
 
     if not update.message:
-
         return
 
     story = (
@@ -1642,11 +1719,9 @@ async def handle_message(
     ).strip()
 
     if not story:
-
         return
 
     if len(story) > 12000:
-
         story = story[:12000]
 
     await update.message.reply_text(
@@ -1730,9 +1805,11 @@ def telegram_loop_worker():
         )
     )
 
+    # IMPORTANT:
+    # New diagnostic command
     telegram_application.add_handler(
         CommandHandler(
-            "hftest",
+            "hftest2",
             hf_test_command
         )
     )
@@ -1759,17 +1836,17 @@ def telegram_loop_worker():
 
         await telegram_application.start()
 
-        webhook_url = (
-            RENDER_EXTERNAL_URL.rstrip("/")
-            + WEBHOOK_PATH
-        )
-
         if not RENDER_EXTERNAL_URL:
 
             raise RuntimeError(
                 "RENDER_EXTERNAL_URL is missing. "
                 "This service must run as a Render Web Service."
             )
+
+        webhook_url = (
+            RENDER_EXTERNAL_URL.rstrip("/")
+            + WEBHOOK_PATH
+        )
 
         log.info(
             "TELEGRAM_SETTING_WEBHOOK url=%s",
@@ -1978,5 +2055,4 @@ def main():
 # =========================================================
 
 if __name__ == "__main__":
-
     main()
