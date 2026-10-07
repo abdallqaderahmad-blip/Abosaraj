@@ -5,52 +5,57 @@ async def hf_test_command(
     if not update.message:
         return
 
-    # علامة واضحة جدًا للتأكد أن Render يشغّل الكود الجديد
-    log.info("🔥🔥🔥 NEW_HFTEST_CODE_IS_RUNNING 🔥🔥🔥")
+    log.warning("HFT_TEST2_NEW_CODE_2026")
 
     await update.message.reply_text(
-        "🔎 بفحص API الخاصة بـ Hugging Face بالتفصيل..."
+        "🧪 HFT_TEST2 وصل للنسخة الجديدة من الكود ✅"
     )
 
     try:
         client = get_hf_client()
 
-        log.info("========== HF_API_SCHEMA_RAW ==========")
+        log.warning("HF CLIENT CREATED")
 
-        # 1) العرض النصي الكامل للـ API
+        # ==============================
+        # API TEXT
+        # ==============================
         try:
             api_text = client.view_api()
 
-            log.info(
-                "VIEW_API_TEXT_TYPE=%s",
-                type(api_text).__name__
+            log.warning(
+                "========== HFT_TEST2_API_TEXT =========="
             )
 
-            log.info(
-                "VIEW_API_TEXT=%r",
+            log.warning(
+                "%r",
                 api_text
+            )
+
+            log.warning(
+                "========== HFT_TEST2_API_TEXT_END =========="
             )
 
         except Exception as e:
             log.error(
-                "VIEW_API_TEXT_ERROR=%s",
+                "HFT_TEST2_VIEW_API_ERROR=%s",
                 safe_error_text(e),
                 exc_info=True
             )
 
-        # 2) العرض بصيغة Dictionary
+        # ==============================
+        # API DICT
+        # ==============================
         try:
             api_dict = client.view_api(
                 return_format="dict"
             )
 
-            log.info(
-                "VIEW_API_DICT_TYPE=%s",
-                type(api_dict).__name__
+            log.warning(
+                "========== HFT_TEST2_API_DICT =========="
             )
 
-            log.info(
-                "VIEW_API_DICT=%s",
+            log.warning(
+                "%s",
                 json.dumps(
                     api_dict,
                     ensure_ascii=False,
@@ -59,75 +64,33 @@ async def hf_test_command(
                 )
             )
 
-        except Exception as e:
-            log.error(
-                "VIEW_API_DICT_ERROR=%s",
-                safe_error_text(e),
-                exc_info=True
-            )
-
-        # 3) عرض endpoints الموجودة داخل Client
-        try:
-            endpoints = getattr(
-                client,
-                "endpoints",
-                None
-            )
-
-            log.info(
-                "CLIENT_ENDPOINTS=%r",
-                endpoints
+            log.warning(
+                "========== HFT_TEST2_API_DICT_END =========="
             )
 
         except Exception as e:
             log.error(
-                "CLIENT_ENDPOINTS_ERROR=%s",
+                "HFT_TEST2_DICT_ERROR=%s",
                 safe_error_text(e),
                 exc_info=True
             )
-
-        # 4) معلومات إضافية عن الـ Client
-        try:
-            log.info(
-                "CLIENT_TYPE=%s",
-                type(client).__name__
-            )
-
-            log.info(
-                "CLIENT_SPACE=%s",
-                HF_SPACE
-            )
-
-        except Exception as e:
-            log.error(
-                "CLIENT_INFO_ERROR=%s",
-                safe_error_text(e),
-                exc_info=True
-            )
-
-        log.info(
-            "========== HF_API_SCHEMA_RAW_END =========="
-        )
 
         await update.message.reply_text(
-            "✅ خلص الفحص التفصيلي.\n\n"
-            "هسا افتح Render Logs وابحث عن:\n\n"
-            "🔥 NEW_HFTEST_CODE_IS_RUNNING\n\n"
-            "وبعدها:\n"
-            "HF_API_SCHEMA_RAW\n\n"
-            "وابعتلي كل الناتج."
+            "✅ HFT_TEST2 خلص.\n\n"
+            "افتح Render Logs وابحث عن:\n"
+            "HFT_TEST2"
         )
 
     except Exception as e:
         error = safe_error_text(e)
 
         log.error(
-            "HF_SCHEMA_TEST_ERROR=%s",
+            "HFT_TEST2_ERROR=%s",
             error,
             exc_info=True
         )
 
         await update.message.reply_text(
-            "❌ فشل فحص HF:\n\n"
+            "❌ HFT_TEST2 ERROR:\n\n"
             + error[:1500]
         )
