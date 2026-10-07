@@ -50,7 +50,9 @@ GROQ_MODEL = os.getenv(
     "llama-3.3-70b-versatile"
 ).strip()
 
-PORT = int(os.getenv("PORT", "10000"))
+PORT = int(
+    os.getenv("PORT", "10000")
+)
 
 RENDER_EXTERNAL_URL = os.getenv(
     "RENDER_EXTERNAL_URL",
@@ -74,22 +76,29 @@ if not BOT_WEBHOOK_SECRET and BOT_TOKEN:
 # VIDEO SETTINGS
 # =========================================================
 
+# أول Pipeline حقيقي:
+# 3 مشاهد × 5 ثواني = حوالي 15 ثانية
+#
+# لاحقاً نرفعها تدريجياً:
+# 6 scenes = 30s
+# 12 scenes = 60s
+# 18 scenes = 90s
+#
+# يمكن تغييرها من Render Environment Variables.
+
 SHOT_COUNT = int(
-    os.getenv("SHOT_COUNT", "1")
+    os.getenv("SHOT_COUNT", "3")
 )
 
 SHOT_DURATION = int(
     os.getenv("SHOT_DURATION", "5")
 )
 
-# Final Reel resolution
+# Final Reel
 FINAL_WIDTH = 720
 FINAL_HEIGHT = 1280
 
-# Wan generation resolution
-# NOTE:
-# We keep production at 576x832.
-# TEST5.1 temporarily uses 480x832 only.
+# Wan generation
 GEN_WIDTH = 576
 GEN_HEIGHT = 832
 
@@ -101,9 +110,16 @@ GEN_STEPS = 20
 GEN_GUIDANCE = 5.0
 GEN_SEED = 0
 
+# Arabic male voice
 TTS_VOICE = os.getenv(
     "TTS_VOICE",
     "ar-SA-HamedNeural"
+).strip()
+
+# CTA
+CTA_TEXT = os.getenv(
+    "CTA_TEXT",
+    "تابعنا، لأن القصة الجاية أخطر."
 ).strip()
 
 
@@ -111,7 +127,9 @@ TTS_VOICE = os.getenv(
 # PATHS
 # =========================================================
 
-BASE_DIR = Path("/tmp/abosaraj")
+BASE_DIR = Path(
+    "/tmp/abosaraj"
+)
 
 BASE_DIR.mkdir(
     parents=True,
@@ -128,7 +146,9 @@ logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(message)s"
 )
 
-log = logging.getLogger("abosaraj")
+log = logging.getLogger(
+    "abosaraj"
+)
 
 
 # =========================================================
@@ -205,7 +225,9 @@ def safe_error_text(error):
 def run_command(command):
     log.info(
         "RUN_COMMAND=%s",
-        " ".join(map(str, command))
+        " ".join(
+            map(str, command)
+        )
     )
 
     result = subprocess.run(
@@ -230,7 +252,9 @@ def run_command(command):
 
 def check_telegram_connection():
     if not BOT_TOKEN:
-        log.error("BOT_TOKEN_MISSING")
+        log.error(
+            "BOT_TOKEN_MISSING"
+        )
         return
 
     try:
@@ -305,51 +329,76 @@ def create_storyboard(user_text):
     )
 
     system_prompt = f"""
-You are a professional cinematic AI video director.
+You are the lead writer and cinematic AI video director
+for a professional TikTok / Instagram Reels channel.
 
-Create a short realistic cinematic sci-fi story
-for TikTok / Instagram Reels.
+Create a highly engaging fictional cinematic sci-fi story.
 
-The story must be fictional unless the user explicitly
-asks for a real event.
+IMPORTANT:
+The story is FICTIONAL unless the user explicitly asks
+for a real event.
 
-Target duration: approximately {total_seconds} seconds.
+TARGET:
+Approximately {total_seconds} seconds.
 
-Create exactly {SHOT_COUNT} scenes.
+Create EXACTLY {SHOT_COUNT} scenes.
 
-Each scene must describe:
-- what happens
-- environment
-- characters
-- camera movement
-- lighting
-- cinematic visual details
-- continuity with previous scene
+The story must have:
 
-The video must feel like real moving footage,
-not a slideshow.
+1. A very strong hook in the first seconds.
+2. Clear escalation.
+3. Something strange or unexpected.
+4. A strong ending or mini-twist.
+5. Smooth continuity between scenes.
+6. Natural Arabic narration.
+7. Visual prompts written in English for an AI video model.
 
-Use realistic physical motion.
-Avoid impossible visual effects unless they are
-clearly part of the story.
+The final video should feel like a real cinematic movie scene,
+NOT a slideshow.
 
-Return ONLY valid JSON in this exact structure:
+Characters and environment must remain visually consistent.
+
+For every scene include:
+
+- scene number
+- duration
+- English cinematic video prompt
+- Arabic narration for that scene
+
+The Arabic narration must describe what the viewer needs
+to understand from the story.
+
+DO NOT put visual prompt instructions inside narration.
+
+The narration must sound natural when spoken by an Arabic
+male narrator.
+
+Keep the narration concise enough to fit the target duration.
+
+At the end include a very short CTA.
+
+Return ONLY valid JSON.
+
+EXACT JSON STRUCTURE:
 
 {{
-  "title": "string",
-  "hook": "string",
+  "title": "short Arabic title",
+  "hook": "short Arabic hook",
+  "narration": "complete Arabic narration",
+  "cta": "short Arabic CTA",
   "scenes": [
     {{
       "scene": 1,
       "duration": {SHOT_DURATION},
-      "prompt": "detailed cinematic video prompt"
+      "prompt": "detailed English cinematic video prompt",
+      "narration": "Arabic narration for this scene"
     }}
   ]
 }}
 """
 
     user_prompt = f"""
-Create the storyboard based on this idea:
+Create the cinematic story based on this idea:
 
 {user_text}
 """
@@ -369,8 +418,15 @@ Create the storyboard based on this idea:
         ]
     )
 
-    content = response.choices[0].message.content.strip()
+    content = (
+        response
+        .choices[0]
+        .message
+        .content
+        .strip()
+    )
 
+    # Remove markdown fences if Groq adds them
     content = re.sub(
         r"^```(?:json)?",
         "",
@@ -386,7 +442,9 @@ Create the storyboard based on this idea:
 
     content = content.strip()
 
-    data = json.loads(content)
+    data = json.loads(
+        content
+    )
 
     scenes = data.get(
         "scenes",
@@ -397,6 +455,32 @@ Create the storyboard based on this idea:
         raise RuntimeError(
             "GROQ_RETURNED_NO_SCENES"
         )
+
+    if len(scenes) != SHOT_COUNT:
+        raise RuntimeError(
+            "GROQ_SCENE_COUNT_MISMATCH: "
+            f"expected={SHOT_COUNT} "
+            f"received={len(scenes)}"
+        )
+
+    # Make sure every scene has narration
+    for index, scene in enumerate(
+        scenes,
+        start=1
+    ):
+        if not scene.get(
+            "prompt"
+        ):
+            raise RuntimeError(
+                f"GROQ_SCENE_{index}_PROMPT_EMPTY"
+            )
+
+        if not scene.get(
+            "narration"
+        ):
+            raise RuntimeError(
+                f"GROQ_SCENE_{index}_NARRATION_EMPTY"
+            )
 
     return data
 
@@ -438,7 +522,10 @@ def get_api_schema(client):
 # RESOLVE GENERATE ENDPOINT
 # =========================================================
 
-def resolve_endpoint(client, api_dict):
+def resolve_endpoint(
+    client,
+    api_dict
+):
     if HF_API_NAME:
         return HF_API_NAME
 
@@ -456,7 +543,9 @@ def resolve_endpoint(client, api_dict):
     )
 
     for endpoint in endpoints:
-        text = str(endpoint).lower()
+        text = str(
+            endpoint
+        ).lower()
 
         if "generate" in text:
             return "/generate"
@@ -472,7 +561,9 @@ def resolve_endpoint(client, api_dict):
             client_endpoints,
             dict
         ):
-            for endpoint in client_endpoints.values():
+            for endpoint in (
+                client_endpoints.values()
+            ):
                 name = getattr(
                     endpoint,
                     "api_name",
@@ -556,10 +647,7 @@ def build_generate_arguments(
 
         value = None
 
-        # =================================================
         # MODEL
-        # =================================================
-
         if name_lower in {
             "model_key",
             "model",
@@ -572,8 +660,10 @@ def build_generate_arguments(
 
             elif choices:
                 non_nsfw = [
-                    c for c in choices
-                    if "nsfw" not in str(c).lower()
+                    c
+                    for c in choices
+                    if "nsfw"
+                    not in str(c).lower()
                 ]
 
                 if non_nsfw:
@@ -584,88 +674,62 @@ def build_generate_arguments(
             else:
                 value = "wan-base"
 
-        # =================================================
         # PROMPT
-        # =================================================
-
         elif name_lower == "prompt":
             value = prompt
 
-        # =================================================
         # NEGATIVE PROMPT
-        # =================================================
-
         elif name_lower == "negative_prompt":
             value = (
-                "static, blurry, low quality, "
-                "distorted, deformed, bad anatomy, "
-                "text, subtitles, watermark, "
-                "jpeg artifacts, frozen frame, "
-                "unnatural movement, duplicate objects"
+                "static, slideshow, frozen frame, "
+                "blurry, low quality, distorted, "
+                "deformed, bad anatomy, extra limbs, "
+                "extra fingers, duplicate objects, "
+                "duplicate people, melting face, "
+                "warped body, text, subtitles, "
+                "watermark, logo, jpeg artifacts, "
+                "unnatural movement, flickering, "
+                "camera shake"
             )
 
-        # =================================================
         # WIDTH
-        # =================================================
-
         elif name_lower == "width":
             value = width
 
-        # =================================================
         # HEIGHT
-        # =================================================
-
         elif name_lower == "height":
             value = height
 
-        # =================================================
         # FRAMES
-        # =================================================
-
         elif name_lower in {
             "num_frames",
             "frames"
         }:
             value = num_frames
 
-        # =================================================
         # STEPS
-        # =================================================
-
         elif name_lower == "steps":
             value = steps
 
-        # =================================================
         # GUIDANCE
-        # =================================================
-
         elif name_lower in {
             "guidance_scale",
             "guidance"
         }:
             value = guidance_scale
 
-        # =================================================
         # SEED
-        # =================================================
-
         elif name_lower == "seed":
             value = seed
 
-        # =================================================
         # LORA
-        # =================================================
-
         elif name_lower in {
             "lora_scale",
             "lora_strength"
         }:
             value = lora_scale
 
-        # =================================================
         # CUSTOM CHECKPOINT
-        # =================================================
-
         elif name_lower in {
             "custom_ckpt",
             "custom_checkpoint",
@@ -673,27 +737,19 @@ def build_generate_arguments(
         }:
             value = custom_ckpt
 
-        # =================================================
         # OTHER ENUM
-        # =================================================
-
         elif choices:
             value = choices[0]
 
-        # =================================================
         # BOOLEAN
-        # =================================================
-
         elif (
             isinstance(type_info, dict)
-            and type_info.get("type") == "boolean"
+            and type_info.get("type")
+            == "boolean"
         ):
             value = False
 
-        # =================================================
         # DEFAULT
-        # =================================================
-
         else:
             if parameter.get(
                 "parameter_has_default",
@@ -702,11 +758,12 @@ def build_generate_arguments(
                 value = parameter.get(
                     "parameter_default"
                 )
-
             else:
                 value = None
 
-        args.append(value)
+        args.append(
+            value
+        )
 
         log.warning(
             "HF_PARAMETER name=%s value=%r",
@@ -747,17 +804,20 @@ def find_video_value(value):
         value,
         str
     ):
-        if (
-            value.startswith("http://")
-            or value.startswith("https://")
+        if value.startswith(
+            "http://"
+        ) or value.startswith(
+            "https://"
         ):
             return value
 
-        if (
-            value.endswith(".mp4")
-            or value.endswith(".webm")
-            or value.endswith(".mov")
-            or value.endswith(".avi")
+        if value.endswith(
+            (
+                ".mp4",
+                ".webm",
+                ".mov",
+                ".avi"
+            )
         ):
             return value
 
@@ -807,20 +867,13 @@ def find_video_value(value):
 
 
 # =========================================================
-# EXTRACT GPU TIME FROM WAN RESULT
+# EXTRACT GPU TIME
 # =========================================================
 
 def extract_gpu_seconds(result):
-    """
-    Wan returns metadata similar to:
-
-    **Wan 2.1 ... · 3.4s GPU**
-
-    Extract the GPU number without depending on
-    the exact rest of the message.
-    """
-
-    text = str(result)
+    text = str(
+        result
+    )
 
     patterns = [
         r"([\d.]+)\s*s\s*GPU",
@@ -884,13 +937,18 @@ def download_file(
             ("http://", "https://")
         )
     ):
-        local = Path(value)
+        local = Path(
+            value
+        )
 
         if local.exists():
-            target = output_dir / (
-                "video_"
-                + uuid.uuid4().hex
-                + local.suffix
+            target = (
+                output_dir
+                / (
+                    "video_"
+                    + uuid.uuid4().hex
+                    + local.suffix
+                )
             )
 
             target.write_bytes(
@@ -914,10 +972,13 @@ def download_file(
 
         response.raise_for_status()
 
-        target = output_dir / (
-            "video_"
-            + uuid.uuid4().hex
-            + ".mp4"
+        target = (
+            output_dir
+            / (
+                "video_"
+                + uuid.uuid4().hex
+                + ".mp4"
+            )
         )
 
         with open(
@@ -992,7 +1053,10 @@ def generate_ai_video(
             + safe_error_text(e)
         )
 
-    elapsed = time.time() - start
+    elapsed = (
+        time.time()
+        - start
+    )
 
     gpu_seconds = extract_gpu_seconds(
         result
@@ -1035,724 +1099,33 @@ def generate_ai_video(
 
 
 # =========================================================
-# TEST 4
+# VIDEO DURATION
 # =========================================================
 
-async def hf_test4_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
+def get_video_duration(
+    video_path
 ):
-    if not update.message:
-        return
+    command = [
+        "ffprobe",
+        "-v",
+        "error",
+        "-show_entries",
+        "format=duration",
+        "-of",
+        "default=noprint_wrappers=1:nokey=1",
+        str(video_path)
+    ]
 
-    log.warning(
-        "HFT_TEST4_START"
-    )
-
-    await update.message.reply_text(
-        "🧪 TEST4 بدأ...\n"
-        "رح أجرب Wan Base بفيديو صغير جدًا.\n"
-        "استنى شوي."
-    )
-
-    start = time.time()
+    output = run_command(
+        command
+    ).strip()
 
     try:
-        client = get_hf_client()
-
-        api_name = "/generate"
-
-        test_prompt = (
-            "A cinematic realistic scene of a humanoid "
-            "robot standing alone in a dark futuristic "
-            "laboratory, subtle camera movement, realistic "
-            "lighting, high detail, cinematic atmosphere, "
-            "realistic physical motion"
+        return float(
+            output
         )
-
-        negative_prompt = (
-            "static, blurry, low quality, distorted, "
-            "deformed, text, subtitles, watermark"
-        )
-
-        args = [
-            "wan-base",
-            test_prompt,
-            negative_prompt,
-            320,
-            320,
-            21,
-            1,
-            5.0,
-            0,
-            1.0,
-            None
-        ]
-
-        log.warning(
-            "HFT_TEST4_API=%s",
-            api_name
-        )
-
-        log.warning(
-            "HFT_TEST4_MODEL=wan-base"
-        )
-
-        log.warning(
-            "HFT_TEST4_WIDTH=320"
-        )
-
-        log.warning(
-            "HFT_TEST4_HEIGHT=320"
-        )
-
-        log.warning(
-            "HFT_TEST4_FRAMES=21"
-        )
-
-        log.warning(
-            "HFT_TEST4_STEPS=1"
-        )
-
-        log.warning(
-            "HFT_TEST4_GUIDANCE=5.0"
-        )
-
-        log.warning(
-            "HFT_TEST4_SEED=0"
-        )
-
-        log.warning(
-            "HFT_TEST4_LORA=1.0"
-        )
-
-        log.warning(
-            "HFT_TEST4_CUSTOM_CKPT=None"
-        )
-
-        log.warning(
-            "HFT_TEST4_BEFORE_PREDICT"
-        )
-
-        predict_start = time.time()
-
-        result = await asyncio.to_thread(
-            client.predict,
-            *args,
-            api_name=api_name
-        )
-
-        elapsed = time.time() - predict_start
-
-        gpu_seconds = extract_gpu_seconds(
-            result
-        )
-
-        log.warning(
-            "HFT_TEST4_PREDICT_DONE_SECONDS=%.2f",
-            elapsed
-        )
-
-        if gpu_seconds is not None:
-            log.warning(
-                "HFT_TEST4_GPU_SECONDS=%.2f",
-                gpu_seconds
-            )
-
-        log.warning(
-            "HFT_TEST4_RESULT_TYPE=%s",
-            type(result).__name__
-        )
-
-        log.warning(
-            "HFT_TEST4_RESULT_REPR=%r",
-            result
-        )
-
-        video_value = find_video_value(
-            result
-        )
-
-        if not video_value:
-            log.error(
-                "HFT_TEST4_NO_VIDEO_FOUND"
-            )
-
-            await update.message.reply_text(
-                "❌ Wan رجّع نتيجة لكن ما لقيت ملف فيديو.\n\n"
-                f"⏱ زمن التوليد: {elapsed:.2f} ثانية\n\n"
-                "ابعتلي Logs الخاصة بـ HFT_TEST4."
-            )
-
-            log.warning(
-                "HFT_TEST4_FINISHED_NO_VIDEO"
-            )
-
-            return
-
-        log.warning(
-            "HFT_TEST4_VIDEO_VALUE=%r",
-            video_value
-        )
-
-        try:
-            video_path = download_file(
-                video_value,
-                BASE_DIR / "hf_test4"
-            )
-
-            log.warning(
-                "HFT_TEST4_DOWNLOADED=%s",
-                video_path
-            )
-
-            video_path = Path(
-                video_path
-            )
-
-            file_size = (
-                video_path.stat().st_size
-            )
-
-            log.warning(
-                "HFT_TEST4_FILE_SIZE=%s",
-                file_size
-            )
-
-            with open(
-                video_path,
-                "rb"
-            ) as video_file:
-                await update.message.reply_video(
-                    video=video_file,
-                    caption=(
-                        "✅ TEST4 نجح 🎬\n\n"
-                        f"⏱ زمن الطلب: "
-                        f"{elapsed:.2f} ثانية\n"
-                        f"🎮 GPU: "
-                        f"{gpu_seconds:.2f} ثانية\n"
-                        f"📦 الحجم: "
-                        f"{file_size / 1024 / 1024:.2f} MB"
-                        if gpu_seconds is not None
-                        else
-                        (
-                            "✅ TEST4 نجح 🎬\n\n"
-                            f"⏱ زمن الطلب: "
-                            f"{elapsed:.2f} ثانية\n"
-                            f"📦 الحجم: "
-                            f"{file_size / 1024 / 1024:.2f} MB"
-                        )
-                    )
-                )
-
-            total = time.time() - start
-
-            log.warning(
-                "HFT_TEST4_TOTAL_SECONDS=%.2f",
-                total
-            )
-
-            log.warning(
-                "HFT_TEST4_FINISHED_SUCCESS"
-            )
-
-        except Exception as e:
-            log.error(
-                "HFT_TEST4_DOWNLOAD_ERROR=%s",
-                safe_error_text(e),
-                exc_info=True
-            )
-
-            await update.message.reply_text(
-                "⚠️ Wan ولّد النتيجة، "
-                "لكن صار خطأ أثناء تنزيل/إرسال الفيديو.\n\n"
-                f"الخطأ:\n{safe_error_text(e)[:1200]}"
-            )
-
-            log.warning(
-                "HFT_TEST4_FINISHED_DOWNLOAD_ERROR"
-            )
-
-    except Exception as e:
-        total = time.time() - start
-
-        error = safe_error_text(e)
-
-        log.error(
-            "HFT_TEST4_PREDICT_ERROR=%s",
-            error,
-            exc_info=True
-        )
-
-        log.warning(
-            "HFT_TEST4_TOTAL_SECONDS=%.2f",
-            total
-        )
-
-        log.warning(
-            "HFT_TEST4_FINISHED_WITH_ERROR"
-        )
-
-        await update.message.reply_text(
-            "❌ TEST4 فشل.\n\n"
-            + error[:1800]
-            + f"\n\n⏱ الزمن: {total:.2f} ثانية"
-        )
-
-
-# =========================================================
-# TEST 5.1 — PRODUCTION WAN TEST
-# =========================================================
-
-async def hf_test5_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
-    if not update.message:
-        return
-
-    log.warning(
-        "HFT_TEST5_START"
-    )
-
-    await update.message.reply_text(
-        "🚀 TEST5.1 بدأ...\n\n"
-        "هذا اختبار Wan بإعدادات أقرب للإنتاج:\n"
-        "📐 480×832\n"
-        "🎞️ 81 frames\n"
-        "⚙️ 20 steps\n"
-        "🎮 wan-base\n"
-        "🧩 LoRA: 1.0\n\n"
-        "هذا الاختبار مهم لأنه سيبين لنا هل Wan يستطيع "
-        "توليد فيديو رأسي طويل نسبيًا بهذه الإعدادات.\n\n"
-        "استنى شوي 🎬"
-    )
-
-    total_start = time.time()
-
-    try:
-        client = get_hf_client()
-
-        api_name = "/generate"
-
-        test_prompt = (
-            "A highly realistic cinematic science fiction "
-            "scene inside a modern futuristic research "
-            "laboratory at night. A humanoid robot slowly "
-            "turns its head and notices a human scientist "
-            "standing behind glass. The scientist looks "
-            "surprised. Subtle natural body movement, "
-            "realistic facial expressions, realistic hands, "
-            "realistic physics, cinematic camera slowly "
-            "moves forward, shallow depth of field, "
-            "dramatic but realistic laboratory lighting, "
-            "photorealistic live action movie look, "
-            "high detail, coherent motion, no text."
-        )
-
-        negative_prompt = (
-            "static image, slideshow, frozen frame, "
-            "blurry, low quality, distorted, deformed, "
-            "bad anatomy, extra limbs, extra fingers, "
-            "duplicate person, duplicate robot, "
-            "melting face, warped body, text, subtitles, "
-            "watermark, logo, jpeg artifacts, "
-            "unnatural motion, flickering, camera shake"
-        )
-
-        # =================================================
-        # TEST5.1
-        #
-        # Only this test uses 480x832.
-        # Production GEN_WIDTH remains 576.
-        # =================================================
-
-        args = [
-            "wan-base",
-            test_prompt,
-            negative_prompt,
-            480,
-            832,
-            81,
-            20,
-            5.0,
-            0,
-            1.0,
-            None
-        ]
-
-        # ---------------------------------------------
-        # Log complete test configuration
-        # ---------------------------------------------
-
-        log.warning(
-            "HFT_TEST5_API=%s",
-            api_name
-        )
-
-        log.warning(
-            "HFT_TEST5_MODEL=wan-base"
-        )
-
-        log.warning(
-            "HFT_TEST5_WIDTH=480"
-        )
-
-        log.warning(
-            "HFT_TEST5_HEIGHT=832"
-        )
-
-        log.warning(
-            "HFT_TEST5_FRAMES=81"
-        )
-
-        log.warning(
-            "HFT_TEST5_FPS=16"
-        )
-
-        log.warning(
-            "HFT_TEST5_EXPECTED_VIDEO_SECONDS=%.3f",
-            81 / 16
-        )
-
-        log.warning(
-            "HFT_TEST5_STEPS=20"
-        )
-
-        log.warning(
-            "HFT_TEST5_GUIDANCE=5.0"
-        )
-
-        log.warning(
-            "HFT_TEST5_SEED=0"
-        )
-
-        log.warning(
-            "HFT_TEST5_LORA=1.0"
-        )
-
-        log.warning(
-            "HFT_TEST5_CUSTOM_CKPT=None"
-        )
-
-        log.warning(
-            "HFT_TEST5_BEFORE_PREDICT"
-        )
-
-        # ---------------------------------------------
-        # Log actual arguments safely
-        # ---------------------------------------------
-
-        for index, value in enumerate(args):
-            if index == 1:
-                log.warning(
-                    "HFT_TEST5_ARG_%s=<PROMPT>",
-                    index
-                )
-
-            elif index == 2:
-                log.warning(
-                    "HFT_TEST5_ARG_%s=<NEGATIVE_PROMPT>",
-                    index
-                )
-
-            else:
-                log.warning(
-                    "HFT_TEST5_ARG_%s=%r",
-                    index,
-                    value
-                )
-
-        # ---------------------------------------------
-        # Generate
-        # ---------------------------------------------
-
-        predict_start = time.time()
-
-        try:
-            result = await asyncio.to_thread(
-                client.predict,
-                *args,
-                api_name=api_name
-            )
-
-        except Exception as predict_error:
-            predict_elapsed = (
-                time.time()
-                - predict_start
-            )
-
-            error = safe_error_text(
-                predict_error
-            )
-
-            log.error(
-                "HFT_TEST5_PREDICT_ERROR=%s",
-                error,
-                exc_info=True
-            )
-
-            log.warning(
-                "HFT_TEST5_PREDICT_FAILED_SECONDS=%.2f",
-                predict_elapsed
-            )
-
-            raise RuntimeError(
-                "HF_TEST5_PREDICT_FAILED: "
-                + error
-            )
-
-        predict_elapsed = (
-            time.time()
-            - predict_start
-        )
-
-        # ---------------------------------------------
-        # Extract GPU
-        # ---------------------------------------------
-
-        gpu_seconds = extract_gpu_seconds(
-            result
-        )
-
-        log.warning(
-            "HFT_TEST5_PREDICT_DONE_SECONDS=%.2f",
-            predict_elapsed
-        )
-
-        if gpu_seconds is not None:
-            log.warning(
-                "HFT_TEST5_GPU_SECONDS=%.2f",
-                gpu_seconds
-            )
-
-            expected_video_seconds = (
-                81 / 16
-            )
-
-            if expected_video_seconds > 0:
-                gpu_per_video_second = (
-                    gpu_seconds
-                    / expected_video_seconds
-                )
-
-                log.warning(
-                    "HFT_TEST5_GPU_PER_VIDEO_SECOND=%.4f",
-                    gpu_per_video_second
-                )
-
-                estimated_gpu_for_90_seconds = (
-                    gpu_per_video_second
-                    * 90
-                )
-
-                log.warning(
-                    "HFT_TEST5_EST_GPU_FOR_90_SECONDS=%.2f",
-                    estimated_gpu_for_90_seconds
-                )
-
-        else:
-            log.warning(
-                "HFT_TEST5_GPU_SECONDS=UNKNOWN"
-            )
-
-        # ---------------------------------------------
-        # Result info
-        # ---------------------------------------------
-
-        log.warning(
-            "HFT_TEST5_RESULT_TYPE=%s",
-            type(result).__name__
-        )
-
-        log.warning(
-            "HFT_TEST5_RESULT_REPR=%r",
-            result
-        )
-
-        # ---------------------------------------------
-        # Find video
-        # ---------------------------------------------
-
-        video_value = find_video_value(
-            result
-        )
-
-        if not video_value:
-            log.error(
-                "HFT_TEST5_NO_VIDEO_FOUND"
-            )
-
-            total = (
-                time.time()
-                - total_start
-            )
-
-            log.warning(
-                "HFT_TEST5_TOTAL_SECONDS=%.2f",
-                total
-            )
-
-            log.warning(
-                "HFT_TEST5_FINISHED_NO_VIDEO"
-            )
-
-            await update.message.reply_text(
-                "❌ TEST5.1 رجع نتيجة، لكن ما لقيت ملف فيديو.\n\n"
-                f"⏱ زمن الطلب: {predict_elapsed:.2f}s\n"
-                f"🎮 GPU: "
-                + (
-                    f"{gpu_seconds:.2f}s"
-                    if gpu_seconds is not None
-                    else "غير معروف"
-                )
-                + "\n\n"
-                "ابعتلي Logs التي تبدأ بـ HFT_TEST5_."
-            )
-
-            return
-
-        log.warning(
-            "HFT_TEST5_VIDEO_VALUE=%r",
-            video_value
-        )
-
-        # ---------------------------------------------
-        # Download
-        # ---------------------------------------------
-
-        video_path = download_file(
-            video_value,
-            BASE_DIR / "hf_test5"
-        )
-
-        video_path = Path(
-            video_path
-        )
-
-        log.warning(
-            "HFT_TEST5_DOWNLOADED=%s",
-            video_path
-        )
-
-        file_size = (
-            video_path.stat().st_size
-        )
-
-        log.warning(
-            "HFT_TEST5_FILE_SIZE=%s",
-            file_size
-        )
-
-        # ---------------------------------------------
-        # Final timing
-        # ---------------------------------------------
-
-        total = (
-            time.time()
-            - total_start
-        )
-
-        log.warning(
-            "HFT_TEST5_TOTAL_SECONDS=%.2f",
-            total
-        )
-
-        log.warning(
-            "HFT_TEST5_FINISHED_SUCCESS"
-        )
-
-        # ---------------------------------------------
-        # Telegram result
-        # ---------------------------------------------
-
-        gpu_text = (
-            f"{gpu_seconds:.2f} ثانية"
-            if gpu_seconds is not None
-            else "غير معروف"
-        )
-
-        video_duration = (
-            81 / 16
-        )
-
-        if gpu_seconds is not None:
-            gpu_per_second = (
-                gpu_seconds
-                / video_duration
-            )
-
-            estimated_90 = (
-                gpu_per_second
-                * 90
-            )
-
-            estimated_90_text = (
-                f"{estimated_90:.1f} ثانية GPU"
-            )
-
-        else:
-            estimated_90_text = (
-                "غير محسوب"
-            )
-
-        caption = (
-            "🚀 TEST5.1 نجح 🎬🔥\n\n"
-            "📐 الدقة: 480×832\n"
-            "🎞️ الفريمات: 81\n"
-            "🎬 مدة الفيديو: "
-            f"{video_duration:.2f}s\n"
-            "⚙️ Steps: 20\n"
-            "🤖 Model: wan-base\n"
-            "🧩 LoRA: 1.0\n\n"
-            f"🎮 GPU: {gpu_text}\n"
-            f"⏱ زمن الطلب: {predict_elapsed:.2f}s\n"
-            f"⏱ الإجمالي: {total:.2f}s\n"
-            f"📦 الحجم: "
-            f"{file_size / 1024 / 1024:.2f} MB\n\n"
-            "📊 تقدير 90 ثانية بنفس المعدل:\n"
-            f"{estimated_90_text}\n\n"
-            "🔥 ابعتلي Logs HFT_TEST5_ كاملة."
-        )
-
-        with open(
-            video_path,
-            "rb"
-        ) as video_file:
-            await update.message.reply_video(
-                video=video_file,
-                caption=caption
-            )
-
-    except Exception as e:
-        total = (
-            time.time()
-            - total_start
-        )
-
-        error = safe_error_text(e)
-
-        log.error(
-            "HFT_TEST5_PREDICT_ERROR=%s",
-            error,
-            exc_info=True
-        )
-
-        log.warning(
-            "HFT_TEST5_TOTAL_SECONDS=%.2f",
-            total
-        )
-
-        log.warning(
-            "HFT_TEST5_FINISHED_WITH_ERROR"
-        )
-
-        await update.message.reply_text(
-            "❌ TEST5.1 فشل.\n\n"
-            + error[:1800]
-            + f"\n\n⏱ الزمن: {total:.2f} ثانية\n\n"
-            "إذا كان الخطأ من Wan، ابعتلي Logs التي تبدأ بـ HFT_TEST5_."
-        )
+    except Exception:
+        return 0.0
 
 
 # =========================================================
@@ -1763,19 +1136,26 @@ def normalize_video(
     input_path,
     output_path
 ):
+    # Crop to exact 9:16 instead of adding black bars.
+    #
+    # Wan output is close to vertical.
+    # We scale enough to cover 720x1280,
+    # then crop the sides.
+
+    video_filter = (
+        f"scale={FINAL_WIDTH}:{FINAL_HEIGHT}:"
+        "force_original_aspect_ratio=increase,"
+        f"crop={FINAL_WIDTH}:{FINAL_HEIGHT},"
+        "setsar=1"
+    )
+
     command = [
         "ffmpeg",
         "-y",
         "-i",
         str(input_path),
         "-vf",
-        (
-            "scale="
-            f"{FINAL_WIDTH}:{FINAL_HEIGHT}:"
-            "force_original_aspect_ratio=decrease,"
-            f"pad={FINAL_WIDTH}:{FINAL_HEIGHT}:"
-            "(ow-iw)/2:(oh-ih)/2"
-        ),
+        video_filter,
         "-r",
         str(GEN_FPS),
         "-c:v",
@@ -1823,8 +1203,13 @@ def concat_videos(
     ) as f:
         for path in video_paths:
             safe_path = (
-                str(Path(path).resolve())
-                .replace("'", "'\\''")
+                str(
+                    Path(path).resolve()
+                )
+                .replace(
+                    "'",
+                    "'\\''"
+                )
             )
 
             f.write(
@@ -1890,6 +1275,15 @@ async def create_tts(
     text,
     output_path
 ):
+    text = (
+        text or ""
+    ).strip()
+
+    if not text:
+        raise RuntimeError(
+            "TTS_TEXT_EMPTY"
+        )
+
     communicate = edge_tts.Communicate(
         text=text,
         voice=TTS_VOICE
@@ -1897,6 +1291,70 @@ async def create_tts(
 
     await communicate.save(
         str(output_path)
+    )
+
+    return Path(
+        output_path
+    )
+
+
+# =========================================================
+# CONCAT AUDIO
+# =========================================================
+
+def concat_audio(
+    audio_paths,
+    output_path
+):
+    list_file = (
+        BASE_DIR
+        / (
+            "audio_concat_"
+            + uuid.uuid4().hex
+            + ".txt"
+        )
+    )
+
+    with open(
+        list_file,
+        "w",
+        encoding="utf-8"
+    ) as f:
+        for path in audio_paths:
+            safe_path = (
+                str(
+                    Path(path).resolve()
+                )
+                .replace(
+                    "'",
+                    "'\\''"
+                )
+            )
+
+            f.write(
+                "file '"
+                + safe_path
+                + "'\n"
+            )
+
+    command = [
+        "ffmpeg",
+        "-y",
+        "-f",
+        "concat",
+        "-safe",
+        "0",
+        "-i",
+        str(list_file),
+        "-c:a",
+        "aac",
+        "-b:a",
+        "128k",
+        str(output_path)
+    ]
+
+    run_command(
+        command
     )
 
     return Path(
@@ -1944,6 +1402,273 @@ def mux_audio(
 
 
 # =========================================================
+# FONT DETECTION
+# =========================================================
+
+def find_arabic_font():
+    candidates = [
+        "Noto Sans Arabic",
+        "Noto Naskh Arabic",
+        "Noto Sans",
+        "DejaVu Sans"
+    ]
+
+    for font_name in candidates:
+        try:
+            result = subprocess.run(
+                [
+                    "fc-match",
+                    "-f",
+                    "%{file}",
+                    font_name
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True
+            )
+
+            path = (
+                result.stdout.strip()
+            )
+
+            if path and Path(path).exists():
+                log.info(
+                    "ARABIC_FONT=%s",
+                    path
+                )
+
+                return path
+
+        except Exception as e:
+            log.warning(
+                "FONT_CHECK_ERROR=%s",
+                safe_error_text(e)
+            )
+
+    return None
+
+
+# =========================================================
+# SRT HELPERS
+# =========================================================
+
+def format_srt_time(
+    seconds
+):
+    seconds = max(
+        0.0,
+        float(seconds)
+    )
+
+    hours = int(
+        seconds // 3600
+    )
+
+    minutes = int(
+        (seconds % 3600)
+        // 60
+    )
+
+    secs = int(
+        seconds % 60
+    )
+
+    millis = int(
+        round(
+            (seconds - int(seconds))
+            * 1000
+        )
+    )
+
+    if millis >= 1000:
+        secs += 1
+        millis -= 1000
+
+    if secs >= 60:
+        minutes += 1
+        secs -= 60
+
+    if minutes >= 60:
+        hours += 1
+        minutes -= 60
+
+    return (
+        f"{hours:02d}:"
+        f"{minutes:02d}:"
+        f"{secs:02d},"
+        f"{millis:03d}"
+    )
+
+
+# =========================================================
+# CREATE SRT
+# =========================================================
+
+def create_srt(
+    subtitle_items,
+    output_path,
+    cta_text=None,
+    cta_duration=2.5
+):
+    lines = []
+
+    counter = 1
+
+    for item in subtitle_items:
+        start = float(
+            item["start"]
+        )
+
+        end = float(
+            item["end"]
+        )
+
+        text = (
+            item["text"]
+            .strip()
+        )
+
+        if not text:
+            continue
+
+        lines.append(
+            str(counter)
+        )
+
+        lines.append(
+            f"{format_srt_time(start)} --> "
+            f"{format_srt_time(end)}"
+        )
+
+        lines.append(
+            text
+        )
+
+        lines.append("")
+
+        counter += 1
+
+    if cta_text:
+        if subtitle_items:
+            last_end = max(
+                float(
+                    x["end"]
+                )
+                for x in subtitle_items
+            )
+        else:
+            last_end = 0.0
+
+        cta_start = max(
+            0.0,
+            last_end - cta_duration
+        )
+
+        lines.append(
+            str(counter)
+        )
+
+        lines.append(
+            f"{format_srt_time(cta_start)} --> "
+            f"{format_srt_time(last_end)}"
+        )
+
+        lines.append(
+            cta_text
+        )
+
+        lines.append("")
+
+    Path(
+        output_path
+    ).write_text(
+        "\n".join(lines),
+        encoding="utf-8-sig"
+    )
+
+    return Path(
+        output_path
+    )
+
+
+# =========================================================
+# ADD ARABIC CAPTIONS
+# =========================================================
+
+def burn_captions(
+    video_path,
+    srt_path,
+    output_path
+):
+    font_path = find_arabic_font()
+
+    # First try libass subtitles.
+    #
+    # This is much better for Arabic than drawtext
+    # because libass handles shaping and RTL.
+
+    if font_path:
+        font_dir = str(
+            Path(font_path).parent
+        )
+
+        subtitle_filter = (
+            "subtitles="
+            + str(srt_path)
+            + ":"
+            + "fontsdir="
+            + font_dir
+        )
+
+    else:
+        subtitle_filter = (
+            "subtitles="
+            + str(srt_path)
+        )
+
+    command = [
+        "ffmpeg",
+        "-y",
+        "-i",
+        str(video_path),
+        "-vf",
+        subtitle_filter,
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast",
+        "-crf",
+        "23",
+        "-pix_fmt",
+        "yuv420p",
+        "-c:a",
+        "copy",
+        str(output_path)
+    ]
+
+    try:
+        run_command(
+            command
+        )
+
+    except Exception as e:
+        log.error(
+            "CAPTION_BURN_ERROR=%s",
+            safe_error_text(e),
+            exc_info=True
+        )
+
+        raise RuntimeError(
+            "ARABIC_CAPTION_RENDER_FAILED: "
+            + safe_error_text(e)
+        )
+
+    return Path(
+        output_path
+    )
+
+
+# =========================================================
 # CREATE REEL
 # =========================================================
 
@@ -1967,6 +1692,10 @@ async def create_reel(
         job_id
     )
 
+    # =====================================================
+    # 1. GROQ STORY
+    # =====================================================
+
     storyboard = create_storyboard(
         user_text
     )
@@ -1985,15 +1714,24 @@ async def create_reel(
         []
     )
 
+    # =====================================================
+    # 2. GENERATE VIDEO SCENES
+    # =====================================================
+
     generated_videos = []
+
+    gpu_total = 0.0
 
     for index, scene in enumerate(
         scenes,
         start=1
     ):
-        prompt = scene.get(
-            "prompt",
-            ""
+        prompt = (
+            scene.get(
+                "prompt",
+                ""
+            )
+            .strip()
         )
 
         log.info(
@@ -2001,9 +1739,22 @@ async def create_reel(
             index
         )
 
+        scene_start = time.time()
+
         raw_video = generate_ai_video(
             prompt,
             job_dir / f"scene_{index}"
+        )
+
+        scene_elapsed = (
+            time.time()
+            - scene_start
+        )
+
+        log.info(
+            "SCENE_GENERATION_DONE=%s elapsed=%.2f",
+            index,
+            scene_elapsed
         )
 
         normalized_path = (
@@ -2030,6 +1781,10 @@ async def create_reel(
             "NO_GENERATED_VIDEOS"
         )
 
+    # =====================================================
+    # 3. CONCAT VIDEO
+    # =====================================================
+
     combined_video = (
         job_dir
         / "combined.mp4"
@@ -2039,48 +1794,196 @@ async def create_reel(
         combined_video.write_bytes(
             generated_videos[0].read_bytes()
         )
-
     else:
         concat_videos(
             generated_videos,
             combined_video
         )
 
-    # Current version keeps the existing pipeline.
-    story_text = (
-        storyboard.get(
-            "hook",
-            ""
-        )
-        + " "
-        + " ".join(
+    # =====================================================
+    # 4. TTS PER SCENE
+    #
+    # This is important:
+    # Each scene gets its own narration audio.
+    # This lets us create accurate subtitle timing.
+    # =====================================================
+
+    scene_audio_paths = []
+
+    subtitle_items = []
+
+    current_time = 0.0
+
+    for index, scene in enumerate(
+        scenes,
+        start=1
+    ):
+        narration = (
             scene.get(
-                "prompt",
+                "narration",
                 ""
             )
-            for scene in scenes
+            .strip()
         )
-    )
 
-    audio_path = (
+        if not narration:
+            continue
+
+        audio_path = (
+            job_dir
+            / f"voice_{index}.mp3"
+        )
+
+        log.info(
+            "TTS_START_SCENE=%s",
+            index
+        )
+
+        await create_tts(
+            narration,
+            audio_path
+        )
+
+        audio_duration = get_video_duration(
+            audio_path
+        )
+
+        if audio_duration <= 0:
+            raise RuntimeError(
+                f"TTS_DURATION_FAILED_SCENE_{index}"
+            )
+
+        scene_audio_paths.append(
+            audio_path
+        )
+
+        subtitle_items.append(
+            {
+                "start": current_time,
+                "end": (
+                    current_time
+                    + audio_duration
+                ),
+                "text": narration
+            }
+        )
+
+        current_time += audio_duration
+
+        log.info(
+            "TTS_FINISHED_SCENE=%s duration=%.2f",
+            index,
+            audio_duration
+        )
+
+    if not scene_audio_paths:
+        raise RuntimeError(
+            "NO_TTS_AUDIO_GENERATED"
+        )
+
+    # =====================================================
+    # 5. CONCAT VOICE
+    # =====================================================
+
+    voice_audio = (
         job_dir
-        / "voice.mp3"
+        / "voice_full.m4a"
     )
 
-    await create_tts(
-        story_text,
-        audio_path
+    if len(scene_audio_paths) == 1:
+        voice_audio.write_bytes(
+            scene_audio_paths[0].read_bytes()
+        )
+    else:
+        concat_audio(
+            scene_audio_paths,
+            voice_audio
+        )
+
+    # =====================================================
+    # 6. CREATE CAPTIONS
+    # =====================================================
+
+    srt_path = (
+        job_dir
+        / "captions.srt"
     )
+
+    cta = (
+        storyboard.get(
+            "cta",
+            ""
+        )
+        .strip()
+        or CTA_TEXT
+    )
+
+    create_srt(
+        subtitle_items,
+        srt_path,
+        cta_text=cta,
+        cta_duration=2.5
+    )
+
+    log.info(
+        "SRT_CREATED=%s",
+        srt_path
+    )
+
+    # =====================================================
+    # 7. MUX VOICE INTO VIDEO
+    # =====================================================
+
+    voiced_video = (
+        job_dir
+        / "voiced.mp4"
+    )
+
+    mux_audio(
+        combined_video,
+        voice_audio,
+        voiced_video
+    )
+
+    # =====================================================
+    # 8. BURN ARABIC CAPTIONS
+    # =====================================================
+
+    captioned_video = (
+        job_dir
+        / "captioned.mp4"
+    )
+
+    burn_captions(
+        voiced_video,
+        srt_path,
+        captioned_video
+    )
+
+    # =====================================================
+    # 9. FINAL
+    # =====================================================
 
     final_video = (
         job_dir
         / "final.mp4"
     )
 
-    mux_audio(
-        combined_video,
-        audio_path,
+    final_video.write_bytes(
+        captioned_video.read_bytes()
+    )
+
+    # =====================================================
+    # 10. FINAL LOGS
+    # =====================================================
+
+    final_duration = get_video_duration(
         final_video
+    )
+
+    log.info(
+        "FINAL_VIDEO_DURATION=%.2f",
+        final_duration
     )
 
     log.info(
@@ -2088,7 +1991,10 @@ async def create_reel(
         job_id
     )
 
-    return final_video, storyboard
+    return (
+        final_video,
+        storyboard
+    )
 
 
 # =========================================================
@@ -2104,7 +2010,7 @@ async def start_command(
 
     await update.message.reply_text(
         "🤖 أهلاً بك في Abosaraj.\n\n"
-        "أرسل لي فكرة القصة، وأنا أحولها إلى فيديو.\n\n"
+        "أرسل لي فكرة القصة، وأنا أحولها إلى Reel.\n\n"
         "مثال:\n"
         "روبوت اكتشف أن صاحبه اختفى من ذاكرته."
     )
@@ -2135,23 +2041,31 @@ async def message_handler(
 
     processing_message = (
         await update.message.reply_text(
-            "🎬 وصلت الفكرة.\n"
-            "هسا ببدأ تجهيز القصة والفيديو..."
+            "🎬 وصلت الفكرة.\n\n"
+            "🧠 بكتب القصة...\n"
+            "🎥 بجهز المشاهد...\n"
+            "🗣️ بجهز الصوت...\n"
+            "📝 بجهز الكتابة...\n\n"
+            "استنى شوي 🔥"
         )
     )
 
     try:
         final_video, storyboard = (
-            await asyncio.to_thread(
-                lambda: asyncio.run(
-                    create_reel(text)
-                )
+            await create_reel(
+                text
             )
         )
 
-        title = storyboard.get(
-            "title",
-            "Abosaraj Reel"
+        title = (
+            storyboard.get(
+                "title",
+                "Abosaraj Reel"
+            )
+        )
+
+        final_duration = get_video_duration(
+            final_video
         )
 
         with open(
@@ -2164,7 +2078,12 @@ async def message_handler(
                     "🎬 "
                     + title
                     + "\n\n"
-                    "تابع الحساب لقصص مشوقة."
+                    f"⏱ المدة: "
+                    f"{final_duration:.1f} ثانية\n"
+                    "🎙️ صوت عربي\n"
+                    "📝 كابشن عربي\n"
+                    "📱 9:16\n\n"
+                    "🔥 تابعنا، لأن القصة الجاية أخطر."
                 )
             )
 
@@ -2174,7 +2093,9 @@ async def message_handler(
             pass
 
     except Exception as e:
-        error = safe_error_text(e)
+        error = safe_error_text(
+            e
+        )
 
         log.error(
             "TELEGRAM_HANDLER_ERROR=%s",
@@ -2430,7 +2351,9 @@ async def hf_test3_command(
         )
 
     except Exception as e:
-        error = safe_error_text(e)
+        error = safe_error_text(
+            e
+        )
 
         log.error(
             "HFT_TEST3_FATAL_ERROR=%s",
@@ -2445,6 +2368,341 @@ async def hf_test3_command(
         await update.message.reply_text(
             "❌ HFT_TEST3 ERROR:\n\n"
             + error[:1500]
+        )
+
+
+# =========================================================
+# TEST 4
+# =========================================================
+
+async def hf_test4_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+    if not update.message:
+        return
+
+    log.warning(
+        "HFT_TEST4_START"
+    )
+
+    await update.message.reply_text(
+        "🧪 TEST4 بدأ..."
+    )
+
+    start = time.time()
+
+    try:
+        client = get_hf_client()
+
+        api_name = "/generate"
+
+        test_prompt = (
+            "A cinematic realistic scene of a humanoid "
+            "robot standing alone in a dark futuristic "
+            "laboratory, subtle camera movement, realistic "
+            "lighting, high detail, cinematic atmosphere, "
+            "realistic physical motion"
+        )
+
+        negative_prompt = (
+            "static, blurry, low quality, distorted, "
+            "deformed, text, subtitles, watermark"
+        )
+
+        args = [
+            "wan-base",
+            test_prompt,
+            negative_prompt,
+            320,
+            320,
+            21,
+            1,
+            5.0,
+            0,
+            1.0,
+            None
+        ]
+
+        log.warning(
+            "HFT_TEST4_API=%s",
+            api_name
+        )
+
+        predict_start = time.time()
+
+        result = await asyncio.to_thread(
+            client.predict,
+            *args,
+            api_name=api_name
+        )
+
+        elapsed = (
+            time.time()
+            - predict_start
+        )
+
+        gpu_seconds = extract_gpu_seconds(
+            result
+        )
+
+        video_value = find_video_value(
+            result
+        )
+
+        if not video_value:
+            await update.message.reply_text(
+                "❌ TEST4 ما لقى فيديو.\n\n"
+                f"⏱ {elapsed:.2f}s"
+            )
+            return
+
+        video_path = download_file(
+            video_value,
+            BASE_DIR / "hf_test4"
+        )
+
+        file_size = (
+            video_path.stat().st_size
+        )
+
+        gpu_text = (
+            f"{gpu_seconds:.2f}s"
+            if gpu_seconds is not None
+            else "unknown"
+        )
+
+        with open(
+            video_path,
+            "rb"
+        ) as video_file:
+            await update.message.reply_video(
+                video=video_file,
+                caption=(
+                    "✅ TEST4 نجح 🎬\n\n"
+                    f"⏱ الطلب: {elapsed:.2f}s\n"
+                    f"🎮 GPU: {gpu_text}\n"
+                    f"📦 الحجم: "
+                    f"{file_size / 1024 / 1024:.2f} MB"
+                )
+            )
+
+    except Exception as e:
+        total = (
+            time.time()
+            - start
+        )
+
+        error = safe_error_text(
+            e
+        )
+
+        log.error(
+            "HFT_TEST4_ERROR=%s",
+            error,
+            exc_info=True
+        )
+
+        await update.message.reply_text(
+            "❌ TEST4 فشل.\n\n"
+            + error[:1800]
+            + f"\n\n⏱ {total:.2f}s"
+        )
+
+
+# =========================================================
+# TEST 5.1 — PRODUCTION WAN TEST
+# =========================================================
+
+async def hf_test5_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+    if not update.message:
+        return
+
+    log.warning(
+        "HFT_TEST5_START"
+    )
+
+    await update.message.reply_text(
+        "🚀 TEST5.1 بدأ...\n\n"
+        "📐 480×832\n"
+        "🎞️ 81 frames\n"
+        "⚙️ 20 steps\n"
+        "🤖 wan-base\n\n"
+        "استنى شوي 🎬"
+    )
+
+    total_start = time.time()
+
+    try:
+        client = get_hf_client()
+
+        api_name = "/generate"
+
+        test_prompt = (
+            "A highly realistic cinematic science fiction "
+            "scene inside a modern futuristic research "
+            "laboratory at night. A humanoid robot slowly "
+            "turns its head and notices a human scientist "
+            "standing behind glass. The scientist looks "
+            "surprised. Subtle natural body movement, "
+            "realistic facial expressions, realistic hands, "
+            "realistic physics, cinematic camera slowly "
+            "moves forward, shallow depth of field, "
+            "dramatic but realistic laboratory lighting, "
+            "photorealistic live action movie look, "
+            "high detail, coherent motion, no text."
+        )
+
+        negative_prompt = (
+            "static image, slideshow, frozen frame, "
+            "blurry, low quality, distorted, deformed, "
+            "bad anatomy, extra limbs, extra fingers, "
+            "duplicate person, duplicate robot, "
+            "melting face, warped body, text, subtitles, "
+            "watermark, logo, jpeg artifacts, "
+            "unnatural motion, flickering, camera shake"
+        )
+
+        args = [
+            "wan-base",
+            test_prompt,
+            negative_prompt,
+            480,
+            832,
+            81,
+            20,
+            5.0,
+            0,
+            1.0,
+            None
+        ]
+
+        predict_start = time.time()
+
+        result = await asyncio.to_thread(
+            client.predict,
+            *args,
+            api_name=api_name
+        )
+
+        predict_elapsed = (
+            time.time()
+            - predict_start
+        )
+
+        gpu_seconds = extract_gpu_seconds(
+            result
+        )
+
+        video_value = find_video_value(
+            result
+        )
+
+        if not video_value:
+            raise RuntimeError(
+                "HFT_TEST5_NO_VIDEO_FOUND"
+            )
+
+        video_path = download_file(
+            video_value,
+            BASE_DIR / "hf_test5"
+        )
+
+        video_path = Path(
+            video_path
+        )
+
+        file_size = (
+            video_path.stat().st_size
+        )
+
+        video_duration = (
+            81 / 16
+        )
+
+        if gpu_seconds is not None:
+            gpu_per_second = (
+                gpu_seconds
+                / video_duration
+            )
+
+            estimated_90 = (
+                gpu_per_second
+                * 90
+            )
+
+            estimated_90_text = (
+                f"{estimated_90:.1f} ثانية GPU"
+            )
+        else:
+            estimated_90_text = (
+                "غير محسوب"
+            )
+
+        total = (
+            time.time()
+            - total_start
+        )
+
+        caption = (
+            "🚀 TEST5.1 نجح 🎬🔥\n\n"
+            "📐 الدقة: 480×832\n"
+            "🎞️ الفريمات: 81\n"
+            f"🎬 مدة الفيديو: {video_duration:.2f}s\n"
+            "⚙️ Steps: 20\n"
+            "🤖 Model: wan-base\n"
+            "🧩 LoRA: 1.0\n\n"
+            f"🎮 GPU: "
+            + (
+                f"{gpu_seconds:.2f}s"
+                if gpu_seconds is not None
+                else "غير معروف"
+            )
+            + "\n"
+            f"⏱ زمن الطلب: {predict_elapsed:.2f}s\n"
+            f"⏱ الإجمالي: {total:.2f}s\n"
+            f"📦 الحجم: "
+            f"{file_size / 1024 / 1024:.2f} MB\n\n"
+            "📊 تقدير 90 ثانية بنفس المعدل:\n"
+            f"{estimated_90_text}"
+        )
+
+        with open(
+            video_path,
+            "rb"
+        ) as video_file:
+            await update.message.reply_video(
+                video=video_file,
+                caption=caption
+            )
+
+        log.warning(
+            "HFT_TEST5_FINISHED_SUCCESS"
+        )
+
+    except Exception as e:
+        total = (
+            time.time()
+            - total_start
+        )
+
+        error = safe_error_text(
+            e
+        )
+
+        log.error(
+            "HFT_TEST5_ERROR=%s",
+            error,
+            exc_info=True
+        )
+
+        await update.message.reply_text(
+            "❌ TEST5.1 فشل.\n\n"
+            + error[:1800]
+            + f"\n\n⏱ {total:.2f}s"
         )
 
 
@@ -2604,7 +2862,8 @@ def telegram_webhook():
 
     if (
         BOT_WEBHOOK_SECRET
-        and incoming_secret != BOT_WEBHOOK_SECRET
+        and incoming_secret
+        != BOT_WEBHOOK_SECRET
     ):
         log.warning(
             "TELEGRAM_WEBHOOK_BAD_SECRET"
@@ -2626,16 +2885,12 @@ def telegram_webhook():
             telegram_application.bot
         )
 
-        future = (
-            asyncio.run_coroutine_threadsafe(
-                telegram_application.process_update(
-                    update
-                ),
-                telegram_loop
-            )
+        asyncio.run_coroutine_threadsafe(
+            telegram_application.process_update(
+                update
+            ),
+            telegram_loop
         )
-
-        _ = future
 
         return (
             "OK",
@@ -2722,6 +2977,11 @@ def main():
     log.info(
         "GEN_STEPS=%s",
         GEN_STEPS
+    )
+
+    log.info(
+        "TTS_VOICE=%s",
+        TTS_VOICE
     )
 
     worker = threading.Thread(
