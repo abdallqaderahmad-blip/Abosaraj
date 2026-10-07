@@ -6,8 +6,9 @@ import asyncio
 import logging
 import subprocess
 import threading
+import shutil
+import time
 from pathlib import Path
-from concurrent.futures import ThreadPoolExecutor
 
 import requests
 import edge_tts
@@ -41,7 +42,11 @@ logger = logging.getLogger(__name__)
 # =========================================================
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
-GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
+
+GROQ_API_KEY = os.getenv(
+    "GROQ_API_KEY",
+    ""
+).strip()
 
 GROQ_MODEL = os.getenv(
     "GROQ_MODEL",
@@ -67,18 +72,21 @@ FINAL_WIDTH = 720
 FINAL_HEIGHT = 1280
 FPS = 30
 
-# اختبار أولي
-SCENE_COUNT = 2
+# الآن نختبر 4 مشاهد
+SCENE_COUNT = 4
 
+# المدة المستهدفة
 MIN_VIDEO_SECONDS = 60
 MAX_VIDEO_SECONDS = 120
 
+# الصوت الذي كان جيدًا عندك
 VOICE = "ar-SA-HamedNeural"
 
 BASE_DIR = Path("/tmp/story_bot")
-BASE_DIR.mkdir(parents=True, exist_ok=True)
-
-MAX_WORKERS = 2
+BASE_DIR.mkdir(
+    parents=True,
+    exist_ok=True,
+)
 
 
 # =========================================================
@@ -99,7 +107,12 @@ def health():
 
 
 def run_flask():
-    port = int(os.environ.get("PORT", "10000"))
+    port = int(
+        os.environ.get(
+            "PORT",
+            "10000",
+        )
+    )
 
     app.run(
         host="0.0.0.0",
@@ -110,10 +123,11 @@ def run_flask():
 
 
 # =========================================================
-# VALIDATION
+# ENVIRONMENT VALIDATION
 # =========================================================
 
 def validate_environment():
+
     missing = []
 
     if not BOT_TOKEN:
@@ -132,8 +146,157 @@ def validate_environment():
         )
 
     logger.info("Environment variables OK")
-    logger.info("Groq model: %s", GROQ_MODEL)
-    logger.info("Pollinations model: %s", POLLINATIONS_MODEL)
+    logger.info(
+        "Groq model: %s",
+        GROQ_MODEL,
+    )
+
+    logger.info(
+        "Pollinations model: %s",
+        POLLINATIONS_MODEL,
+    )
+
+
+# =========================================================
+# ARABIC FONT DETECTION
+# =========================================================
+
+def find_arabic_font():
+    """
+    يبحث عن خط يدعم العربية على Render.
+
+    نعطي الأولوية لـ:
+    - Noto Sans Arabic
+    - Noto Naskh Arabic
+    - DejaVu Sans
+
+    وإذا كان fontconfig موجودًا،
+    نحاول اكتشاف أفضل خط للغة العربية تلقائيًا.
+    """
+
+    preferred_fonts = [
+        (
+            "Noto Sans Arabic",
+            [
+                "/usr/share/fonts/truetype/noto/"
+                "NotoSansArabic-Regular.ttf",
+
+                "/usr/share/fonts/opentype/noto/"
+                "NotoSansArabic-Regular.ttf",
+            ],
+        ),
+        (
+            "Noto Naskh Arabic",
+            [
+                "/usr/share/fonts/truetype/noto/"
+                "NotoNaskhArabic-Regular.ttf",
+
+                "/usr/share/fonts/opentype/noto/"
+                "NotoNaskhArabic-Regular.ttf",
+            ],
+        ),
+        (
+            "DejaVu Sans",
+            [
+                "/usr/share/fonts/truetype/dejavu/"
+                "DejaVuSans.ttf",
+
+                "/usr/share/fonts/dejavu/"
+                "DejaVuSans.ttf",
+            ],
+        ),
+    ]
+
+    # -----------------------------------------------------
+    # أولاً: الخطوط المعروفة
+    # -----------------------------------------------------
+
+    for family, paths in preferred_fonts:
+
+        for path in paths:
+
+            font_path = Path(path)
+
+            if font_path.exists():
+
+                logger.info(
+                    "Arabic font found: %s",
+                    font_path,
+                )
+
+                return {
+                    "family": family,
+                    "path": font_path,
+                }
+
+    # -----------------------------------------------------
+    # ثانيًا: fontconfig
+    # -----------------------------------------------------
+
+    try:
+
+        result = subprocess.run(
+            [
+                "fc-match",
+                "-f",
+                "%{family}\n%{file}\n",
+                ":lang=ar",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=20,
+        )
+
+        output = result.stdout.strip()
+
+        if output:
+
+            lines = [
+                line.strip()
+                for line in output.splitlines()
+                if line.strip()
+            ]
+
+            if len(lines) >= 2:
+
+                family = lines[0]
+                path = Path(lines[1])
+
+                if path.exists():
+
+                    logger.info(
+                        "Arabic font detected by fontconfig: "
+                        "%s -> %s",
+                        family,
+                        path,
+                    )
+
+                    return {
+                        "family": family,
+                        "path": path,
+                    }
+
+    except Exception as exc:
+
+        logger.warning(
+            "fc-match font detection failed: %s",
+            exc,
+        )
+
+    # -----------------------------------------------------
+    # آخر حل
+    # -----------------------------------------------------
+
+    logger.warning(
+        "Could not detect Arabic font. "
+        "Falling back to DejaVu Sans."
+    )
+
+    return {
+        "family": "DejaVu Sans",
+        "path": None,
+    }
 
 
 # =========================================================
@@ -144,19 +307,15 @@ groq_client = None
 
 
 def extract_json_from_text(text: str):
-    """
-    يحاول استخراج JSON حتى لو Groq رجعه:
-    - داخل ```json ... ```
-    - مع كلام قبل/بعد JSON
-    - أو كـ JSON object عادي
-    """
 
     if not text:
-        raise ValueError("Groq returned an empty response.")
+        raise ValueError(
+            "Groq returned an empty response."
+        )
 
     text = text.strip()
 
-    # إزالة code fences
+    # إزالة Markdown fences
     text = re.sub(
         r"^```(?:json)?\s*",
         "",
@@ -173,30 +332,36 @@ def extract_json_from_text(text: str):
 
     text = text.strip()
 
-    # المحاولة الأولى: النص كاملًا
+    # JSON كامل
     try:
         return json.loads(text)
     except Exception:
         pass
 
-    # محاولة استخراج أول object JSON
+    # استخراج object
     start = text.find("{")
     end = text.rfind("}")
 
     if start != -1 and end > start:
-        candidate = text[start:end + 1]
+
+        candidate = text[
+            start:end + 1
+        ]
 
         try:
             return json.loads(candidate)
         except Exception:
             pass
 
-    # محاولة استخراج array
+    # استخراج array
     start = text.find("[")
     end = text.rfind("]")
 
     if start != -1 and end > start:
-        candidate = text[start:end + 1]
+
+        candidate = text[
+            start:end + 1
+        ]
 
         try:
             return json.loads(candidate)
@@ -209,11 +374,9 @@ def extract_json_from_text(text: str):
 
 
 def normalize_story_plan(data):
-    """
-    يحوّل أشكال JSON المحتملة إلى الشكل الذي نستخدمه.
-    """
 
     if isinstance(data, dict):
+
         scenes = data.get("scenes")
 
         if scenes is None:
@@ -231,36 +394,49 @@ def normalize_story_plan(data):
         return data
 
     if isinstance(data, list):
+
         return {
             "title": "قصة",
             "scenes": data,
         }
 
-    raise ValueError("Groq JSON has unsupported structure.")
+    raise ValueError(
+        "Groq JSON has unsupported structure."
+    )
 
 
 def validate_story_plan(data):
+
     data = normalize_story_plan(data)
 
     scenes = data.get("scenes")
 
     if not isinstance(scenes, list):
+
         raise ValueError(
-            "Groq response does not contain a valid 'scenes' list."
+            "Groq response does not contain "
+            "a valid 'scenes' list."
         )
 
     if len(scenes) == 0:
-        raise ValueError("Groq returned zero scenes.")
+
+        raise ValueError(
+            "Groq returned zero scenes."
+        )
 
     cleaned_scenes = []
 
-    for index, scene in enumerate(scenes):
+    for scene in scenes:
 
         if isinstance(scene, str):
-            cleaned_scenes.append({
-                "narration": scene,
-                "visual_prompt": scene,
-            })
+
+            cleaned_scenes.append(
+                {
+                    "narration": scene.strip(),
+                    "visual_prompt": scene.strip(),
+                }
+            )
+
             continue
 
         if not isinstance(scene, dict):
@@ -282,8 +458,13 @@ def validate_story_plan(data):
             or narration
         )
 
-        narration = str(narration).strip()
-        visual_prompt = str(visual_prompt).strip()
+        narration = str(
+            narration
+        ).strip()
+
+        visual_prompt = str(
+            visual_prompt
+        ).strip()
 
         if not narration:
             continue
@@ -291,18 +472,37 @@ def validate_story_plan(data):
         if not visual_prompt:
             visual_prompt = narration
 
-        cleaned_scenes.append({
-            "narration": narration,
-            "visual_prompt": visual_prompt,
-        })
-
-    if not cleaned_scenes:
-        raise ValueError(
-            "Groq returned scenes but none contained narration."
+        cleaned_scenes.append(
+            {
+                "narration": narration,
+                "visual_prompt": visual_prompt,
+            }
         )
 
-    # نلتزم بعدد المشاهد المطلوب للاختبار
-    cleaned_scenes = cleaned_scenes[:SCENE_COUNT]
+    if not cleaned_scenes:
+
+        raise ValueError(
+            "Groq returned scenes but none "
+            "contained narration."
+        )
+
+    # -----------------------------------------------------
+    # مهم:
+    # لا نسمح بأقل من SCENE_COUNT
+    # -----------------------------------------------------
+
+    if len(cleaned_scenes) < SCENE_COUNT:
+
+        raise ValueError(
+            f"Groq returned only "
+            f"{len(cleaned_scenes)} scenes. "
+            f"Required: {SCENE_COUNT}."
+        )
+
+    # نأخذ العدد المطلوب فقط
+    cleaned_scenes = cleaned_scenes[
+        :SCENE_COUNT
+    ]
 
     return {
         "title": str(
@@ -310,45 +510,74 @@ def validate_story_plan(data):
             or data.get("name")
             or "قصة"
         ).strip(),
+
         "scenes": cleaned_scenes,
     }
 
 
 def generate_story_plan(story: str):
+
     global groq_client
 
     if groq_client is None:
-        groq_client = Groq(api_key=GROQ_API_KEY)
 
-    logger.info("Generating story plan with Groq...")
+        groq_client = Groq(
+            api_key=GROQ_API_KEY
+        )
+
+    logger.info(
+        "Generating story plan with Groq..."
+    )
 
     system_prompt = f"""
-أنت كاتب ومخرج محتوى قصص قصير للفيديوهات العمودية.
+أنت كاتب ومخرج محتوى قصصي احترافي للفيديوهات العمودية القصيرة.
 
-حوّل القصة التي يرسلها المستخدم إلى سيناريو فيديو قصصي قوي.
+مهمتك تحويل القصة التي يرسلها المستخدم إلى سيناريو فيديو قوي وممتع.
 
 المطلوب:
+
 - اللغة العربية.
-- أسلوب جذاب وسهل السماع.
+- السرد طبيعي جدًا وكأنه رجل يحكي القصة.
 - لا تختلق أحداثًا رئيسية غير موجودة في القصة.
-- اجعل السرد مناسبًا لصوت رجل.
-- قسم القصة إلى {SCENE_COUNT} مشاهد.
-- كل مشهد يحتوي على نص سردي وصورة مناسبة.
+- اجعل البداية جذابة.
+- اجعل السرد مناسبًا لفيديو مدته من دقيقة إلى دقيقتين.
+- قسم القصة إلى {SCENE_COUNT} مشاهد بالضبط.
+- كل مشهد يجب أن يكون جزءًا مختلفًا من القصة.
+- لا تكرر نفس الصورة أو نفس الحدث في المشاهد.
+- كل مشهد يجب أن يحتوي على narration و visual_prompt.
+- visual_prompt يجب أن يكون باللغة الإنجليزية.
+- visual_prompt يجب أن يصف لقطة سينمائية واضحة ومختلفة عن باقي المشاهد.
 
 مهم جدًا:
-يجب أن يكون ردك JSON فقط.
-ممنوع كتابة أي شرح خارج JSON.
-ممنوع Markdown.
-ممنوع ```json.
 
-الصيغة المطلوبة حرفيًا:
+يجب أن يكون الرد JSON فقط.
+
+ممنوع:
+- Markdown
+- ```json
+- شرح خارج JSON
+- أي نص قبل أو بعد JSON
+
+الصيغة:
 
 {{
   "title": "عنوان القصة",
   "scenes": [
     {{
-      "narration": "النص الذي سيقرأه الراوي",
-      "visual_prompt": "وصف سينمائي باللغة الإنجليزية للصورة"
+      "narration": "نص المشهد الأول",
+      "visual_prompt": "Cinematic English visual description"
+    }},
+    {{
+      "narration": "نص المشهد الثاني",
+      "visual_prompt": "Cinematic English visual description"
+    }},
+    {{
+      "narration": "نص المشهد الثالث",
+      "visual_prompt": "Cinematic English visual description"
+    }},
+    {{
+      "narration": "نص المشهد الرابع",
+      "visual_prompt": "Cinematic English visual description"
     }}
   ]
 }}
@@ -359,7 +588,8 @@ def generate_story_plan(story: str):
 
 {story}
 
-حوّل هذه القصة الآن إلى JSON فقط.
+حوّلها الآن إلى {SCENE_COUNT} مشاهد بالضبط.
+أريد JSON فقط.
 """
 
     last_error = None
@@ -367,65 +597,94 @@ def generate_story_plan(story: str):
     for attempt in range(1, 4):
 
         try:
+
             logger.info(
                 "Calling Groq attempt %s/3...",
                 attempt,
             )
 
-            response = groq_client.chat.completions.create(
-                model=GROQ_MODEL,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": system_prompt,
+            response = (
+                groq_client
+                .chat
+                .completions
+                .create(
+                    model=GROQ_MODEL,
+
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": system_prompt,
+                        },
+                        {
+                            "role": "user",
+                            "content": user_prompt,
+                        },
+                    ],
+
+                    temperature=0.4,
+
+                    max_tokens=3000,
+
+                    response_format={
+                        "type": "json_object"
                     },
-                    {
-                        "role": "user",
-                        "content": user_prompt,
-                    },
-                ],
-                temperature=0.4,
-                max_tokens=2500,
+                )
             )
 
-            logger.info("Groq HTTP request completed.")
+            logger.info(
+                "Groq HTTP request completed."
+            )
 
-            if not response or not response.choices:
+            if (
+                not response
+                or not response.choices
+            ):
+
                 raise RuntimeError(
                     "Groq returned no choices."
                 )
 
-            message = response.choices[0].message
+            message = (
+                response.choices[0].message
+            )
 
             raw_content = ""
 
             if message is not None:
-                raw_content = message.content or ""
+
+                raw_content = (
+                    message.content
+                    or ""
+                )
 
             logger.info(
                 "Groq response length: %s characters",
                 len(raw_content),
             )
 
-            # مهم جدًا:
-            # نعرض بداية الرد فقط في الـ logs عند وجود مشكلة،
-            # وليس API key أو أي سر.
             if not raw_content.strip():
+
                 logger.error(
-                    "Groq returned EMPTY content. "
-                    "Full response object: %r",
-                    response,
+                    "Groq returned EMPTY content."
                 )
+
                 raise RuntimeError(
                     "Groq returned empty content."
                 )
 
             try:
-                data = extract_json_from_text(
-                    raw_content
+
+                data = (
+                    extract_json_from_text(
+                        raw_content
+                    )
                 )
 
-                plan = validate_story_plan(data)
+                plan = (
+                    validate_story_plan(
+                        data
+                    )
+                )
 
                 logger.info(
                     "Groq story plan OK: %s scenes",
@@ -437,30 +696,29 @@ def generate_story_plan(story: str):
             except Exception as parse_error:
 
                 logger.error(
-                    "Invalid Groq JSON: %s",
+                    "Invalid Groq response: %s",
                     parse_error,
                 )
 
                 logger.error(
                     "Groq raw response preview: %r",
-                    raw_content[:4000],
+                    raw_content[:3000],
                 )
 
                 last_error = parse_error
 
-                # إعادة المحاولة بطلب أوضح
                 user_prompt = f"""
-أعد إخراج القصة التالية كـ JSON صحيح فقط.
+أعد كتابة القصة التالية كـ JSON صحيح فقط.
 
-لا تكتب أي شيء خارج JSON.
-لا تستخدم ```.
-يجب أن يحتوي JSON على:
-title
-scenes
+يجب أن يكون عدد المشاهد {SCENE_COUNT} بالضبط.
 
-وكل scene يجب أن يحتوي:
+كل مشهد يجب أن يحتوي:
+
 narration
 visual_prompt
+
+لا تستخدم Markdown.
+لا تستخدم ```.
 
 القصة:
 
@@ -476,28 +734,37 @@ visual_prompt
                 attempt,
             )
 
-            awaitable_sleep = 1.5 * attempt
-            import time
-            time.sleep(awaitable_sleep)
+            time.sleep(
+                1.5 * attempt
+            )
 
     raise RuntimeError(
-        f"Groq failed after 3 attempts: {last_error}"
+        "Groq failed after 3 attempts: "
+        f"{last_error}"
     )
 
 
 # =========================================================
-# POLLINATIONS IMAGE
+# POLLINATIONS
 # =========================================================
 
-def generate_image(prompt: str, output_path: Path, seed: int):
+def generate_image(
+    prompt: str,
+    output_path: Path,
+    seed: int,
+):
+
     if not POLLINATIONS_API_KEY:
+
         raise RuntimeError(
             "POLLINATIONS_API_KEY is missing."
         )
 
-    encoded_prompt = requests.utils.quote(
-        prompt,
-        safe="",
+    encoded_prompt = (
+        requests.utils.quote(
+            prompt,
+            safe="",
+        )
     )
 
     url = (
@@ -519,7 +786,7 @@ def generate_image(prompt: str, output_path: Path, seed: int):
     }
 
     logger.info(
-        "Generating image with Pollinations..."
+        "Generating Pollinations image..."
     )
 
     response = requests.get(
@@ -532,11 +799,14 @@ def generate_image(prompt: str, output_path: Path, seed: int):
     response.raise_for_status()
 
     if not response.content:
+
         raise RuntimeError(
             "Pollinations returned empty image."
         )
 
-    output_path.write_bytes(response.content)
+    output_path.write_bytes(
+        response.content
+    )
 
     logger.info(
         "Image saved: %s",
@@ -547,34 +817,37 @@ def generate_image(prompt: str, output_path: Path, seed: int):
 
 
 # =========================================================
-# CINEMATIC PROMPT
+# IMAGE PROMPT
 # =========================================================
 
 def build_image_prompt(
     visual_prompt: str,
     scene_index: int,
 ):
+
     return f"""
-Cinematic realistic storytelling scene.
+Cinematic realistic movie still for a short story.
 
 {visual_prompt}
 
-Scene number: {scene_index}
+This is scene {scene_index} of a continuous story.
 
-Visual style:
+Important visual requirements:
 - realistic cinematic photography
-- dramatic lighting
+- dramatic natural lighting
 - emotional atmosphere
-- detailed faces and environment
-- natural human proportions
-- realistic clothing
+- realistic human faces
 - realistic skin
-- strong composition
-- movie still
-- vertical composition
-- 9:16
+- natural body proportions
+- realistic clothing
+- detailed environment
+- strong cinematic composition
+- professional movie still
+- vertical 9:16 composition
+- subject clearly visible
 - no text
 - no subtitles
+- no letters
 - no watermark
 """.strip()
 
@@ -587,6 +860,7 @@ async def _generate_tts_async(
     text: str,
     output_path: Path,
 ):
+
     communicate = edge_tts.Communicate(
         text,
         VOICE,
@@ -601,7 +875,10 @@ def generate_tts(
     text: str,
     output_path: Path,
 ):
-    logger.info("Generating Arabic male voice...")
+
+    logger.info(
+        "Generating Arabic male voice..."
+    )
 
     asyncio.run(
         _generate_tts_async(
@@ -611,11 +888,13 @@ def generate_tts(
     )
 
     if not output_path.exists():
+
         raise RuntimeError(
             "TTS output file was not created."
         )
 
     if output_path.stat().st_size == 0:
+
         raise RuntimeError(
             "TTS output file is empty."
         )
@@ -629,16 +908,22 @@ def generate_tts(
 
 
 # =========================================================
-# FFMPEG HELPERS
+# FFMPEG
 # =========================================================
 
 def run_command(
     command,
     timeout=300,
 ):
+
     logger.info(
         "Running command: %s",
-        " ".join(map(str, command)),
+        " ".join(
+            map(
+                str,
+                command,
+            )
+        ),
     )
 
     result = subprocess.run(
@@ -650,6 +935,7 @@ def run_command(
     )
 
     if result.returncode != 0:
+
         logger.error(
             "Command failed:\n%s",
             result.stderr[-5000:],
@@ -663,6 +949,7 @@ def run_command(
 
 
 def get_duration(path: Path):
+
     command = [
         "ffprobe",
         "-v",
@@ -680,13 +967,80 @@ def get_duration(path: Path):
     )
 
     try:
+
         return float(
             result.stdout.strip()
         )
+
     except Exception:
+
         raise RuntimeError(
             f"Could not read duration for {path}"
         )
+
+
+# =========================================================
+# SCENE DURATION
+# =========================================================
+
+def calculate_scene_durations(
+    scenes,
+    total_duration,
+):
+
+    weights = []
+
+    for scene in scenes:
+
+        narration = (
+            scene.get(
+                "narration",
+                "",
+            )
+            .strip()
+        )
+
+        # الوزن يعتمد على طول الكلام
+        words = max(
+            len(
+                narration.split()
+            ),
+            1,
+        )
+
+        weights.append(words)
+
+    total_words = sum(
+        weights
+    )
+
+    if total_words <= 0:
+
+        equal_duration = (
+            total_duration
+            / len(scenes)
+        )
+
+        return [
+            equal_duration
+            for _ in scenes
+        ]
+
+    durations = []
+
+    for words in weights:
+
+        duration = (
+            total_duration
+            * words
+            / total_words
+        )
+
+        durations.append(
+            duration
+        )
+
+    return durations
 
 
 # =========================================================
@@ -697,29 +1051,96 @@ def create_scene_video(
     image_path: Path,
     output_path: Path,
     duration: float,
+    motion_type: int,
 ):
+
     logger.info(
-        "Creating scene video: %.2f seconds",
+        "Creating scene video: %.2f seconds | motion=%s",
         duration,
+        motion_type,
     )
 
     frames = max(
-        int(duration * FPS),
+        int(
+            duration * FPS
+        ),
         FPS,
     )
 
-    zoom_expr = (
-        "min(zoom+0.0005,1.12)"
-    )
+    # -----------------------------------------------------
+    # حركة مختلفة حسب المشهد
+    # -----------------------------------------------------
+
+    if motion_type == 1:
+
+        # Zoom in
+        zoom = (
+            "min(zoom+0.0008,1.15)"
+        )
+
+        x = (
+            "iw/2-(iw/zoom/2)"
+        )
+
+        y = (
+            "ih/2-(ih/zoom/2)"
+        )
+
+    elif motion_type == 2:
+
+        # Zoom out
+        zoom = (
+            "if(eq(on,1),1.15,"
+            "max(zoom-0.0008,1.0))"
+        )
+
+        x = (
+            "iw/2-(iw/zoom/2)"
+        )
+
+        y = (
+            "ih/2-(ih/zoom/2)"
+        )
+
+    elif motion_type == 3:
+
+        # Pan left
+        zoom = (
+            "min(zoom+0.0007,1.12)"
+        )
+
+        x = (
+            "iw/zoom/2"
+        )
+
+        y = (
+            "ih/2-(ih/zoom/2)"
+        )
+
+    else:
+
+        # Pan right
+        zoom = (
+            "min(zoom+0.0007,1.12)"
+        )
+
+        x = (
+            "iw-iw/zoom/2"
+        )
+
+        y = (
+            "ih/2-(ih/zoom/2)"
+        )
 
     vf = (
-        f"scale={FINAL_WIDTH}:{FINAL_HEIGHT}:"
+        f"scale="
+        f"{FINAL_WIDTH}:{FINAL_HEIGHT}:"
         f"force_original_aspect_ratio=increase,"
         f"crop={FINAL_WIDTH}:{FINAL_HEIGHT},"
         f"zoompan="
-        f"z='{zoom_expr}':"
-        f"x='iw/2-(iw/zoom/2)':"
-        f"y='ih/2-(ih/zoom/2)':"
+        f"z='{zoom}':"
+        f"x='{x}':"
+        f"y='{y}':"
         f"d={frames}:"
         f"s={FINAL_WIDTH}x{FINAL_HEIGHT}:"
         f"fps={FPS}"
@@ -757,15 +1178,21 @@ def create_scene_video(
 
 
 # =========================================================
-# CONCATENATE VIDEOS
+# CONCAT
 # =========================================================
 
 def concatenate_videos(
     video_paths,
     output_path: Path,
 ):
-    concat_file = output_path.parent / (
-        "concat_" + uuid.uuid4().hex + ".txt"
+
+    concat_file = (
+        output_path.parent
+        / (
+            "concat_"
+            + uuid.uuid4().hex
+            + ".txt"
+        )
     )
 
     with concat_file.open(
@@ -774,7 +1201,10 @@ def concatenate_videos(
     ) as f:
 
         for path in video_paths:
-            safe_path = str(path).replace(
+
+            safe_path = str(
+                path
+            ).replace(
                 "'",
                 "'\\''",
             )
@@ -811,7 +1241,7 @@ def concatenate_videos(
 
 
 # =========================================================
-# ADD AUDIO
+# AUDIO
 # =========================================================
 
 def add_audio(
@@ -819,6 +1249,7 @@ def add_audio(
     audio_path: Path,
     output_path: Path,
 ):
+
     command = [
         "ffmpeg",
         "-y",
@@ -849,10 +1280,11 @@ def add_audio(
 
 
 # =========================================================
-# ASS SUBTITLES
+# ASS HELPERS
 # =========================================================
 
 def escape_ass_text(text: str):
+
     text = text.replace(
         "\\",
         "\\\\",
@@ -868,88 +1300,169 @@ def escape_ass_text(text: str):
         "\\}",
     )
 
+    # ASS يستخدم \N كسطر جديد
+    text = text.replace(
+        "\n",
+        " ",
+    )
+
     return text
 
 
+def ass_time(seconds):
+
+    if seconds < 0:
+        seconds = 0
+
+    h = int(
+        seconds // 3600
+    )
+
+    m = int(
+        (seconds % 3600) // 60
+    )
+
+    s_float = (
+        seconds % 60
+    )
+
+    s = int(
+        s_float
+    )
+
+    cs = int(
+        round(
+            (s_float - s)
+            * 100
+        )
+    )
+
+    if cs >= 100:
+        cs = 0
+        s += 1
+
+    return (
+        f"{h}:"
+        f"{m:02d}:"
+        f"{s:02d}."
+        f"{cs:02d}"
+    )
+
+
+# =========================================================
+# CREATE ASS
+# =========================================================
+
 def create_ass_file(
     scenes,
+    durations,
     output_path: Path,
+    font_info,
 ):
-    """
-    نضع كل نص مشهد كـ subtitle.
-    """
 
-    total_duration = 0.0
+    font_family = (
+        font_info["family"]
+    )
+
+    logger.info(
+        "Creating Arabic subtitles "
+        "using font: %s",
+        font_family,
+    )
 
     lines = [
         "[Script Info]",
         "ScriptType: v4.00+",
         "PlayResX: 720",
         "PlayResY: 1280",
+        "ScaledBorderAndShadow: yes",
         "",
         "[V4+ Styles]",
         (
-            "Format: Name, Fontname, Fontsize, PrimaryColour, "
-            "SecondaryColour, OutlineColour, BackColour, "
-            "Bold, Italic, Underline, StrikeOut, ScaleX, "
-            "ScaleY, Spacing, Angle, BorderStyle, Outline, "
-            "Shadow, Alignment, MarginL, MarginR, MarginV, Encoding"
+            "Format: Name, Fontname, Fontsize, "
+            "PrimaryColour, SecondaryColour, "
+            "OutlineColour, BackColour, Bold, "
+            "Italic, Underline, StrikeOut, "
+            "ScaleX, ScaleY, Spacing, Angle, "
+            "BorderStyle, Outline, Shadow, "
+            "Alignment, MarginL, MarginR, "
+            "MarginV, Encoding"
         ),
+
         (
-            "Style: Default,Arial,42,"
-            "&H00FFFFFF,&H00FFFFFF,&H00000000,&H80000000,"
-            "-1,0,0,0,100,100,0,0,1,3,1,2,40,40,120,1"
+            f"Style: Default,"
+            f"{font_family},"
+            f"42,"
+            f"&H00FFFFFF,"
+            f"&H00FFFFFF,"
+            f"&H00000000,"
+            f"&H90000000,"
+            f"-1,0,0,0,"
+            f"100,100,0,0,"
+            f"1,3,1,"
+            f"2,45,45,130,1"
         ),
+
         "",
         "[Events]",
+
         (
-            "Format: Layer, Start, End, Style, Name, "
-            "MarginL, MarginR, MarginV, Effect, Text"
+            "Format: Layer, Start, End, "
+            "Style, Name, MarginL, MarginR, "
+            "MarginV, Effect, Text"
         ),
     ]
 
-    def ass_time(seconds):
-        h = int(seconds // 3600)
-        m = int((seconds % 3600) // 60)
-        s = seconds % 60
-        cs = int(round((s - int(s)) * 100))
-        s = int(s)
+    current_time = 0.0
 
-        return f"{h}:{m:02d}:{s:02d}.{cs:02d}"
+    for index, scene in enumerate(
+        scenes
+    ):
 
-    for scene in scenes:
-
-        narration = scene.get(
-            "narration",
-            "",
-        ).strip()
+        narration = (
+            scene.get(
+                "narration",
+                "",
+            )
+            .strip()
+        )
 
         if not narration:
             continue
 
-        # تقسيم تقريبي للمدة
-        words = max(
-            len(narration.split()),
-            1,
-        )
+        duration = durations[
+            index
+        ]
 
-        duration = max(
-            8.0,
-            min(
-                35.0,
-                words / 2.1,
-            ),
+        start = current_time
+        end = (
+            current_time
+            + duration
         )
-
-        start = total_duration
-        end = start + duration
 
         text = escape_ass_text(
-            narration.replace(
-                "\n",
-                " ",
-            )
+            narration
         )
+
+        # -------------------------------------------------
+        # تقسيم النص الطويل إلى سطرين تقريبًا
+        # -------------------------------------------------
+
+        words = text.split()
+
+        if len(words) > 12:
+
+            middle = len(words) // 2
+
+            text = (
+                " ".join(
+                    words[:middle]
+                )
+                + r"\N"
+                + " ".join(
+                    words[middle:]
+                )
+            )
 
         lines.append(
             "Dialogue: 0,"
@@ -959,11 +1472,16 @@ def create_ass_file(
             f"{text}"
         )
 
-        total_duration = end
+        current_time = end
 
     output_path.write_text(
         "\n".join(lines),
         encoding="utf-8",
+    )
+
+    logger.info(
+        "ASS subtitles created: %s",
+        output_path,
     )
 
     return output_path
@@ -977,8 +1495,9 @@ def add_captions(
     video_path: Path,
     ass_path: Path,
     output_path: Path,
+    font_info,
 ):
-    # تحويل المسار إلى صيغة مناسبة لـ FFmpeg
+
     subtitle_path = str(
         ass_path
     ).replace(
@@ -986,13 +1505,67 @@ def add_captions(
         "/",
     )
 
-    subtitle_path = subtitle_path.replace(
-        ":",
-        "\\:",
+    subtitle_path = (
+        subtitle_path
+        .replace(
+            ":",
+            "\\:",
+        )
+        .replace(
+            "'",
+            "\\'",
+        )
     )
 
-    vf = (
-        f"subtitles='{subtitle_path}'"
+    # -----------------------------------------------------
+    # fontsdir
+    # -----------------------------------------------------
+
+    filters = []
+
+    if font_info.get("path"):
+
+        font_dir = str(
+            Path(
+                font_info["path"]
+            ).parent
+        )
+
+        font_dir = (
+            font_dir
+            .replace(
+                "\\",
+                "/",
+            )
+            .replace(
+                ":",
+                "\\:",
+            )
+            .replace(
+                "'",
+                "\\'",
+            )
+        )
+
+        subtitle_filter = (
+            f"subtitles="
+            f"'{subtitle_path}'"
+            f":fontsdir='{font_dir}'"
+        )
+
+    else:
+
+        subtitle_filter = (
+            f"subtitles="
+            f"'{subtitle_path}'"
+        )
+
+    filters.append(
+        subtitle_filter
+    )
+
+    vf = ",".join(
+        filters
     )
 
     command = [
@@ -1033,26 +1606,46 @@ def build_video(
     story: str,
     job_dir: Path,
 ):
-    logger.info("Starting complete video pipeline.")
 
-    # -----------------------------------------------------
+    logger.info(
+        "========================================"
+    )
+
+    logger.info(
+        "STARTING VIDEO PIPELINE"
+    )
+
+    logger.info(
+        "========================================"
+    )
+
+    # =====================================================
     # 1. GROQ
-    # -----------------------------------------------------
+    # =====================================================
 
     plan = generate_story_plan(
         story
     )
 
-    scenes = plan["scenes"]
+    scenes = plan[
+        "scenes"
+    ]
 
     logger.info(
-        "Story plan contains %s scenes.",
+        "FINAL STORY PLAN: %s scenes",
         len(scenes),
     )
 
-    # -----------------------------------------------------
+    if len(scenes) != SCENE_COUNT:
+
+        raise RuntimeError(
+            f"Expected {SCENE_COUNT} scenes "
+            f"but got {len(scenes)}."
+        )
+
+    # =====================================================
     # 2. IMAGES
-    # -----------------------------------------------------
+    # =====================================================
 
     image_paths = []
 
@@ -1062,13 +1655,23 @@ def build_video(
     ):
 
         logger.info(
-            "Generating image %s/%s...",
+            "================================"
+        )
+
+        logger.info(
+            "GENERATING IMAGE %s/%s",
             index,
             len(scenes),
         )
 
+        logger.info(
+            "================================"
+        )
+
         prompt = build_image_prompt(
-            scene["visual_prompt"],
+            scene[
+                "visual_prompt"
+            ],
             index,
         )
 
@@ -1087,13 +1690,22 @@ def build_video(
             image_path
         )
 
-    # -----------------------------------------------------
-    # 3. VOICE
-    # -----------------------------------------------------
+    logger.info(
+        "TOTAL IMAGES CREATED: %s",
+        len(image_paths),
+    )
 
-    all_narration = "\n\n".join(
-        scene["narration"]
-        for scene in scenes
+    # =====================================================
+    # 3. VOICE
+    # =====================================================
+
+    all_narration = (
+        "\n\n".join(
+            scene[
+                "narration"
+            ]
+            for scene in scenes
+        )
     )
 
     audio_path = (
@@ -1111,27 +1723,57 @@ def build_video(
     )
 
     logger.info(
-        "Narration duration: %.2f seconds",
+        "ACTUAL VOICE DURATION: %.2f seconds",
         audio_duration,
     )
 
-    # نحصر الفيديو بين دقيقة ودقيقتين
-    target_duration = max(
-        MIN_VIDEO_SECONDS,
-        min(
+    # =====================================================
+    # 4. VIDEO DURATION
+    # =====================================================
+
+    target_duration = audio_duration
+
+    if target_duration < MIN_VIDEO_SECONDS:
+
+        logger.info(
+            "Voice is shorter than %s sec. "
+            "Visual duration will follow voice.",
+            MIN_VIDEO_SECONDS,
+        )
+
+    if target_duration > MAX_VIDEO_SECONDS:
+
+        logger.warning(
+            "Voice is longer than %s sec.",
             MAX_VIDEO_SECONDS,
-            audio_duration,
-        ),
+        )
+
+        target_duration = (
+            MAX_VIDEO_SECONDS
+        )
+
+    # =====================================================
+    # 5. SCENE DURATIONS
+    # =====================================================
+
+    scene_durations = (
+        calculate_scene_durations(
+            scenes,
+            target_duration,
+        )
     )
 
-    scene_duration = (
-        target_duration
-        / max(len(image_paths), 1)
+    logger.info(
+        "Scene durations: %s",
+        [
+            round(x, 2)
+            for x in scene_durations
+        ],
     )
 
-    # -----------------------------------------------------
-    # 4. SCENE VIDEOS
-    # -----------------------------------------------------
+    # =====================================================
+    # 6. SCENE VIDEOS
+    # =====================================================
 
     scene_video_paths = []
 
@@ -1145,19 +1787,27 @@ def build_video(
             / f"scene_{index}.mp4"
         )
 
+        motion_type = (
+            ((index - 1) % 4)
+            + 1
+        )
+
         create_scene_video(
             image_path,
             video_path,
-            scene_duration,
+            scene_durations[
+                index - 1
+            ],
+            motion_type,
         )
 
         scene_video_paths.append(
             video_path
         )
 
-    # -----------------------------------------------------
-    # 5. CONCAT
-    # -----------------------------------------------------
+    # =====================================================
+    # 7. CONCAT
+    # =====================================================
 
     combined_video = (
         job_dir
@@ -1169,9 +1819,9 @@ def build_video(
         combined_video,
     )
 
-    # -----------------------------------------------------
-    # 6. AUDIO
-    # -----------------------------------------------------
+    # =====================================================
+    # 8. AUDIO
+    # =====================================================
 
     voiced_video = (
         job_dir
@@ -1184,9 +1834,22 @@ def build_video(
         voiced_video,
     )
 
-    # -----------------------------------------------------
-    # 7. CAPTIONS
-    # -----------------------------------------------------
+    # =====================================================
+    # 9. ARABIC FONT
+    # =====================================================
+
+    font_info = (
+        find_arabic_font()
+    )
+
+    logger.info(
+        "Selected subtitle font: %s",
+        font_info["family"],
+    )
+
+    # =====================================================
+    # 10. ASS
+    # =====================================================
 
     ass_path = (
         job_dir
@@ -1195,8 +1858,14 @@ def build_video(
 
     create_ass_file(
         scenes,
+        scene_durations,
         ass_path,
+        font_info,
     )
+
+    # =====================================================
+    # 11. CAPTIONS
+    # =====================================================
 
     final_video = (
         job_dir
@@ -1207,11 +1876,52 @@ def build_video(
         voiced_video,
         ass_path,
         final_video,
+        font_info,
+    )
+
+    # =====================================================
+    # 12. FINAL
+    # =====================================================
+
+    final_duration = get_duration(
+        final_video
     )
 
     logger.info(
-        "FINAL VIDEO READY: %s",
-        final_video,
+        "========================================"
+    )
+
+    logger.info(
+        "FINAL VIDEO READY"
+    )
+
+    logger.info(
+        "Duration: %.2f seconds",
+        final_duration,
+    )
+
+    logger.info(
+        "Scenes: %s",
+        len(scenes),
+    )
+
+    logger.info(
+        "Images: %s",
+        len(image_paths),
+    )
+
+    logger.info(
+        "Voice: %s",
+        VOICE,
+    )
+
+    logger.info(
+        "Subtitle font: %s",
+        font_info["family"],
+    )
+
+    logger.info(
+        "========================================"
     )
 
     return final_video
@@ -1225,6 +1935,7 @@ async def start_command(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ):
+
     await update.message.reply_text(
         "👋 ابعتلي القصة وأنا أحولها لفيديو قصصي."
     )
@@ -1269,32 +1980,32 @@ async def handle_story(
 
     try:
 
-        # -------------------------------------------------
-        # Run heavy synchronous pipeline
-        # outside Telegram event loop.
-        # -------------------------------------------------
+        loop = (
+            asyncio.get_running_loop()
+        )
 
-        loop = asyncio.get_running_loop()
-
-        final_video = await loop.run_in_executor(
-            None,
-            build_video,
-            story,
-            job_dir,
+        final_video = (
+            await loop.run_in_executor(
+                None,
+                build_video,
+                story,
+                job_dir,
+            )
         )
 
         if not final_video.exists():
+
             raise RuntimeError(
                 "Final video was not created."
             )
 
-        logger.info(
-            "Sending final video to Telegram..."
-        )
-
         await update.message.reply_text(
             "✅ الفيديو جاهز.\n"
             "📤 جاري إرساله..."
+        )
+
+        logger.info(
+            "Sending final video to Telegram..."
         )
 
         with final_video.open(
@@ -1319,10 +2030,12 @@ async def handle_story(
             "Video generation failed."
         )
 
-        error_message = str(exc)
+        error_message = str(
+            exc
+        )
 
-        # لا نرسل stack trace للمستخدم
         if len(error_message) > 1000:
+
             error_message = (
                 error_message[:1000]
                 + "..."
@@ -1336,9 +2049,7 @@ async def handle_story(
 
     finally:
 
-        # حذف الملفات بعد انتهاء المهمة
         try:
-            import shutil
 
             shutil.rmtree(
                 job_dir,
@@ -1346,13 +2057,19 @@ async def handle_story(
             )
 
         except Exception:
+
             pass
 
+
+# =========================================================
+# ERROR HANDLER
+# =========================================================
 
 async def error_handler(
     update: object,
     context: ContextTypes.DEFAULT_TYPE,
 ):
+
     logger.exception(
         "Telegram handler error:",
         exc_info=context.error,
@@ -1372,7 +2089,8 @@ async def main():
     )
 
     application = (
-        Application.builder()
+        Application
+        .builder()
         .token(BOT_TOKEN)
         .build()
     )
@@ -1404,15 +2122,18 @@ async def main():
         "Starting Telegram polling..."
     )
 
-    await application.updater.start_polling(
-        drop_pending_updates=True
+    await (
+        application
+        .updater
+        .start_polling(
+            drop_pending_updates=True
+        )
     )
 
     logger.info(
         "BOT IS RUNNING."
     )
 
-    # إبقاء التطبيق شغال
     await asyncio.Event().wait()
 
 
