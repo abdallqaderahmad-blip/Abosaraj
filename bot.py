@@ -21,9 +21,17 @@ from groq import Groq
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 GROQ_API_KEY = os.environ["GROQ_API_KEY"]
-WAVESPEED_API_KEY = os.environ["WAVESPEED_API_KEY"]
+WAVESPEED_API_KEY = os.environ.get(
+    "WAVESPEED_API_KEY",
+    ""
+)
 
-PORT = int(os.getenv("PORT", "10000"))
+PORT = int(
+    os.getenv(
+        "PORT",
+        "10000"
+    )
+)
 
 RENDER_EXTERNAL_URL = os.getenv(
     "RENDER_EXTERNAL_URL",
@@ -37,14 +45,41 @@ GROQ_MODEL = os.getenv(
 
 
 # =========================================================
+# SAFE TEST MODE
+# =========================================================
+#
+# TRUE:
+#   - NO WaveSpeed API calls
+#   - NO WaveSpeed image generation
+#   - NO WaveSpeed video generation
+#   - Uses local FFmpeg test visuals
+#   - Tests Groq + TTS + subtitles + audio + montage
+#
+# FALSE:
+#   - Real WaveSpeed images
+#   - Real WaveSpeed videos
+#
+# IMPORTANT:
+# Keep this TRUE until TTS/audio/subtitles are confirmed.
+#
+
+TEST_MODE = (
+    os.getenv(
+        "TEST_MODE",
+        "true"
+    ).lower()
+    in (
+        "1",
+        "true",
+        "yes",
+        "on"
+    )
+)
+
+
+# =========================================================
 # EPISODE FORMAT
 # =========================================================
-
-# CURRENT TEST
-# 4 shots x 5 seconds = 20 seconds
-#
-# AFTER PIPELINE IS STABLE:
-# 12 shots x 5 seconds = 60 seconds
 
 SHOT_COUNT = 4
 SHOT_DURATION = 5
@@ -57,14 +92,6 @@ VIDEO_FPS = 24
 # =========================================================
 # CHARACTER VOICES
 # =========================================================
-#
-# Azure / Edge TTS Arabic voices.
-#
-# Each character has a stable voice.
-#
-# The actual voice can later be replaced without
-# changing the story engine.
-#
 
 VOICE_CONFIG = {
 
@@ -77,7 +104,6 @@ VOICE_CONFIG = {
     "princess": {
         "voice": "ar-SA-ZariyahNeural",
         "rate": "-6%",
-        "pitch": "0Hz",
     },
 
     "king": {
@@ -147,7 +173,7 @@ def log(message):
 
 
 # =========================================================
-# HTTP HEADERS
+# WAVESPEED HEADERS
 # =========================================================
 
 def auth_headers():
@@ -177,6 +203,19 @@ def wavespeed_submit(
     model,
     payload
 ):
+
+    if TEST_MODE:
+
+        raise RuntimeError(
+            "WaveSpeed call blocked because "
+            "TEST_MODE=true"
+        )
+
+    if not WAVESPEED_API_KEY:
+
+        raise RuntimeError(
+            "WAVESPEED_API_KEY is missing."
+        )
 
     url = (
         f"{WAVESPEED_BASE}/{model}"
@@ -232,6 +271,13 @@ def wavespeed_wait(
     task_id,
     timeout=900
 ):
+
+    if TEST_MODE:
+
+        raise RuntimeError(
+            "WaveSpeed wait blocked because "
+            "TEST_MODE=true"
+        )
 
     url = (
         f"{WAVESPEED_BASE}"
@@ -309,10 +355,23 @@ def wavespeed_wait(
 
 
 # =========================================================
-# WAVESPEED FILE UPLOAD
+# WAVESPEED UPLOAD
 # =========================================================
 
 def upload_to_wavespeed(path):
+
+    if TEST_MODE:
+
+        raise RuntimeError(
+            "WaveSpeed upload blocked because "
+            "TEST_MODE=true"
+        )
+
+    if not WAVESPEED_API_KEY:
+
+        raise RuntimeError(
+            "WAVESPEED_API_KEY is missing."
+        )
 
     path = Path(path)
 
@@ -404,6 +463,14 @@ def generate_cast_reference(
     output_path
 ):
 
+    if TEST_MODE:
+
+        log(
+            "TEST_MODE: skipping CAST image generation."
+        )
+
+        return output_path
+
     log(
         "Generating master CAST reference..."
     )
@@ -443,6 +510,14 @@ def generate_scene_image(
     output_path,
     seed
 ):
+
+    if TEST_MODE:
+
+        log(
+            "TEST_MODE: skipping scene image generation."
+        )
+
+        return output_path
 
     log(
         "Generating scene image..."
@@ -492,6 +567,14 @@ def generate_video(
     video_prompt,
     seed
 ):
+
+    if TEST_MODE:
+
+        log(
+            "TEST_MODE: skipping WaveSpeed video generation."
+        )
+
+        return None
 
     log(
         "Generating cinematic video..."
@@ -588,6 +671,7 @@ DIALOGUE_SCHEMA = {
 
         "speaker": {
             "type": "string",
+
             "enum": [
                 "male_lead",
                 "princess",
@@ -943,6 +1027,15 @@ narrator
 الحوار يجب أن يكون مناسباً
 لـ {SHOT_DURATION} ثوانٍ.
 
+مهم جداً:
+
+لا تجعل مجموع كلام الشخصيات
+في اللقطة الواحدة طويلاً.
+
+استهدف تقريباً
+من 5 إلى 14 كلمة عربية
+لكل لقطة.
+
 لا تكتب جمل طويلة.
 
 لا تضع أسماء الشخصيات داخل text.
@@ -1230,21 +1323,42 @@ async def tts_async(
     voice_config
 ):
 
+    kwargs = {
+
+        "text":
+            text,
+
+        "voice":
+            voice_config["voice"],
+
+        "rate":
+            voice_config.get(
+                "rate",
+                "0%"
+            )
+    }
+
+    # IMPORTANT:
+    #
+    # Do NOT send pitch when it is not explicitly
+    # configured.
+    #
+    # This prevents the old:
+    #
+    # ValueError("Invalid pitch '0Hz'")
+    #
+    # problem.
+
+    pitch = voice_config.get(
+        "pitch"
+    )
+
+    if pitch:
+
+        kwargs["pitch"] = pitch
+
     communicator = edge_tts.Communicate(
-
-        text=text,
-
-        voice=voice_config["voice"],
-
-        rate=voice_config.get(
-            "rate",
-            "0%"
-        ),
-
-        pitch=voice_config.get(
-            "pitch",
-            "0Hz"
-        )
+        **kwargs
     )
 
     await communicator.save(
@@ -1269,8 +1383,8 @@ def create_tts(
     log(
         f"TTS: {speaker} -> "
         f"{config['voice']} | "
-        f"{config['rate']} | "
-        f"{config['pitch']}"
+        f"rate={config.get('rate', '0%')} | "
+        f"pitch={config.get('pitch', 'natural')}"
     )
 
     asyncio.run(
@@ -1406,6 +1520,9 @@ def normalize_video(
         "-r",
         str(VIDEO_FPS),
 
+        "-t",
+        str(SHOT_DURATION),
+
         "-c:v",
         "libx264",
 
@@ -1422,6 +1539,102 @@ def normalize_video(
 
         str(output)
     ])
+
+
+# =========================================================
+# LOCAL TEST VIDEO
+# =========================================================
+#
+# This replaces WaveSpeed video generation while
+# TEST_MODE=true.
+#
+# It creates a simple cinematic-looking test frame
+# with different background tones and scene number.
+#
+# No external API is called.
+#
+
+def create_test_scene_video(
+    scene_index,
+    scene,
+    output
+):
+
+    log(
+        f"TEST_MODE: creating local test scene "
+        f"{scene_index}/{SHOT_COUNT}"
+    )
+
+    # Different test backgrounds per scene.
+    #
+    # This makes it easy to confirm that all four
+    # scenes actually joined correctly.
+
+    backgrounds = [
+        "color=c=0x10151f",
+        "color=c=0x17120f",
+        "color=c=0x111a15",
+        "color=c=0x1a101a"
+    ]
+
+    background = backgrounds[
+        (scene_index - 1)
+        % len(backgrounds)
+    ]
+
+    duration = SHOT_DURATION
+
+    # Draw scene number.
+    #
+    # NOTE:
+    # These are TEST visuals only.
+    # They are NOT production visuals.
+
+    filter_graph = (
+
+        f"{background}:"
+        f"s={VIDEO_WIDTH}x{VIDEO_HEIGHT}:"
+        f"r={VIDEO_FPS},"
+        f"drawtext="
+        f"text='ABOSARAJ TEST - SCENE {scene_index}':"
+        f"fontcolor=white:"
+        f"fontsize=34:"
+        f"x=(w-text_w)/2:"
+        f"y=(h-text_h)/2"
+    )
+
+    run_ffmpeg([
+
+        "-f",
+        "lavfi",
+
+        "-i",
+        filter_graph,
+
+        "-t",
+        str(duration),
+
+        "-r",
+        str(VIDEO_FPS),
+
+        "-c:v",
+        "libx264",
+
+        "-preset",
+        "veryfast",
+
+        "-crf",
+        "23",
+
+        "-pix_fmt",
+        "yuv420p",
+
+        "-an",
+
+        str(output)
+    ])
+
+    return output
 
 
 # =========================================================
@@ -1814,6 +2027,81 @@ def create_scene_audio(
 
 
 # =========================================================
+# FIT AUDIO TO SHOT
+# =========================================================
+
+def fit_scene_audio(
+    scene_audio,
+    total_duration,
+    scene_index,
+    workdir
+):
+
+    if total_duration <= SHOT_DURATION:
+
+        return (
+            scene_audio,
+            1.0
+        )
+
+    log(
+        f"Scene {scene_index}: dialogue is "
+        f"{total_duration:.2f}s; "
+        f"fitting to {SHOT_DURATION}s."
+    )
+
+    fitted_audio = (
+
+        workdir /
+
+        f"scene_{scene_index}_fitted.m4a"
+    )
+
+    ratio = (
+
+        total_duration /
+        SHOT_DURATION
+    )
+
+    # Do not compress too aggressively.
+
+    ratio = max(
+        1.0,
+        min(
+            ratio,
+            1.35
+        )
+    )
+
+    tempo = ratio
+
+    run_ffmpeg([
+
+        "-i",
+        str(scene_audio),
+
+        "-filter:a",
+        f"atempo={tempo:.4f}",
+
+        "-t",
+        str(SHOT_DURATION),
+
+        "-c:a",
+        "aac",
+
+        "-b:a",
+        "128k",
+
+        str(fitted_audio)
+    ])
+
+    return (
+        fitted_audio,
+        tempo
+    )
+
+
+# =========================================================
 # BUILD FULL DIALOGUE TRACK
 # =========================================================
 
@@ -1991,6 +2279,7 @@ def seconds_to_srt(
 def create_srt(
     scenes,
     scene_dialogue_meta,
+    scene_tempo,
     output
 ):
 
@@ -2009,13 +2298,32 @@ def create_srt(
             scene_index - 1
         ]
 
+        tempo = scene_tempo[
+            scene_index - 1
+        ]
+
         local_time = 0.0
 
         for line in meta:
 
-            duration = float(
+            original_duration = float(
                 line["duration"]
             )
+
+            # If the audio was compressed,
+            # subtitles must be compressed
+            # by the same factor.
+
+            if tempo > 1.0:
+
+                duration = (
+                    original_duration /
+                    tempo
+                )
+
+            else:
+
+                duration = original_duration
 
             start = (
                 global_time
@@ -2027,30 +2335,41 @@ def create_srt(
                 + duration
             )
 
-            # -------------------------------------
-            # Keep subtitle from becoming too long
-            # -------------------------------------
+            # Never let a subtitle cross
+            # the 5-second scene boundary.
 
-            text = line["text"]
-
-            lines.append(
-                str(subtitle_index)
+            scene_end = (
+                global_time
+                + SHOT_DURATION
             )
 
-            lines.append(
-
-                f"{seconds_to_srt(start)} "
-                f"--> "
-                f"{seconds_to_srt(end)}"
+            end = min(
+                end,
+                scene_end - 0.03
             )
 
-            lines.append(
-                text
-            )
+            if end > start:
 
-            lines.append("")
+                text = line["text"]
 
-            subtitle_index += 1
+                lines.append(
+                    str(subtitle_index)
+                )
+
+                lines.append(
+
+                    f"{seconds_to_srt(start)} "
+                    f"--> "
+                    f"{seconds_to_srt(end)}"
+                )
+
+                lines.append(
+                    text
+                )
+
+                lines.append("")
+
+                subtitle_index += 1
 
             local_time += duration
 
@@ -2086,9 +2405,6 @@ def add_captions(
             "\\:"
         )
     )
-
-    # DejaVu Sans is used instead of Arial
-    # because Arabic glyphs must exist on Render.
 
     style = (
 
@@ -2138,6 +2454,12 @@ def add_captions(
         "-b:a",
         "128k",
 
+        "-t",
+        str(
+            SHOT_COUNT *
+            SHOT_DURATION
+        ),
+
         str(output)
     ])
 
@@ -2175,7 +2497,11 @@ def add_audio(
         "-b:a",
         "128k",
 
-        "-shortest",
+        "-t",
+        str(
+            SHOT_COUNT *
+            SHOT_DURATION
+        ),
 
         str(output)
     ])
@@ -2202,8 +2528,18 @@ def create_episode(
         "================================"
     )
 
+    log(
+        f"TEST_MODE = {TEST_MODE}"
+    )
+
+    if TEST_MODE:
+
+        log(
+            "🛡️ WaveSpeed is COMPLETELY DISABLED."
+        )
+
     # =====================================================
-    # 1. STORY / SCREENPLAY
+    # 1. STORY
     # =====================================================
 
     story = create_story(
@@ -2229,21 +2565,31 @@ def create_episode(
         "cast_reference.jpg"
     )
 
-    generate_cast_reference(
+    if not TEST_MODE:
 
-        story[
-            "cast_reference_prompt"
-        ],
+        generate_cast_reference(
 
-        cast_image
-    )
+            story[
+                "cast_reference_prompt"
+            ],
 
-    cast_url = (
-
-        upload_to_wavespeed(
             cast_image
         )
-    )
+
+        cast_url = (
+
+            upload_to_wavespeed(
+                cast_image
+            )
+        )
+
+    else:
+
+        cast_url = None
+
+        log(
+            "TEST_MODE: CAST generation skipped."
+        )
 
     # =====================================================
     # 3. SCENES / VIDEO
@@ -2263,10 +2609,6 @@ def create_episode(
             f"SCENE {index}/{SHOT_COUNT} "
             f"=========="
         )
-
-        # ---------------------------------------------
-        # Build character continuity block
-        # ---------------------------------------------
 
         cast = story["cast"]
 
@@ -2393,10 +2735,6 @@ No game art.
 """
         )
 
-        # ---------------------------------------------
-        # Scene image
-        # ---------------------------------------------
-
         scene_image = (
 
             workdir /
@@ -2404,43 +2742,41 @@ No game art.
             f"scene_{index}.jpg"
         )
 
-        generate_scene_image(
-
-            cast_url,
-
-            scene_prompt,
-
-            scene_image,
-
-            24117 + index
-        )
-
         # ---------------------------------------------
-        # Upload scene
+        # REAL MODE
         # ---------------------------------------------
 
-        scene_url = (
+        if not TEST_MODE:
 
-            upload_to_wavespeed(
-                scene_image
+            generate_scene_image(
+
+                cast_url,
+
+                scene_prompt,
+
+                scene_image,
+
+                24117 + index
             )
-        )
 
-        # ---------------------------------------------
-        # Video
-        # ---------------------------------------------
+            scene_url = (
 
-        video_prompt = (
+                upload_to_wavespeed(
+                    scene_image
+                )
+            )
 
-            scene["video_prompt"]
+            video_prompt = (
 
-            + "\n"
+                scene["video_prompt"]
 
-            + scene["camera"]
+                + "\n"
 
-            + "\n"
+                + scene["camera"]
 
-            + """
+                + "\n"
+
+                + """
 Cinematic natural movement.
 
 Characters must move naturally.
@@ -2473,44 +2809,66 @@ No subtitles.
 
 No logos.
 """
-        )
+            )
 
-        video_url = generate_video(
+            video_url = generate_video(
 
-            scene_url,
+                scene_url,
 
-            video_prompt,
+                video_prompt,
 
-            50000 + index
-        )
+                50000 + index
+            )
 
-        raw_video = (
+            raw_video = (
 
-            workdir /
+                workdir /
 
-            f"raw_{index}.mp4"
-        )
+                f"raw_{index}.mp4"
+            )
 
-        normalized_video = (
+            normalized_video = (
 
-            workdir /
+                workdir /
 
-            f"scene_{index}.mp4"
-        )
+                f"scene_{index}.mp4"
+            )
 
-        download_file(
+            download_file(
 
-            video_url,
+                video_url,
 
-            raw_video
-        )
+                raw_video
+            )
 
-        normalize_video(
+            normalize_video(
 
-            raw_video,
+                raw_video,
 
-            normalized_video
-        )
+                normalized_video
+            )
+
+        # ---------------------------------------------
+        # TEST MODE
+        # ---------------------------------------------
+
+        else:
+
+            normalized_video = (
+
+                workdir /
+
+                f"scene_{index}.mp4"
+            )
+
+            create_test_scene_video(
+
+                index,
+
+                scene,
+
+                normalized_video
+            )
 
         scene_videos.append(
             normalized_video
@@ -2542,6 +2900,8 @@ No logos.
 
     scene_dialogue_meta = []
 
+    scene_tempo = []
+
     for index, scene in enumerate(
 
         story["scenes"],
@@ -2567,66 +2927,19 @@ No logos.
             workdir
         )
 
-        # ---------------------------------------------
-        # Safety check
-        # ---------------------------------------------
+        (
+            scene_audio,
+            tempo
+        ) = fit_scene_audio(
 
-        if total_duration > SHOT_DURATION:
+            scene_audio,
 
-            log(
-                f"WARNING: Scene {index} "
-                f"dialogue is "
-                f"{total_duration:.2f}s "
-                f"for a {SHOT_DURATION}s shot."
-            )
+            total_duration,
 
-            # Compress slightly so the dialogue
-            # does not spill badly into the next scene.
+            index,
 
-            fitted_audio = (
-
-                workdir /
-
-                f"scene_{index}_fitted.m4a"
-            )
-
-            ratio = (
-
-                total_duration /
-                SHOT_DURATION
-            )
-
-            # Limit the compression to avoid
-            # destroying voice quality.
-
-            ratio = max(
-                1.0,
-                min(
-                    ratio,
-                    1.35
-                )
-            )
-
-            tempo = ratio
-
-            run_ffmpeg([
-
-                "-i",
-                str(scene_audio),
-
-                "-filter:a",
-                f"atempo={tempo:.4f}",
-
-                "-c:a",
-                "aac",
-
-                "-b:a",
-                "128k",
-
-                str(fitted_audio)
-            ])
-
-            scene_audio = fitted_audio
+            workdir
+        )
 
         scene_audio_files.append(
             scene_audio
@@ -2634,6 +2947,10 @@ No logos.
 
         scene_dialogue_meta.append(
             dialogue_meta
+        )
+
+        scene_tempo.append(
+            tempo
         )
 
     # =====================================================
@@ -2730,6 +3047,8 @@ No logos.
 
         scene_dialogue_meta,
 
+        scene_tempo,
+
         srt
     )
 
@@ -2763,6 +3082,10 @@ No logos.
 
     log(
         "================================"
+    )
+
+    log(
+        f"TEST_MODE = {TEST_MODE}"
     )
 
     return final_video, story
@@ -2882,29 +3205,61 @@ def process_message(
 
     try:
 
+        if TEST_MODE:
+
+            start_message = (
+
+                "🧪 ABOSARAJ TEST MODE\n\n"
+
+                "🛡️ WaveSpeed: OFF\n"
+
+                "💰 تكلفة WaveSpeed: $0\n\n"
+
+                "🧠 كتابة السيناريو\n"
+
+                "🎭 بناء الشخصيات\n"
+
+                "🎙️ اختبار أصوات الشخصيات\n"
+
+                "📝 اختبار الترجمة العربية\n"
+
+                "🎧 اختبار الصوت والـAmbience\n"
+
+                "🎬 اختبار FFmpeg\n"
+
+                "📱 اختبار إرسال الفيديو"
+            )
+
+        else:
+
+            start_message = (
+
+                "🎬 بدأت صناعة الحلقة...\n\n"
+
+                "🧠 كتابة السيناريو\n"
+
+                "🎭 بناء الشخصيات\n"
+
+                "🎨 تثبيت الـ Cast\n"
+
+                "🎥 بناء المشاهد\n"
+
+                "🎬 الحركة السينمائية\n"
+
+                "🎙️ أصوات الشخصيات\n"
+
+                "📝 الترجمة العربية\n"
+
+                "🎧 الجو والمؤثرات\n"
+
+                "✂️ المونتاج"
+            )
+
         send_message(
 
             chat_id,
 
-            "🎬 بدأت صناعة الحلقة...\n\n"
-
-            "🧠 كتابة السيناريو\n"
-
-            "🎭 بناء الشخصيات\n"
-
-            "🎨 تثبيت الـ Cast\n"
-
-            "🎥 بناء المشاهد\n"
-
-            "🎬 الحركة السينمائية\n"
-
-            "🎙️ أصوات الشخصيات\n"
-
-            "📝 الترجمة العربية\n"
-
-            "🎧 الجو والمؤثرات\n"
-
-            "✂️ المونتاج"
+            start_message
         )
 
         final_video, story = (
@@ -2917,17 +3272,37 @@ def process_message(
             )
         )
 
+        if TEST_MODE:
+
+            caption = (
+
+                "🧪 ABOSARAJ TEST\n\n"
+
+                f"🎬 {story['title']}\n\n"
+
+                f"{story['hook']}\n\n"
+
+                "🛡️ WaveSpeed: OFF\n"
+
+                "💰 WaveSpeed cost: $0"
+            )
+
+        else:
+
+            caption = (
+
+                f"🎬 {story['title']}\n\n"
+
+                f"{story['hook']}"
+            )
+
         send_video(
 
             chat_id,
 
             final_video,
 
-            (
-                f"🎬 {story['title']}\n\n"
-
-                f"{story['hook']}"
-            )
+            caption
         )
 
         log(
@@ -2996,6 +3371,12 @@ def health():
         "status":
             "ok",
 
+        "test_mode":
+            TEST_MODE,
+
+        "wavespeed_enabled":
+            not TEST_MODE,
+
         "image_model":
             IMAGE_MODEL,
 
@@ -3061,11 +3442,27 @@ def telegram_webhook():
         "/start"
     ):
 
+        if TEST_MODE:
+
+            mode_text = (
+                "🧪 Test Mode شغال\n"
+                "🛡️ WaveSpeed OFF\n"
+                "💰 $0 استهلاك WaveSpeed"
+            )
+
+        else:
+
+            mode_text = (
+                "🎬 Production Mode شغال"
+            )
+
         send_message(
 
             chat_id,
 
             "🔥 أهلاً بك في Abosaraj.\n\n"
+
+            f"{mode_text}\n\n"
 
             "اكتب فكرة الحلقة.\n\n"
 
@@ -3158,6 +3555,36 @@ if __name__ == "__main__":
     )
 
     log(
+        f"TEST_MODE: {TEST_MODE}"
+    )
+
+    if TEST_MODE:
+
+        log(
+            "🛡️ SAFE TEST MODE ENABLED"
+        )
+
+        log(
+            "🛡️ ALL WAVESPEED CALLS ARE DISABLED"
+        )
+
+        log(
+            "💰 WAVESPEED COST FOR THIS TEST: $0"
+        )
+
+    else:
+
+        log(
+            "🔥 PRODUCTION MODE ENABLED"
+        )
+
+        if not WAVESPEED_API_KEY:
+
+            log(
+                "WARNING: WAVESPEED_API_KEY missing"
+            )
+
+    log(
         f"Image: {IMAGE_MODEL}"
     )
 
@@ -3186,8 +3613,8 @@ if __name__ == "__main__":
         log(
             f"  {character}: "
             f"{config['voice']} "
-            f"rate={config['rate']} "
-            f"pitch={config['pitch']}"
+            f"rate={config.get('rate', '0%')} "
+            f"pitch={config.get('pitch', 'natural')}"
         )
 
     setup_webhook()
