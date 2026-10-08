@@ -477,10 +477,6 @@ def capafy_test():
         ""
     ).strip()
 
-    # -----------------------------------------------------
-    # TEST KEY CHECK
-    # -----------------------------------------------------
-
     if not debug_key:
 
         return jsonify({
@@ -525,10 +521,6 @@ def capafy_test():
 
         }), 401
 
-    # -----------------------------------------------------
-    # RESULT
-    # -----------------------------------------------------
-
     result = {
 
         "ok": True,
@@ -569,10 +561,6 @@ def capafy_test():
     }
 
     try:
-
-        # -------------------------------------------------
-        # MULTI SEARCH
-        # -------------------------------------------------
 
         search_queries = [
 
@@ -673,10 +661,6 @@ def capafy_test():
                     )
                 })
 
-        # -------------------------------------------------
-        # FIND CLONECUT
-        # -------------------------------------------------
-
         clonecut_agents = []
 
         for agent in all_agents.values():
@@ -701,7 +685,6 @@ def capafy_test():
                     agent
                 )
 
-        # Remove duplicates by agentId
         unique_clonecut = {}
 
         for agent in clonecut_agents:
@@ -731,10 +714,6 @@ def capafy_test():
             for agent
             in clonecut_agents
         ]
-
-        # -------------------------------------------------
-        # GET DETAILS
-        # -------------------------------------------------
 
         for agent in clonecut_agents:
 
@@ -880,10 +859,6 @@ def capafy_test():
                     )
                 })
 
-        # -------------------------------------------------
-        # ACTIVE INSTANCES
-        # -------------------------------------------------
-
         try:
 
             status, active_data = (
@@ -940,6 +915,8 @@ def capafy_test():
 
         except Exception as active_error:
 
+            active_instances = []
+
             result[
                 "active_instances"
             ] = {
@@ -948,10 +925,6 @@ def capafy_test():
                     active_error
                 )
             }
-
-        # -------------------------------------------------
-        # MATCH ACTIVE CLONECUT
-        # -------------------------------------------------
 
         clonecut_ids = {
 
@@ -1010,10 +983,6 @@ def capafy_test():
         ] = bool(
             matching_instance
         )
-
-        # -------------------------------------------------
-        # EXPIRED INSTANCES
-        # -------------------------------------------------
 
         try:
 
@@ -1080,10 +1049,6 @@ def capafy_test():
                 )
             }
 
-        # -------------------------------------------------
-        # FINAL SUMMARY
-        # -------------------------------------------------
-
         result[
             "summary"
         ][
@@ -1091,11 +1056,6 @@ def capafy_test():
         ] = bool(
             clonecut_agents
         )
-
-        # مهم جدًا:
-        # هذا الاختبار لا ينشئ Order
-        # ولا يشتري Agent
-        # ولا يستهلك Credits.
 
         result[
             "summary"
@@ -1117,6 +1077,386 @@ def capafy_test():
 
         log.error(
             "CAPAFY_TEST_ERROR=%s",
+            safe_error_text(error),
+            exc_info=True
+        )
+
+        return jsonify({
+
+            "ok": False,
+
+            "error": safe_error_text(
+                error
+            ),
+
+            "purchase_created": False,
+
+            "credits_spent": False
+
+        }), 500
+
+
+# =========================================================
+# CAPAFY CLONECUT DIRECT READ-ONLY TEST
+# =========================================================
+
+@app.route(
+    "/capafy-clonecut-test",
+    methods=["GET"]
+)
+def capafy_clonecut_test():
+
+    debug_key = os.getenv(
+        "CAPAFY_TEST_KEY",
+        ""
+    ).strip()
+
+    supplied_key = request.args.get(
+        "key",
+        ""
+    ).strip()
+
+    # -----------------------------------------------------
+    # SECURITY CHECK
+    # -----------------------------------------------------
+
+    if not debug_key:
+
+        return jsonify({
+            "ok": False,
+            "error": "CAPAFY_TEST_KEY is missing"
+        }), 500
+
+    if supplied_key != debug_key:
+
+        return jsonify({
+
+            "ok": False,
+
+            "error": "Unauthorized",
+
+            "debug": {
+
+                "supplied_present": bool(
+                    supplied_key
+                ),
+
+                "stored_present": bool(
+                    debug_key
+                ),
+
+                "supplied_length": len(
+                    supplied_key
+                ),
+
+                "stored_length": len(
+                    debug_key
+                ),
+
+                "supplied_hash": hashlib.sha256(
+                    supplied_key.encode()
+                ).hexdigest()[:12],
+
+                "stored_hash": hashlib.sha256(
+                    debug_key.encode()
+                ).hexdigest()[:12]
+            }
+
+        }), 401
+
+    result = {
+
+        "ok": True,
+
+        "test_type": "READ_ONLY",
+
+        "agent_id": "5133292529",
+
+        "clonecut_details": None,
+
+        "active_instances": [],
+
+        "matching_instance": None,
+
+        "summary": {
+
+            "agent_http_status": None,
+
+            "active_instances_http_status": None,
+
+            "clonecut_found": False,
+
+            "matching_active_instance": False,
+
+            "purchase_created": False,
+
+            "credits_spent": False
+        }
+    }
+
+    try:
+
+        # -------------------------------------------------
+        # 1. GET CLONECUT DIRECTLY
+        # -------------------------------------------------
+
+        status, detail_data = capafy_request(
+
+            "GET",
+
+            "/agent/agent/agents/5133292529"
+        )
+
+        result[
+            "summary"
+        ][
+            "agent_http_status"
+        ] = status
+
+        if isinstance(
+            detail_data,
+            dict
+        ):
+
+            data = detail_data.get(
+                "data"
+            )
+
+            if isinstance(
+                data,
+                dict
+            ):
+
+                result[
+                    "clonecut_details"
+                ] = {
+
+                    "agentId": data.get(
+                        "agentId"
+                    ),
+
+                    "agentType": data.get(
+                        "agentType"
+                    ),
+
+                    "name": data.get(
+                        "name"
+                    ),
+
+                    "desc": data.get(
+                        "desc"
+                    ),
+
+                    "agentStatus": data.get(
+                        "agentStatus"
+                    )
+                }
+
+                latest = data.get(
+                    "latestOnlineVersion"
+                )
+
+                if isinstance(
+                    latest,
+                    dict
+                ):
+
+                    result[
+                        "clonecut_details"
+                    ][
+                        "latestOnlineVersion"
+                    ] = {
+
+                        "agentVersionId":
+                            latest.get(
+                                "agentVersionId"
+                            ),
+
+                        "agentPackageId":
+                            latest.get(
+                                "agentPackageId"
+                            ),
+
+                        "agentRuntime":
+                            latest.get(
+                                "agentRuntime"
+                            ),
+
+                        "title":
+                            latest.get(
+                                "title"
+                            ),
+
+                        "model":
+                            latest.get(
+                                "model"
+                            ),
+
+                        "version":
+                            latest.get(
+                                "version"
+                            ),
+
+                        "concurrencyLimit":
+                            latest.get(
+                                "concurrencyLimit"
+                            ),
+
+                        "estimatedExecutionMinutes":
+                            latest.get(
+                                "estimatedExecutionMinutes"
+                            ),
+
+                        "billings":
+                            latest.get(
+                                "billings"
+                            )
+                    }
+
+                result[
+                    "summary"
+                ][
+                    "clonecut_found"
+                ] = True
+
+            else:
+
+                result[
+                    "clonecut_details"
+                ] = {
+                    "raw": str(
+                        detail_data
+                    )[:4000]
+                }
+
+        else:
+
+            result[
+                "clonecut_details"
+            ] = {
+                "raw": str(
+                    detail_data
+                )[:4000]
+            }
+
+        # -------------------------------------------------
+        # 2. GET ACTIVE INSTANCES
+        # -------------------------------------------------
+
+        active_status, active_data = capafy_request(
+
+            "GET",
+
+            "/agent/instance",
+
+            params={
+                "status": "active"
+            }
+        )
+
+        result[
+            "summary"
+        ][
+            "active_instances_http_status"
+        ] = active_status
+
+        active_instances = []
+
+        if isinstance(
+            active_data,
+            dict
+        ):
+
+            data = active_data.get(
+                "data"
+            )
+
+            if isinstance(
+                data,
+                dict
+            ):
+
+                instances = data.get(
+                    "instances"
+                )
+
+                if isinstance(
+                    instances,
+                    list
+                ):
+
+                    active_instances = instances
+
+        result[
+            "active_instances"
+        ] = [
+
+            capafy_safe_instance(
+                instance
+            )
+
+            for instance
+            in active_instances
+        ]
+
+        # -------------------------------------------------
+        # 3. FIND CLONECUT INSTANCE
+        # -------------------------------------------------
+
+        for instance in active_instances:
+
+            if not isinstance(
+                instance,
+                dict
+            ):
+
+                continue
+
+            if str(
+                instance.get(
+                    "agentId",
+                    ""
+                )
+            ) == "5133292529":
+
+                result[
+                    "matching_instance"
+                ] = capafy_safe_instance(
+                    instance
+                )
+
+                result[
+                    "summary"
+                ][
+                    "matching_active_instance"
+                ] = True
+
+                break
+
+        # -------------------------------------------------
+        # ABSOLUTE SAFETY FLAGS
+        # -------------------------------------------------
+
+        result[
+            "summary"
+        ][
+            "purchase_created"
+        ] = False
+
+        result[
+            "summary"
+        ][
+            "credits_spent"
+        ] = False
+
+        return jsonify(
+            result
+        ), 200
+
+    except Exception as error:
+
+        log.error(
+            "CAPAFY_CLONECUT_TEST_ERROR=%s",
             safe_error_text(error),
             exc_info=True
         )
