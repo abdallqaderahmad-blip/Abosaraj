@@ -2,7 +2,6 @@ import os
 import re
 import json
 import uuid
-import time
 import shutil
 import logging
 import tempfile
@@ -40,13 +39,21 @@ HF_SPACE = os.getenv(
 SHOT_COUNT = 2
 SHOT_DURATION = 5
 
+# Wan API limits from /hftest4
 GEN_WIDTH = 576
 GEN_HEIGHT = 832
 GEN_FRAMES = 81
-GEN_FPS = 16
 GEN_STEPS = 20
 GEN_GUIDANCE = 5.0
 GEN_SEED = 0
+
+# Parameter 10 has range 0-2
+GEN_PARAM_10 = 1.0
+
+# Last parameter is string
+GEN_PARAM_11 = ""
+
+GEN_FPS = 16
 
 FINAL_WIDTH = 720
 FINAL_HEIGHT = 1280
@@ -77,29 +84,37 @@ app = Flask(__name__)
 
 
 # =========================================================
-# BASIC HELPERS
+# HELPERS
 # =========================================================
 
 def safe_error_text(error):
     text = str(error)
 
-    secrets = [
+    for secret in [
         BOT_TOKEN,
         GROQ_API_KEY,
-        HF_TOKEN,
-    ]
-
-    for secret in secrets:
+        HF_TOKEN
+    ]:
         if secret:
             text = text.replace(secret, "***")
 
     return text
 
 
+def ensure_dir(path):
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
 def run_cmd(cmd, cwd=None, timeout=None):
-    log.info("RUN_CMD=%s", " ".join(map(str, cmd)))
+
+    log.info(
+        "RUN_CMD=%s",
+        " ".join(map(str, cmd))
+    )
 
     try:
+
         result = subprocess.run(
             cmd,
             cwd=cwd,
@@ -108,12 +123,15 @@ def run_cmd(cmd, cwd=None, timeout=None):
             text=True,
             timeout=timeout
         )
+
     except Exception as error:
+
         log.error(
             "COMMAND_EXCEPTION=%s",
             safe_error_text(error),
             exc_info=True
         )
+
         raise
 
     if result.stdout:
@@ -129,6 +147,7 @@ def run_cmd(cmd, cwd=None, timeout=None):
         )
 
     if result.returncode != 0:
+
         log.error(
             "COMMAND_ERROR=returncode=%s stderr=%s",
             result.returncode,
@@ -142,19 +161,23 @@ def run_cmd(cmd, cwd=None, timeout=None):
     return result
 
 
-def ensure_dir(path):
-    os.makedirs(path, exist_ok=True)
-    return path
-
-
 # =========================================================
 # TELEGRAM
 # =========================================================
 
-def telegram_api(method, payload=None, files=None):
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/{method}"
+def telegram_api(
+    method,
+    payload=None,
+    files=None
+):
+
+    url = (
+        f"https://api.telegram.org/"
+        f"bot{BOT_TOKEN}/{method}"
+    )
 
     try:
+
         response = requests.post(
             url,
             data=payload,
@@ -163,8 +186,10 @@ def telegram_api(method, payload=None, files=None):
         )
 
         if not response.ok:
+
             log.error(
-                "TELEGRAM_API_ERROR method=%s status=%s body=%s",
+                "TELEGRAM_API_ERROR method=%s "
+                "status=%s body=%s",
                 method,
                 response.status_code,
                 response.text[:4000]
@@ -178,15 +203,21 @@ def telegram_api(method, payload=None, files=None):
             return None
 
     except Exception as error:
+
         log.error(
             "TELEGRAM_REQUEST_ERROR=%s",
             safe_error_text(error),
             exc_info=True
         )
+
         return None
 
 
-def send_message(chat_id, text):
+def send_message(
+    chat_id,
+    text
+):
+
     return telegram_api(
         "sendMessage",
         payload={
@@ -196,13 +227,15 @@ def send_message(chat_id, text):
     )
 
 
-def send_video(chat_id, video_path, caption=None):
+def send_video(
+    chat_id,
+    video_path,
+    caption=None
+):
+
     log.info(
-        "TELEGRAM_SEND_VIDEO path=%s size=%s",
-        video_path,
-        os.path.getsize(video_path)
-        if os.path.exists(video_path)
-        else "MISSING"
+        "SEND_VIDEO path=%s",
+        video_path
     )
 
     payload = {
@@ -213,7 +246,12 @@ def send_video(chat_id, video_path, caption=None):
         payload["caption"] = caption
 
     try:
-        with open(video_path, "rb") as video_file:
+
+        with open(
+            video_path,
+            "rb"
+        ) as video_file:
+
             return telegram_api(
                 "sendVideo",
                 payload=payload,
@@ -225,27 +263,38 @@ def send_video(chat_id, video_path, caption=None):
                     )
                 }
             )
+
     except Exception as error:
+
         log.error(
             "SEND_VIDEO_ERROR=%s",
             safe_error_text(error),
             exc_info=True
         )
+
         return None
 
 
 # =========================================================
-# GROQ STORYBOARD
+# GROQ
 # =========================================================
 
-def create_storyboard(user_idea):
-    log.info("PHASE=STORYBOARD_START")
-    log.info("USER_IDEA=%s", user_idea)
+def create_storyboard(
+    user_idea
+):
+
+    log.info(
+        "PHASE=STORYBOARD_START"
+    )
 
     if not GROQ_API_KEY:
-        raise RuntimeError("GROQ_API_KEY is missing")
+        raise RuntimeError(
+            "GROQ_API_KEY is missing"
+        )
 
-    client = Groq(api_key=GROQ_API_KEY)
+    client = Groq(
+        api_key=GROQ_API_KEY
+    )
 
     prompt = f"""
 أنت كاتب سيناريوهات فيديوهات قصيرة سينمائية.
@@ -255,16 +304,16 @@ def create_storyboard(user_idea):
 فكرة المستخدم:
 {user_idea}
 
-المطلوب إخراج JSON فقط بدون Markdown وبدون أي كلام خارجه.
+أخرج JSON فقط بدون Markdown.
 
-الشكل المطلوب حرفيًا:
+الشكل المطلوب:
 
 {{
   "title": "عنوان قصير",
   "hook": "جملة افتتاحية قوية",
   "narration": [
-    "جملة تعليق صوتي للمشهد الأول",
-    "جملة تعليق صوتي للمشهد الثاني"
+    "تعليق صوتي للمشهد الأول",
+    "تعليق صوتي للمشهد الثاني"
   ],
   "cta": "دعوة قصيرة للمتابعة",
   "scenes": [
@@ -282,25 +331,27 @@ def create_storyboard(user_idea):
 }}
 
 الشروط:
+
 - عدد المشاهد: {SHOT_COUNT}
-- مدة كل مشهد تقريبًا {SHOT_DURATION} ثوانٍ.
-- الـ prompt الخاص بالفيديو يجب أن يكون باللغة الإنجليزية.
-- اجعل المشاهد مترابطة بصريًا.
-- اجعل الشخصيات والأماكن واضحة.
-- لا تستخدم نصوصًا داخل الفيديو.
-- لا تستخدم شعارات.
-- اجعل الأسلوب cinematic realistic.
+- مدة كل مشهد حوالي {SHOT_DURATION} ثوانٍ.
+- prompts باللغة الإنجليزية.
+- أسلوب cinematic realistic.
+- المشاهد مترابطة.
+- لا تضع نصوصًا داخل الفيديو.
+- لا شعارات.
 """
 
     try:
+
         response = client.chat.completions.create(
             model=GROQ_MODEL,
             messages=[
                 {
                     "role": "system",
                     "content": (
-                        "You are a professional cinematic "
-                        "short-video storyboard writer."
+                        "You are a professional "
+                        "cinematic short-video "
+                        "storyboard writer."
                     )
                 },
                 {
@@ -312,11 +363,25 @@ def create_storyboard(user_idea):
             max_tokens=2500
         )
 
-        raw = response.choices[0].message.content.strip()
+        raw = (
+            response
+            .choices[0]
+            .message
+            .content
+            .strip()
+        )
 
-        log.info("GROQ_RAW_RESPONSE_START")
-        log.info(raw)
-        log.info("GROQ_RAW_RESPONSE_END")
+        log.info(
+            "GROQ_RAW_RESPONSE_START"
+        )
+
+        log.info(
+            raw
+        )
+
+        log.info(
+            "GROQ_RAW_RESPONSE_END"
+        )
 
         raw = re.sub(
             r"^```(?:json)?",
@@ -333,30 +398,56 @@ def create_storyboard(user_idea):
 
         data = json.loads(raw)
 
-        if not isinstance(data, dict):
-            raise ValueError("Storyboard is not an object")
+        if not isinstance(
+            data,
+            dict
+        ):
+            raise ValueError(
+                "Storyboard is not an object"
+            )
 
-        scenes = data.get("scenes")
+        scenes = data.get(
+            "scenes"
+        )
 
-        if not isinstance(scenes, list):
-            raise ValueError("Storyboard scenes is not a list")
+        if not isinstance(
+            scenes,
+            list
+        ):
+            raise ValueError(
+                "scenes is not a list"
+            )
 
         if not scenes:
-            raise ValueError("Storyboard contains no scenes")
+            raise ValueError(
+                "No scenes"
+            )
 
-        data["scenes"] = scenes[:SHOT_COUNT]
+        data["scenes"] = scenes[
+            :SHOT_COUNT
+        ]
 
-        narration = data.get("narration", [])
+        narration = data.get(
+            "narration",
+            []
+        )
 
-        if not isinstance(narration, list):
+        if not isinstance(
+            narration,
+            list
+        ):
             narration = []
 
-        while len(narration) < len(data["scenes"]):
+        while len(narration) < len(
+            data["scenes"]
+        ):
             narration.append("")
 
         data["narration"] = narration
 
-        if not data.get("cta"):
+        if not data.get(
+            "cta"
+        ):
             data["cta"] = DEFAULT_CTA
 
         log.info(
@@ -367,19 +458,22 @@ def create_storyboard(user_idea):
         return data
 
     except Exception as error:
+
         log.error(
             "STORYBOARD_ERROR=%s",
             safe_error_text(error),
             exc_info=True
         )
+
         raise
 
 
 # =========================================================
-# HUGGING FACE / GRADIO
+# HUGGING FACE
 # =========================================================
 
 def create_hf_client():
+
     log.info(
         "HF_CLIENT_CREATE space=%s token=%s",
         HF_SPACE,
@@ -387,38 +481,52 @@ def create_hf_client():
     )
 
     if HF_TOKEN:
+
         return Client(
             HF_SPACE,
             token=HF_TOKEN
         )
 
-    return Client(HF_SPACE)
+    return Client(
+        HF_SPACE
+    )
 
 
-def get_hf_api_dict(client):
-    log.info("HF_VIEW_API_START")
+def get_hf_api_dict(
+    client
+):
+
+    log.info(
+        "HF_VIEW_API_START"
+    )
 
     api = client.view_api(
         return_format="dict"
     )
 
-    log.info("HF_VIEW_API_OK")
+    log.info(
+        "HF_VIEW_API_DONE"
+    )
 
     return api
 
 
-def get_generate_endpoint(api):
-    named = api.get("named_endpoints", {})
+def get_generate_endpoint(
+    api
+):
+
+    named = api.get(
+        "named_endpoints",
+        {}
+    )
 
     if "/generate" in named:
         return named["/generate"]
 
     for name, endpoint in named.items():
+
         if "generate" in name.lower():
-            log.info(
-                "HF_GENERATE_ENDPOINT_FALLBACK=%s",
-                name
-            )
+
             return endpoint
 
     raise RuntimeError(
@@ -426,232 +534,98 @@ def get_generate_endpoint(api):
     )
 
 
-def get_parameter_list(endpoint):
-    parameters = endpoint.get("parameters", [])
+# =========================================================
+# IMPORTANT:
+# WAN API PARAMETERS ARE UNNAMED
+# =========================================================
 
-    if not isinstance(parameters, list):
-        return []
+def build_wan_arguments(
+    prompt
+):
 
-    return parameters
+    """
+    /hftest4 showed the actual order:
 
+    1  model
+    2  prompt
+    3  negative prompt
+    4  width       320-832
+    5  height      320-832
+    6  frames      21-81
+    7  steps       1-50
+    8  guidance    0-20
+    9  seed        integer
+    10 parameter   0-2
+    11 parameter   string
+    """
 
-def build_generate_arguments(endpoint, prompt):
-    parameters = get_parameter_list(endpoint)
+    args = [
+
+        # 1
+        "wan-base",
+
+        # 2
+        prompt,
+
+        # 3
+        (
+            "blurry, low quality, distorted, "
+            "deformed, watermark, text, logo"
+        ),
+
+        # 4
+        GEN_WIDTH,
+
+        # 5
+        GEN_HEIGHT,
+
+        # 6
+        GEN_FRAMES,
+
+        # 7
+        GEN_STEPS,
+
+        # 8
+        GEN_GUIDANCE,
+
+        # 9
+        GEN_SEED,
+
+        # 10
+        GEN_PARAM_10,
+
+        # 11
+        GEN_PARAM_11
+    ]
 
     log.info(
-        "HF_GENERATE_PARAMETER_COUNT=%s",
-        len(parameters)
+        "WAN_ARGUMENTS:"
     )
 
-    args = []
+    for index, value in enumerate(
+        args,
+        start=1
+    ):
 
-    for index, parameter in enumerate(parameters):
-        name = str(parameter.get("name", "")).lower()
-
-        component = parameter.get("component", {})
-        default = parameter.get("default", None)
-
-        choices = parameter.get("choices")
-
-        log.info(
-            "HF_PARAM index=%s name=%s default=%s choices=%s",
-            index,
-            name,
-            default,
-            choices
-        )
-
-        # -----------------------------------------
-        # MODEL
-        # -----------------------------------------
-
-        if (
-            "model" in name
-            or "checkpoint" in name
-            or "model_key" in name
-        ):
-            value = default
-
-            if value is None:
-                if isinstance(choices, list) and choices:
-                    value = choices[0]
-                else:
-                    value = "wan-base"
-
-            args.append(value)
-            continue
-
-        # -----------------------------------------
-        # PROMPT
-        # -----------------------------------------
-
-        if (
-            "prompt" in name
-            and "negative" not in name
-        ):
-            args.append(prompt)
-            continue
-
-        # -----------------------------------------
-        # NEGATIVE PROMPT
-        # -----------------------------------------
-
-        if "negative" in name:
-            args.append(
-                "blurry, low quality, distorted, "
-                "deformed, watermark, text, logo"
+        if index == 2:
+            log.info(
+                "WAN_ARG_%s=%s",
+                index,
+                str(value)[:1000]
             )
-            continue
-
-        # -----------------------------------------
-        # WIDTH
-        # -----------------------------------------
-
-        if name in ("width", "video_width", "output_width"):
-            args.append(GEN_WIDTH)
-            continue
-
-        # -----------------------------------------
-        # HEIGHT
-        # -----------------------------------------
-
-        if name in ("height", "video_height", "output_height"):
-            args.append(GEN_HEIGHT)
-            continue
-
-        # -----------------------------------------
-        # FRAMES
-        # -----------------------------------------
-
-        if (
-            "frames" in name
-            or "num_frames" in name
-            or "frame_count" in name
-        ):
-            args.append(GEN_FRAMES)
-            continue
-
-        # -----------------------------------------
-        # FPS
-        # -----------------------------------------
-
-        if (
-            name == "fps"
-            or "frame_rate" in name
-        ):
-            args.append(GEN_FPS)
-            continue
-
-        # -----------------------------------------
-        # STEPS
-        # -----------------------------------------
-
-        if (
-            "steps" in name
-            or "num_inference_steps" in name
-        ):
-            args.append(GEN_STEPS)
-            continue
-
-        # -----------------------------------------
-        # GUIDANCE
-        # -----------------------------------------
-
-        if (
-            "guidance" in name
-            or "cfg" in name
-        ):
-            args.append(GEN_GUIDANCE)
-            continue
-
-        # -----------------------------------------
-        # SEED
-        # -----------------------------------------
-
-        if "seed" in name:
-            args.append(GEN_SEED)
-            continue
-
-        # -----------------------------------------
-        # LORA
-        # -----------------------------------------
-
-        if "lora" in name:
-            args.append(default)
-            continue
-
-        # -----------------------------------------
-        # BOOLEAN
-        # -----------------------------------------
-
-        if (
-            "enable" in name
-            or "offload" in name
-            or "cpu" in name
-            or "high_res" in name
-        ):
-            if default is not None:
-                args.append(default)
-            else:
-                args.append(False)
-            continue
-
-        # -----------------------------------------
-        # CHOICES
-        # -----------------------------------------
-
-        if isinstance(choices, list) and choices:
-            args.append(
-                default
-                if default is not None
-                else choices[0]
-            )
-            continue
-
-        # -----------------------------------------
-        # DEFAULT
-        # -----------------------------------------
-
-        if default is not None:
-            args.append(default)
-            continue
-
-        # -----------------------------------------
-        # UNKNOWN PARAMETER
-        # -----------------------------------------
-
-        param_type = str(
-            parameter.get("type", "")
-        ).lower()
-
-        if (
-            "int" in param_type
-            or "number" in param_type
-        ):
-            args.append(0)
-
-        elif "float" in param_type:
-            args.append(0.0)
-
-        elif "bool" in param_type:
-            args.append(False)
-
         else:
-            args.append(None)
-
-    log.info(
-        "HF_ARGUMENTS_BUILT count=%s",
-        len(args)
-    )
+            log.info(
+                "WAN_ARG_%s=%r",
+                index,
+                value
+            )
 
     return args
 
 
-def extract_video_source(result):
-    """
-    يحاول استخراج ملف الفيديو من أغلب
-    الأشكال التي يمكن أن ترجعها Gradio.
-    """
+def extract_video_source(
+    result
+):
 
     log.info(
         "HF_RESULT_TYPE=%s",
@@ -663,66 +637,94 @@ def extract_video_source(result):
         repr(result)[:6000]
     )
 
-    # -----------------------------------------
-    # STRING
-    # -----------------------------------------
+    if isinstance(
+        result,
+        str
+    ):
 
-    if isinstance(result, str):
         return result
 
-    # -----------------------------------------
-    # DICT
-    # -----------------------------------------
+    if isinstance(
+        result,
+        dict
+    ):
 
-    if isinstance(result, dict):
-
-        possible_keys = [
+        for key in [
             "video",
             "path",
             "url",
             "value",
             "data",
             "file"
-        ]
+        ]:
 
-        for key in possible_keys:
             if key in result:
+
                 value = result[key]
 
-                if isinstance(value, str):
-                    return value
-
-                if isinstance(value, dict):
-                    nested = extract_video_source(value)
-                    if nested:
-                        return nested
-
-        # Search recursively
-        for value in result.values():
-
-            if isinstance(value, str):
-                if (
-                    value.startswith("http://")
-                    or value.startswith("https://")
-                    or os.path.exists(value)
+                if isinstance(
+                    value,
+                    str
                 ):
                     return value
 
-            if isinstance(value, dict):
-                nested = extract_video_source(value)
+                if isinstance(
+                    value,
+                    dict
+                ):
+
+                    nested = extract_video_source(
+                        value
+                    )
+
+                    if nested:
+                        return nested
+
+        for value in result.values():
+
+            if isinstance(
+                value,
+                str
+            ):
+
+                if (
+                    value.startswith(
+                        "http://"
+                    )
+                    or
+                    value.startswith(
+                        "https://"
+                    )
+                    or
+                    os.path.exists(
+                        value
+                    )
+                ):
+
+                    return value
+
+            if isinstance(
+                value,
+                dict
+            ):
+
+                nested = extract_video_source(
+                    value
+                )
 
                 if nested:
                     return nested
 
-    # -----------------------------------------
-    # LIST / TUPLE
-    # -----------------------------------------
-
-    if isinstance(result, (list, tuple)):
+    if isinstance(
+        result,
+        (list, tuple)
+    ):
 
         for item in result:
 
-            source = extract_video_source(item)
+            source = extract_video_source(
+                item
+            )
 
             if source:
                 return source
@@ -730,10 +732,13 @@ def extract_video_source(result):
     return None
 
 
-def download_url(url, destination):
+def download_url(
+    url,
+    destination
+):
+
     log.info(
-        "HF_DOWNLOAD_START url=%s",
-        url[:500]
+        "HF_DOWNLOAD_START"
     )
 
     with requests.get(
@@ -744,45 +749,79 @@ def download_url(url, destination):
 
         response.raise_for_status()
 
-        with open(destination, "wb") as output:
+        with open(
+            destination,
+            "wb"
+        ) as output:
+
             for chunk in response.iter_content(
                 chunk_size=1024 * 1024
             ):
+
                 if chunk:
-                    output.write(chunk)
+                    output.write(
+                        chunk
+                    )
 
     log.info(
         "HF_DOWNLOAD_DONE size=%s",
-        os.path.getsize(destination)
+        os.path.getsize(
+            destination
+        )
     )
 
     return destination
 
 
-def generate_ai_video(prompt, output_dir):
-    log.info("=" * 70)
-    log.info("PHASE=HF_VIDEO_GENERATION_START")
-    log.info("HF_PROMPT=%s", prompt)
-    log.info("=" * 70)
+def generate_ai_video(
+    prompt,
+    output_dir
+):
 
-    ensure_dir(output_dir)
+    log.info(
+        "=" * 80
+    )
 
-    client = None
+    log.info(
+        "PHASE=HF_VIDEO_GENERATION_START"
+    )
+
+    log.info(
+        "HF_PROMPT=%s",
+        prompt
+    )
+
+    log.info(
+        "=" * 80
+    )
+
+    ensure_dir(
+        output_dir
+    )
 
     try:
+
         client = create_hf_client()
 
-        api = get_hf_api_dict(client)
-
-        endpoint = get_generate_endpoint(api)
-
-        log.info(
-            "HF_ENDPOINT=%s",
-            endpoint
+        api = get_hf_api_dict(
+            client
         )
 
-        args = build_generate_arguments(
-            endpoint,
+        endpoint = get_generate_endpoint(
+            api
+        )
+
+        log.info(
+            "HF_GENERATE_ENDPOINT_FOUND"
+        )
+
+        # -------------------------------------
+        # DO NOT USE PARAMETER NAMES
+        # They are None in this API.
+        # Use exact positional order.
+        # -------------------------------------
+
+        args = build_wan_arguments(
             prompt
         )
 
@@ -799,11 +838,14 @@ def generate_ai_video(prompt, output_dir):
             "HF_PREDICT_SUCCESS"
         )
 
-        source = extract_video_source(result)
+        source = extract_video_source(
+            result
+        )
 
         if not source:
+
             raise RuntimeError(
-                "HF returned no recognizable video source"
+                "HF returned no video source"
             )
 
         log.info(
@@ -816,18 +858,34 @@ def generate_ai_video(prompt, output_dir):
             f"scene_{uuid.uuid4().hex}.mp4"
         )
 
-        # URL
-        if isinstance(source, str) and (
-            source.startswith("http://")
-            or source.startswith("https://")
+        if isinstance(
+            source,
+            str
+        ) and (
+            source.startswith(
+                "http://"
+            )
+            or
+            source.startswith(
+                "https://"
+            )
         ):
+
             download_url(
                 source,
                 destination
             )
 
-        # Local path
-        elif isinstance(source, str) and os.path.exists(source):
+        elif (
+            isinstance(
+                source,
+                str
+            )
+            and
+            os.path.exists(
+                source
+            )
+        ):
 
             shutil.copy2(
                 source,
@@ -835,26 +893,34 @@ def generate_ai_video(prompt, output_dir):
             )
 
         else:
+
             raise RuntimeError(
-                f"HF returned invalid video source: {source}"
+                "Invalid HF video source: "
+                + str(source)
             )
 
-        if not os.path.exists(destination):
+        if not os.path.exists(
+            destination
+        ):
+
             raise RuntimeError(
-                "Generated video file does not exist"
+                "Video file was not created"
             )
 
-        size = os.path.getsize(destination)
+        size = os.path.getsize(
+            destination
+        )
 
         if size < 1000:
+
             raise RuntimeError(
-                f"Generated video is too small: {size}"
+                f"Video file too small: {size}"
             )
 
         log.info(
-            "PHASE=HF_VIDEO_GENERATION_DONE size=%s path=%s",
-            size,
-            destination
+            "PHASE=HF_VIDEO_GENERATION_DONE "
+            "size=%s",
+            size
         )
 
         return destination
@@ -874,13 +940,16 @@ def generate_ai_video(prompt, output_dir):
 
 
 # =========================================================
-# VIDEO NORMALIZATION
+# VIDEO NORMALIZE
 # =========================================================
 
-def normalize_video(input_path, output_path):
+def normalize_video(
+    input_path,
+    output_path
+):
+
     log.info(
-        "PHASE=VIDEO_NORMALIZE_START input=%s",
-        input_path
+        "PHASE=VIDEO_NORMALIZE_START"
     )
 
     cmd = [
@@ -891,9 +960,13 @@ def normalize_video(input_path, output_path):
 
         "-vf",
         (
-            f"scale={FINAL_WIDTH}:{FINAL_HEIGHT}:"
+            f"scale={FINAL_WIDTH}:"
+            f"{FINAL_HEIGHT}:"
             "force_original_aspect_ratio=decrease,"
-            f"pad={FINAL_WIDTH}:{FINAL_HEIGHT}:(ow-iw)/2:(oh-ih)/2"
+            f"pad={FINAL_WIDTH}:"
+            f"{FINAL_HEIGHT}:"
+            "(ow-iw)/2:"
+            "(oh-ih)/2"
         ),
 
         "-r",
@@ -919,8 +992,7 @@ def normalize_video(input_path, output_path):
     )
 
     log.info(
-        "PHASE=VIDEO_NORMALIZE_DONE output=%s",
-        output_path
+        "PHASE=VIDEO_NORMALIZE_DONE"
     )
 
     return output_path
@@ -930,18 +1002,20 @@ def normalize_video(input_path, output_path):
 # CONCAT VIDEOS
 # =========================================================
 
-def concat_videos(video_paths, output_path):
+def concat_videos(
+    video_paths,
+    output_path
+):
+
     log.info(
         "PHASE=VIDEO_CONCAT_START count=%s",
         len(video_paths)
     )
 
-    if not video_paths:
-        raise RuntimeError(
-            "No videos to concatenate"
-        )
-
-    list_file = output_path + ".txt"
+    list_file = (
+        output_path
+        + ".txt"
+    )
 
     with open(
         list_file,
@@ -950,51 +1024,55 @@ def concat_videos(video_paths, output_path):
     ) as f:
 
         for path in video_paths:
-            absolute = os.path.abspath(path)
+
+            absolute = os.path.abspath(
+                path
+            )
 
             f.write(
-                "file "
-                + "'"
-                + absolute.replace("'", "'\\''")
+                "file '"
+                + absolute.replace(
+                    "'",
+                    "'\\''"
+                )
                 + "'\n"
             )
 
-    cmd = [
-        "ffmpeg",
-        "-y",
-        "-f",
-        "concat",
-        "-safe",
-        "0",
-        "-i",
-        list_file,
-
-        "-c:v",
-        "libx264",
-
-        "-preset",
-        "veryfast",
-
-        "-pix_fmt",
-        "yuv420p",
-
-        "-an",
-
-        output_path
-    ]
-
     try:
+
         run_cmd(
-            cmd,
+            [
+                "ffmpeg",
+                "-y",
+                "-f",
+                "concat",
+                "-safe",
+                "0",
+                "-i",
+                list_file,
+                "-c:v",
+                "libx264",
+                "-preset",
+                "veryfast",
+                "-pix_fmt",
+                "yuv420p",
+                "-an",
+                output_path
+            ],
             timeout=900
         )
+
     finally:
-        if os.path.exists(list_file):
-            os.remove(list_file)
+
+        if os.path.exists(
+            list_file
+        ):
+            os.remove(
+                list_file
+            )
 
     log.info(
-        "PHASE=VIDEO_CONCAT_DONE output=%s",
-        output_path
+        "PHASE=VIDEO_CONCAT_DONE"
     )
 
     return output_path
@@ -1004,117 +1082,107 @@ def concat_videos(video_paths, output_path):
 # TTS
 # =========================================================
 
-async def _generate_tts(text, output_path):
+async def _tts(
+    text,
+    output_path
+):
+
     communicate = edge_tts.Communicate(
         text=text,
         voice=TTS_VOICE
     )
 
-    await communicate.save(output_path)
+    await communicate.save(
+        output_path
+    )
 
 
-def generate_tts(text, output_path):
+def generate_tts(
+    text,
+    output_path
+):
+
     log.info(
         "PHASE=TTS_START text=%s",
         text
     )
 
-    if not text.strip():
-        raise RuntimeError(
-            "TTS text is empty"
-        )
-
     try:
+
         asyncio.run(
-            _generate_tts(
+            _tts(
                 text,
                 output_path
             )
         )
-    except RuntimeError as error:
 
-        # في بعض البيئات asyncio loop موجود
-        log.info(
-            "TTS_ASYNCIO_RETRY"
+    except Exception as error:
+
+        log.error(
+            "TTS_ERROR=%s",
+            safe_error_text(error),
+            exc_info=True
         )
 
-        loop = asyncio.new_event_loop()
+        raise
 
-        try:
-            loop.run_until_complete(
-                _generate_tts(
-                    text,
-                    output_path
-                )
-            )
-        finally:
-            loop.close()
+    if not os.path.exists(
+        output_path
+    ):
 
-    if not os.path.exists(output_path):
         raise RuntimeError(
-            "TTS output file was not created"
-        )
-
-    size = os.path.getsize(output_path)
-
-    if size < 100:
-        raise RuntimeError(
-            f"TTS output too small: {size}"
+            "TTS file was not created"
         )
 
     log.info(
         "PHASE=TTS_DONE size=%s",
-        size
+        os.path.getsize(
+            output_path
+        )
     )
 
     return output_path
 
 
 # =========================================================
-# FFPROBE DURATION
+# DURATION
 # =========================================================
 
-def get_duration(path):
-    result = run_cmd([
-        "ffprobe",
-        "-v",
-        "error",
-        "-show_entries",
-        "format=duration",
-        "-of",
-        "default=noprint_wrappers=1:nokey=1",
-        path
-    ])
+def get_duration(
+    path
+):
 
-    value = result.stdout.strip()
-
-    duration = float(value)
-
-    log.info(
-        "VIDEO_DURATION path=%s duration=%s",
-        path,
-        duration
+    result = run_cmd(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
+            path
+        ]
     )
 
-    return duration
+    return float(
+        result.stdout.strip()
+    )
 
 
 # =========================================================
 # AUDIO CONCAT
 # =========================================================
 
-def concat_audio(audio_paths, output_path):
-    log.info(
-        "PHASE=AUDIO_CONCAT_START count=%s",
-        len(audio_paths)
+def concat_audio(
+    audio_paths,
+    output_path
+):
+
+    list_file = (
+        output_path
+        + ".txt"
     )
-
-    if not audio_paths:
-        raise RuntimeError(
-            "No audio files"
-        )
-
-    list_file = output_path + ".txt"
 
     with open(
         list_file,
@@ -1124,170 +1192,136 @@ def concat_audio(audio_paths, output_path):
 
         for path in audio_paths:
 
-            absolute = os.path.abspath(path)
+            absolute = os.path.abspath(
+                path
+            )
 
             f.write(
-                "file "
-                + "'"
-                + absolute.replace("'", "'\\''")
+                "file '"
+                + absolute.replace(
+                    "'",
+                    "'\\''"
+                )
                 + "'\n"
             )
 
-    cmd = [
-        "ffmpeg",
-        "-y",
-        "-f",
-        "concat",
-        "-safe",
-        "0",
-        "-i",
-        list_file,
-
-        "-c:a",
-        "aac",
-
-        "-b:a",
-        "128k",
-
-        output_path
-    ]
-
     try:
+
         run_cmd(
-            cmd,
+            [
+                "ffmpeg",
+                "-y",
+                "-f",
+                "concat",
+                "-safe",
+                "0",
+                "-i",
+                list_file,
+                "-c:a",
+                "aac",
+                "-b:a",
+                "128k",
+                output_path
+            ],
             timeout=600
         )
-    finally:
-        if os.path.exists(list_file):
-            os.remove(list_file)
 
-    log.info(
-        "PHASE=AUDIO_CONCAT_DONE output=%s",
-        output_path
-    )
+    finally:
+
+        if os.path.exists(
+            list_file
+        ):
+            os.remove(
+                list_file
+            )
 
     return output_path
 
 
 # =========================================================
-# MUX AUDIO + VIDEO
+# MUX
 # =========================================================
 
-def mux_audio(video_path, audio_path, output_path):
+def mux_audio(
+    video_path,
+    audio_path,
+    output_path
+):
+
     log.info(
         "PHASE=MUX_START"
     )
 
-    cmd = [
-        "ffmpeg",
-        "-y",
-
-        "-i",
-        video_path,
-
-        "-i",
-        audio_path,
-
-        "-map",
-        "0:v:0",
-
-        "-map",
-        "1:a:0",
-
-        "-c:v",
-        "copy",
-
-        "-c:a",
-        "aac",
-
-        "-b:a",
-        "128k",
-
-        "-shortest",
-
-        "-movflags",
-        "+faststart",
-
-        output_path
-    ]
-
     run_cmd(
-        cmd,
+        [
+            "ffmpeg",
+            "-y",
+
+            "-i",
+            video_path,
+
+            "-i",
+            audio_path,
+
+            "-map",
+            "0:v:0",
+
+            "-map",
+            "1:a:0",
+
+            "-c:v",
+            "copy",
+
+            "-c:a",
+            "aac",
+
+            "-b:a",
+            "128k",
+
+            "-shortest",
+
+            "-movflags",
+            "+faststart",
+
+            output_path
+        ],
         timeout=900
     )
 
     log.info(
-        "PHASE=MUX_DONE output=%s",
-        output_path
+        "PHASE=MUX_DONE"
     )
 
     return output_path
-
-
-# =========================================================
-# ARABIC FONT
-# =========================================================
-
-def find_arabic_font():
-    fonts = [
-        "Noto Sans Arabic",
-        "Noto Naskh Arabic",
-        "Noto Sans",
-        "DejaVu Sans"
-    ]
-
-    for font in fonts:
-
-        try:
-
-            result = subprocess.run(
-                [
-                    "fc-match",
-                    "-f",
-                    "%{file}",
-                    font
-                ],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                timeout=20
-            )
-
-            path = result.stdout.strip()
-
-            if path and os.path.exists(path):
-                log.info(
-                    "FONT_FOUND=%s path=%s",
-                    font,
-                    path
-                )
-                return path
-
-        except Exception:
-            pass
-
-    log.warning(
-        "NO_ARABIC_FONT_FOUND"
-    )
-
-    return None
 
 
 # =========================================================
 # SRT
 # =========================================================
 
-def format_srt_time(seconds):
+def format_srt_time(
+    seconds
+):
+
     milliseconds = int(
         round(
-            (seconds - int(seconds)) * 1000
+            (
+                seconds
+                - int(seconds)
+            ) * 1000
         )
     )
 
-    total = int(seconds)
+    total = int(
+        seconds
+    )
 
     hours = total // 3600
-    minutes = (total % 3600) // 60
+
+    minutes = (
+        total % 3600
+    ) // 60
+
     secs = total % 60
 
     return (
@@ -1298,11 +1332,10 @@ def format_srt_time(seconds):
     )
 
 
-def create_srt(items, output_path):
-    log.info(
-        "PHASE=SRT_START count=%s",
-        len(items)
-    )
+def create_srt(
+    items,
+    output_path
+):
 
     current = 0.0
 
@@ -1318,19 +1351,29 @@ def create_srt(items, output_path):
         ):
 
             text = str(
-                item.get("text", "")
+                item.get(
+                    "text",
+                    ""
+                )
             ).strip()
 
             duration = float(
-                item.get("duration", 0)
+                item.get(
+                    "duration",
+                    0
+                )
             )
 
             if not text:
+
                 current += duration
                 continue
 
             start = current
-            end = current + duration
+            end = (
+                current
+                + duration
+            )
 
             f.write(
                 f"{index}\n"
@@ -1342,21 +1385,17 @@ def create_srt(items, output_path):
             )
 
             f.write(
-                text + "\n\n"
+                text
+                + "\n\n"
             )
 
             current = end
-
-    log.info(
-        "PHASE=SRT_DONE path=%s",
-        output_path
-    )
 
     return output_path
 
 
 # =========================================================
-# BURN CAPTIONS
+# CAPTIONS
 # =========================================================
 
 def burn_captions(
@@ -1364,17 +1403,25 @@ def burn_captions(
     srt_path,
     output_path
 ):
+
     log.info(
         "PHASE=CAPTIONS_START"
     )
 
-    font_path = find_arabic_font()
-
     subtitle_file = (
         srt_path
-        .replace("\\", "/")
-        .replace(":", "\\:")
-        .replace("'", "\\'")
+        .replace(
+            "\\",
+            "/"
+        )
+        .replace(
+            ":",
+            "\\:"
+        )
+        .replace(
+            "'",
+            "\\'"
+        )
     )
 
     subtitle_filter = (
@@ -1383,45 +1430,41 @@ def burn_captions(
         + "'"
     )
 
-    cmd = [
-        "ffmpeg",
-        "-y",
-
-        "-i",
-        video_path,
-
-        "-vf",
-        subtitle_filter,
-
-        "-c:v",
-        "libx264",
-
-        "-preset",
-        "veryfast",
-
-        "-crf",
-        "20",
-
-        "-c:a",
-        "aac",
-
-        "-b:a",
-        "128k",
-
-        "-movflags",
-        "+faststart",
-
-        output_path
-    ]
-
     run_cmd(
-        cmd,
+        [
+            "ffmpeg",
+            "-y",
+            "-i",
+            video_path,
+
+            "-vf",
+            subtitle_filter,
+
+            "-c:v",
+            "libx264",
+
+            "-preset",
+            "veryfast",
+
+            "-crf",
+            "20",
+
+            "-c:a",
+            "aac",
+
+            "-b:a",
+            "128k",
+
+            "-movflags",
+            "+faststart",
+
+            output_path
+        ],
         timeout=900
     )
 
     log.info(
-        "PHASE=CAPTIONS_DONE output=%s",
-        output_path
+        "PHASE=CAPTIONS_DONE"
     )
 
     return output_path
@@ -1431,17 +1474,26 @@ def burn_captions(
 # CREATE REEL
 # =========================================================
 
-def create_reel(user_idea):
+def create_reel(
+    user_idea
+):
+
     work_dir = tempfile.mkdtemp(
         prefix="abosaraj_"
     )
 
-    log.info("=" * 80)
     log.info(
-        "PHASE=CREATE_REEL_START work_dir=%s",
+        "=" * 80
+    )
+
+    log.info(
+        "PHASE=CREATE_REEL_START"
+    )
+
+    log.info(
+        "WORK_DIR=%s",
         work_dir
     )
-    log.info("=" * 80)
 
     try:
 
@@ -1453,7 +1505,9 @@ def create_reel(user_idea):
             user_idea
         )
 
-        scenes = storyboard["scenes"]
+        scenes = storyboard[
+            "scenes"
+        ]
 
         narration = storyboard.get(
             "narration",
@@ -1465,13 +1519,8 @@ def create_reel(user_idea):
             DEFAULT_CTA
         )
 
-        log.info(
-            "REEL_SCENES=%s",
-            len(scenes)
-        )
-
         # -----------------------------------------
-        # VIDEO GENERATION
+        # VIDEO
         # -----------------------------------------
 
         raw_dir = ensure_dir(
@@ -1496,11 +1545,7 @@ def create_reel(user_idea):
         ):
 
             log.info(
-                "=" * 70
-            )
-
-            log.info(
-                "PHASE=SCENE_%s_START",
+                "SCENE_%s_START",
                 index
             )
 
@@ -1511,7 +1556,7 @@ def create_reel(user_idea):
 
             if not prompt:
                 raise RuntimeError(
-                    f"Scene {index} has empty prompt"
+                    f"Scene {index} prompt is empty"
                 )
 
             raw_video = generate_ai_video(
@@ -1519,27 +1564,22 @@ def create_reel(user_idea):
                 raw_dir
             )
 
-            normalized_video = os.path.join(
+            normalized = os.path.join(
                 normalized_dir,
                 f"scene_{index}.mp4"
             )
 
             normalize_video(
                 raw_video,
-                normalized_video
+                normalized
             )
 
             normalized_videos.append(
-                normalized_video
-            )
-
-            log.info(
-                "PHASE=SCENE_%s_DONE",
-                index
+                normalized
             )
 
         # -----------------------------------------
-        # CONCAT VIDEO
+        # VIDEO CONCAT
         # -----------------------------------------
 
         concat_video = os.path.join(
@@ -1571,15 +1611,23 @@ def create_reel(user_idea):
             start=1
         ):
 
-            if index - 1 < len(narration):
-                text = str(
-                    narration[index - 1]
-                ).strip()
-            else:
-                text = ""
+            if (
+                index - 1
+                < len(narration)
+            ):
 
-            if not text:
-                text = " "
+                narration_text = str(
+                    narration[
+                        index - 1
+                    ]
+                ).strip()
+
+            else:
+
+                narration_text = ""
+
+            if not narration_text:
+                narration_text = " "
 
             audio_path = os.path.join(
                 audio_dir,
@@ -1587,12 +1635,14 @@ def create_reel(user_idea):
             )
 
             generate_tts(
-                text,
+                narration_text,
                 audio_path
             )
 
-            duration = get_duration(
-                normalized_videos[index - 1]
+            video_duration = get_duration(
+                normalized_videos[
+                    index - 1
+                ]
             )
 
             audio_files.append(
@@ -1601,8 +1651,8 @@ def create_reel(user_idea):
 
             subtitle_items.append(
                 {
-                    "text": text,
-                    "duration": duration
+                    "text": narration_text,
+                    "duration": video_duration
                 }
             )
 
@@ -1612,11 +1662,11 @@ def create_reel(user_idea):
 
         if cta:
 
-            cta_text = str(
+            cta = str(
                 cta
             ).strip()
 
-            if cta_text:
+            if cta:
 
                 cta_audio = os.path.join(
                     audio_dir,
@@ -1624,7 +1674,7 @@ def create_reel(user_idea):
                 )
 
                 generate_tts(
-                    cta_text,
+                    cta,
                     cta_audio
                 )
 
@@ -1638,18 +1688,18 @@ def create_reel(user_idea):
 
                 subtitle_items.append(
                     {
-                        "text": cta_text,
+                        "text": cta,
                         "duration": cta_duration
                     }
                 )
 
         # -----------------------------------------
-        # CONCAT AUDIO
+        # AUDIO CONCAT
         # -----------------------------------------
 
         audio_concat = os.path.join(
             work_dir,
-            "audio_concat.m4a"
+            "audio.m4a"
         )
 
         concat_audio(
@@ -1661,7 +1711,7 @@ def create_reel(user_idea):
         # MUX
         # -----------------------------------------
 
-        muxed_video = os.path.join(
+        muxed = os.path.join(
             work_dir,
             "muxed.mp4"
         )
@@ -1669,79 +1719,72 @@ def create_reel(user_idea):
         mux_audio(
             concat_video,
             audio_concat,
-            muxed_video
+            muxed
         )
 
         # -----------------------------------------
-        # SUBTITLES
+        # SRT
         # -----------------------------------------
 
-        srt_path = os.path.join(
+        srt = os.path.join(
             work_dir,
             "captions.srt"
         )
 
         create_srt(
             subtitle_items,
-            srt_path
+            srt
         )
 
         # -----------------------------------------
-        # BURN
+        # FINAL
         # -----------------------------------------
 
-        final_video = os.path.join(
+        final = os.path.join(
             work_dir,
             "final.mp4"
         )
 
         burn_captions(
-            muxed_video,
-            srt_path,
-            final_video
+            muxed,
+            srt,
+            final
         )
-
-        # -----------------------------------------
-        # VERIFY
-        # -----------------------------------------
 
         if not os.path.exists(
-            final_video
+            final
         ):
+
             raise RuntimeError(
-                "Final video was not created"
+                "Final MP4 missing"
             )
 
-        final_size = os.path.getsize(
-            final_video
+        size = os.path.getsize(
+            final
         )
 
-        if final_size < 10000:
-            raise RuntimeError(
-                f"Final video is too small: {final_size}"
-            )
-
-        log.info("=" * 80)
         log.info(
-            "PHASE=CREATE_REEL_DONE size=%s",
-            final_size
+            "CREATE_REEL_FINAL_SIZE=%s",
+            size
         )
-        log.info("=" * 80)
 
-        # Important:
-        # copy to persistent temp path before deleting work_dir
-
-        persistent_final = os.path.join(
+        persistent = os.path.join(
             tempfile.gettempdir(),
-            f"abosaraj_final_{uuid.uuid4().hex}.mp4"
+            "abosaraj_"
+            + uuid.uuid4().hex
+            + ".mp4"
         )
 
         shutil.copy2(
-            final_video,
-            persistent_final
+            final,
+            persistent
         )
 
-        return persistent_final
+        log.info(
+            "PHASE=CREATE_REEL_DONE"
+        )
+
+        return persistent
 
     except Exception as error:
 
@@ -1755,47 +1798,31 @@ def create_reel(user_idea):
 
     finally:
 
-        try:
-            shutil.rmtree(
-                work_dir,
-                ignore_errors=True
-            )
-
-            log.info(
-                "WORK_DIR_CLEANED=%s",
-                work_dir
-            )
-
-        except Exception:
-            pass
+        shutil.rmtree(
+            work_dir,
+            ignore_errors=True
+        )
 
 
 # =========================================================
-# /HFTES5
+# HF TEST 5
 # =========================================================
 
 def run_hf_test():
+
     test_dir = tempfile.mkdtemp(
         prefix="hf_test_"
     )
 
+    prompt = (
+        "A cinematic realistic robot standing alone "
+        "in a dark futuristic laboratory, slowly looking "
+        "toward the camera, subtle natural body movement, "
+        "dramatic cinematic lighting, photorealistic "
+        "moving video"
+    )
+
     try:
-
-        prompt = (
-            "A cinematic realistic robot standing alone "
-            "in a dark futuristic laboratory, slowly looking "
-            "toward the camera, subtle natural body movement, "
-            "dramatic cinematic lighting, photorealistic "
-            "moving video"
-        )
-
-        log.info(
-            "=" * 80
-        )
-
-        log.info(
-            "PHASE=HF_TEST_START"
-        )
 
         video = generate_ai_video(
             prompt,
@@ -1810,38 +1837,39 @@ def run_hf_test():
             video
         )
 
-        log.info(
-            "PHASE=HF_TEST_SUCCESS duration=%s size=%s",
+        persistent = os.path.join(
+            tempfile.gettempdir(),
+            "hf_test_"
+            + uuid.uuid4().hex
+            + ".mp4"
+        )
+
+        shutil.copy2(
+            video,
+            persistent
+        )
+
+        return (
+            persistent,
             duration,
             size
         )
 
-        return video, duration, size
-
-    except Exception as error:
-
-        log.error(
-            "HF_TEST_ERROR=%s",
-            safe_error_text(error),
-            exc_info=True
-        )
-
-        raise
-
     finally:
 
-        # لا نحذف الآن إذا نجح؟ نحتاج إرسال الفيديو
-        pass
+        shutil.rmtree(
+            test_dir,
+            ignore_errors=True
+        )
 
 
 # =========================================================
-# TELEGRAM MESSAGE PROCESSING
+# TELEGRAM PROCESSOR
 # =========================================================
 
-def process_message(update):
-    log.info(
-        "TELEGRAM_UPDATE_RECEIVED"
-    )
+def process_message(
+    update
+):
 
     if not update:
         return
@@ -1867,10 +1895,7 @@ def process_message(update):
         ""
     ).strip()
 
-    if not chat_id:
-        return
-
-    if not text:
+    if not chat_id or not text:
         return
 
     log.info(
@@ -1888,21 +1913,21 @@ def process_message(update):
         send_message(
             chat_id,
             "👋 أهلاً بك.\n\n"
-            "أرسل لي فكرة فيديو قصيرة وسأحاول "
-            "تحويلها إلى فيديو سينمائي."
+            "أرسل فكرة فيديو وسأحولها "
+            "إلى فيديو قصير."
         )
 
         return
 
     # -----------------------------------------
-    # HF TEST 3
+    # TEST 3
     # -----------------------------------------
 
     if text == "/hftest3":
 
         send_message(
             chat_id,
-            "🔎 أفحص Hugging Face وواجهة الـ API..."
+            "🔎 أفحص Hugging Face..."
         )
 
         try:
@@ -1922,8 +1947,7 @@ def process_message(update):
 
             send_message(
                 chat_id,
-                "✅ HF API اشتغل.\n\n"
-                + "Endpoints:\n"
+                "✅ HF API يعمل.\n\n"
                 + "\n".join(
                     endpoints[:30]
                 )
@@ -1940,14 +1964,14 @@ def process_message(update):
         return
 
     # -----------------------------------------
-    # HF TEST 4
+    # TEST 4
     # -----------------------------------------
 
     if text == "/hftest4":
 
         send_message(
             chat_id,
-            "🔎 أقرأ باراميترات /generate..."
+            "🔎 أقرأ باراميترات Wan..."
         )
 
         try:
@@ -1962,19 +1986,24 @@ def process_message(update):
                 api
             )
 
-            params = get_parameter_list(
-                endpoint
+            params = endpoint.get(
+                "parameters",
+                []
             )
 
             lines = []
 
-            for p in params:
+            for index, p in enumerate(
+                params,
+                start=1
+            ):
 
                 lines.append(
-                    f"- {p.get('name')} "
-                    f"| default={p.get('default')} "
-                    f"| type={p.get('type')} "
-                    f"| choices={p.get('choices')}"
+                    f"{index}. "
+                    f"name={p.get('name')} "
+                    f"default={p.get('default')} "
+                    f"type={p.get('type')} "
+                    f"choices={p.get('choices')}"
                 )
 
             send_message(
@@ -1994,56 +2023,63 @@ def process_message(update):
         return
 
     # -----------------------------------------
-    # HF TEST 5
+    # TEST 5
     # -----------------------------------------
 
     if text == "/hftest5":
 
         send_message(
             chat_id,
-            "🎥 بدأت اختبار Wan مباشر...\n"
-            "اصبر، هذا الاختبار ممكن يأخذ وقت."
+            "🎥 بدأت اختبار Wan مباشر...\n\n"
+            "هذه المرة أستخدم ترتيب "
+            "الـ API الحقيقي الذي ظهر عندنا.\n"
+            "اصبر شوي."
         )
 
-        test_video = None
+        video = None
 
         try:
 
-            test_video, duration, size = run_hf_test()
+            video, duration, size = run_hf_test()
 
             send_message(
                 chat_id,
-                "✅ Wan اشتغل بنجاح!\n\n"
+                "✅✅ Wan اشتغل!\n\n"
                 f"⏱️ المدة: {duration:.2f} ثانية\n"
-                f"📦 الحجم: {size / 1024 / 1024:.2f} MB\n\n"
-                "الآن المشكلة ليست في توليد الفيديو."
+                f"📦 الحجم: "
+                f"{size / 1024 / 1024:.2f} MB\n\n"
+                "🎬 سأرسل لك فيديو الاختبار الآن."
             )
 
             send_video(
                 chat_id,
-                test_video,
-                caption="🎥 HF Wan Test"
+                video,
+                caption="🎥 Wan Test — SUCCESS"
             )
 
         except Exception as error:
+
+            log.error(
+                "HF_TEST_ERROR=%s",
+                safe_error_text(error),
+                exc_info=True
+            )
 
             send_message(
                 chat_id,
                 "❌ اختبار Wan فشل.\n\n"
                 + safe_error_text(error)
-                + "\n\n"
-                "انسخ لي هذه الرسالة كاملة."
             )
 
         finally:
 
-            if test_video and os.path.exists(
-                test_video
+            if video and os.path.exists(
+                video
             ):
 
                 try:
                     os.remove(
-                        test_video
+                        video
                     )
                 except Exception:
                     pass
@@ -2064,8 +2100,8 @@ def process_message(update):
 
         send_message(
             chat_id,
-            "🎥 تجهيز الفيديو...\n"
-            "⏳ قد يستغرق التوليد عدة دقائق."
+            "🎥 توليد الفيديو...\n"
+            "⏳ اصبر شوي."
         )
 
         final_video = create_reel(
@@ -2074,9 +2110,8 @@ def process_message(update):
 
         send_message(
             chat_id,
-            "🎙️ تم تجهيز الصوت.\n"
-            "📝 تم تجهيز الكابشن.\n"
-            "📤 أرسل لك الفيديو الآن..."
+            "🎙️ تجهيز الصوت...\n"
+            "📝 تجهيز الكابشن..."
         )
 
         result = send_video(
@@ -2086,12 +2121,13 @@ def process_message(update):
         )
 
         if not result:
+
             raise RuntimeError(
-                "Telegram failed to send final video"
+                "Telegram failed to send video"
             )
 
         log.info(
-            "TELEGRAM_FINAL_VIDEO_SENT"
+            "FINAL_VIDEO_SENT"
         )
 
         try:
@@ -2112,8 +2148,7 @@ def process_message(update):
         send_message(
             chat_id,
             "❌ صار خطأ أثناء صناعة الفيديو.\n\n"
-            "الخطأ تم تسجيله في Render Logs.\n"
-            "إذا كنت تختبر المشكلة أرسل لي نتيجة /hftest5."
+            "تم تسجيل الخطأ في Render Logs."
         )
 
 
@@ -2177,7 +2212,7 @@ def home():
             "status": "ok",
             "service": "abosaraj",
             "hf_space": HF_SPACE,
-            "groq_model": GROQ_MODEL
+            "model": GROQ_MODEL
         }
     )
 
@@ -2220,7 +2255,7 @@ def setup_webhook():
     )
 
     log.info(
-        "SETTING_TELEGRAM_WEBHOOK=%s",
+        "SETTING_WEBHOOK=%s",
         webhook_url
     )
 
@@ -2243,28 +2278,12 @@ def setup_webhook():
 
 if __name__ == "__main__":
 
-    log.info("=" * 80)
-    log.info("ABOSARAJ BOT STARTING")
-    log.info("=" * 80)
-
-    if not BOT_TOKEN:
-        log.warning(
-            "BOT_TOKEN is missing"
-        )
-
-    if not GROQ_API_KEY:
-        log.warning(
-            "GROQ_API_KEY is missing"
-        )
-
-    if not HF_TOKEN:
-        log.warning(
-            "HF_TOKEN is missing"
-        )
+    log.info(
+        "=" * 80
+    )
 
     log.info(
-        "PORT=%s",
-        PORT
+        "ABOSARAJ BOT STARTING"
     )
 
     log.info(
@@ -2277,8 +2296,39 @@ if __name__ == "__main__":
         GROQ_MODEL
     )
 
+    log.info(
+        "GEN_WIDTH=%s",
+        GEN_WIDTH
+    )
+
+    log.info(
+        "GEN_HEIGHT=%s",
+        GEN_HEIGHT
+    )
+
+    log.info(
+        "GEN_FRAMES=%s",
+        GEN_FRAMES
+    )
+
+    log.info(
+        "GEN_STEPS=%s",
+        GEN_STEPS
+    )
+
+    log.info(
+        "GEN_GUIDANCE=%s",
+        GEN_GUIDANCE
+    )
+
+    log.info(
+        "=" * 80
+    )
+
     try:
+
         setup_webhook()
+
     except Exception as error:
 
         log.error(
