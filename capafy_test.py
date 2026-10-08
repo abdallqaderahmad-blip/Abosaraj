@@ -1,248 +1,147 @@
-import os
-import json
-import requests
+@app.route("/capafy-clonecut-test", methods=["GET"])
+def capafy_clonecut_test():
+    import hashlib
+    import hmac
 
-BASE_URL = "https://api.capafy.ai"
+    # مفتاح الاختبار الموجود في Render
+    stored_key = os.getenv("CAPAFY_TEST_KEY", "").strip()
+    supplied_key = request.args.get("key", "").strip()
 
-TOKEN = os.getenv("CAPAFY_ACCESS_TOKEN")
+    # تحقق من مفتاح الاختبار
+    if not stored_key:
+        return jsonify({
+            "ok": False,
+            "error": "CAPAFY_TEST_KEY is missing"
+        }), 500
 
-if not TOKEN:
-    raise RuntimeError("❌ CAPAFY_ACCESS_TOKEN غير موجود في Environment Variables")
+    if not hmac.compare_digest(supplied_key, stored_key):
+        return jsonify({
+            "ok": False,
+            "error": "Unauthorized",
+            "debug": {
+                "supplied_present": bool(supplied_key),
+                "stored_present": bool(stored_key),
+                "supplied_length": len(supplied_key),
+                "stored_length": len(stored_key),
+                "supplied_hash": hashlib.sha256(
+                    supplied_key.encode()
+                ).hexdigest()[:12],
+                "stored_hash": hashlib.sha256(
+                    stored_key.encode()
+                ).hexdigest()[:12]
+            }
+        }), 401
 
-HEADERS = {
-    "Authorization": f"Bearer {TOKEN}",
-    "Accept": "application/json",
-}
-
-def pretty(title, data):
-    print("\n" + "=" * 70)
-    print(title)
-    print("=" * 70)
-    print(json.dumps(data, indent=2, ensure_ascii=False))
-
-
-def request(method, path, **kwargs):
-    url = BASE_URL + path
-
-    print(f"\n➡️ {method} {path}")
+    result = {
+        "ok": True,
+        "purchase_created": False,
+        "credits_spent": False,
+        "clonecut": {
+            "agent_id": "5133292529",
+            "details": None,
+            "http_status": None
+        },
+        "active_instances": [],
+        "expired_instances": []
+    }
 
     try:
-        response = requests.request(
-            method,
-            url,
-            headers=HEADERS,
-            timeout=30,
-            **kwargs
+        # -------------------------------------------------
+        # 1) READ-ONLY: جلب تفاصيل CloneCut
+        # -------------------------------------------------
+        status, data = capafy_request(
+            "GET",
+            "/agent/agent/agents/5133292529"
         )
 
-        print(f"HTTP {response.status_code}")
+        result["clonecut"]["http_status"] = status
 
-        try:
-            data = response.json()
-        except Exception:
-            data = {
-                "raw": response.text[:5000]
+        if isinstance(data, dict):
+            result["clonecut"]["details"] = data
+        else:
+            result["clonecut"]["details"] = {
+                "raw": str(data)[:4000]
             }
 
-        return response.status_code, data
+        # -------------------------------------------------
+        # 2) READ-ONLY: جلب الـ Active Instances
+        # -------------------------------------------------
+        status_active, active_data = capafy_request(
+            "GET",
+            "/agent/instance",
+            params={"status": "active"}
+        )
+
+        if isinstance(active_data, dict):
+            active_list = (
+                active_data.get("data", {}).get("instances", [])
+                if isinstance(active_data.get("data"), dict)
+                else []
+            )
+        else:
+            active_list = []
+
+        result["active_instances"] = active_list
+
+        # -------------------------------------------------
+        # 3) READ-ONLY: جلب الـ Expired Instances
+        # -------------------------------------------------
+        status_expired, expired_data = capafy_request(
+            "GET",
+            "/agent/instance",
+            params={"status": "expired"}
+        )
+
+        if isinstance(expired_data, dict):
+            expired_list = (
+                expired_data.get("data", {}).get("instances", [])
+                if isinstance(expired_data.get("data"), dict)
+                else []
+            )
+        else:
+            expired_list = []
+
+        result["expired_instances"] = expired_list
+
+        # -------------------------------------------------
+        # 4) البحث عن Instance مرتبط بـ CloneCut
+        # -------------------------------------------------
+        clonecut_matches = []
+
+        for instance in active_list:
+            if not isinstance(instance, dict):
+                continue
+
+            if str(instance.get("agentId", "")) == "5133292529":
+                clonecut_matches.append(instance)
+
+        result["clonecut_matches"] = clonecut_matches
+        result["matching_instance"] = (
+            clonecut_matches[0]
+            if clonecut_matches
+            else None
+        )
+
+        # -------------------------------------------------
+        # ملخص آمن
+        # -------------------------------------------------
+        result["summary"] = {
+            "clonecut_details_http_status": status,
+            "active_instances_http_status": status_active,
+            "expired_instances_http_status": status_expired,
+            "active_instance_count": len(active_list),
+            "expired_instance_count": len(expired_list),
+            "matching_clonecut_instance_count": len(clonecut_matches),
+            "purchase_created": False,
+            "credits_spent": False
+        }
+
+        return jsonify(result), 200
 
     except Exception as e:
-        print(f"❌ Request error: {e}")
-        return None, {"error": str(e)}
-
-
-# ============================================================
-# 1. SEARCH CLONECUT
-# ============================================================
-
-query = (
-    "AI video generation Seedance 2.0 "
-    "text to video image to video character consistency "
-    "short videos"
-)
-
-status, search_data = request(
-    "POST",
-    "/agent/agents/search",
-    params={
-        "query": query,
-        "page": 1,
-        "pageSize": 10,
-    }
-)
-
-pretty("🔎 CLONECUT SEARCH", search_data)
-
-agents = []
-
-if isinstance(search_data, dict):
-    data = search_data.get("data") or {}
-    agents = data.get("list") or []
-
-print(f"\nFound agents: {len(agents)}")
-
-clonecut = None
-
-for i, agent in enumerate(agents, 1):
-    title = agent.get("title")
-    agent_id = agent.get("agentId")
-    agent_type = agent.get("agentType")
-    score = agent.get("score")
-    rating = agent.get("rating")
-    sales = agent.get("salesVolume")
-
-    print(
-        f"\n[{i}] {title}\n"
-        f"    agentId: {agent_id}\n"
-        f"    type: {agent_type}\n"
-        f"    score: {score}\n"
-        f"    rating: {rating}\n"
-        f"    sales: {sales}"
-    )
-
-    text = json.dumps(agent, ensure_ascii=False).lower()
-
-    if "clonecut" in text:
-        clonecut = agent
-
-
-# ============================================================
-# 2. GET CLONECUT DETAILS
-# ============================================================
-
-if clonecut:
-    agent_id = clonecut.get("agentId")
-
-    print("\n✅ CloneCut found!")
-    print("Agent ID:", agent_id)
-
-    status, detail_data = request(
-        "GET",
-        f"/agent/agent/agents/{agent_id}"
-    )
-
-    pretty("🎬 CLONECUT DETAILS", detail_data)
-
-else:
-    agent_id = None
-    print("\n⚠️ لم نجد كلمة CloneCut في نتائج البحث.")
-    print("هذا لا يعني بالضرورة أنه غير موجود؛ قد يكون ترتيب البحث مختلفًا.")
-
-
-# ============================================================
-# 3. ACTIVE INSTANCES
-# ============================================================
-
-status, active_data = request(
-    "GET",
-    "/agent/instance",
-    params={
-        "status": "active"
-    }
-)
-
-pretty("🟢 ACTIVE INSTANCES", active_data)
-
-active_instances = []
-
-if isinstance(active_data, dict):
-    data = active_data.get("data") or {}
-    active_instances = data.get("instances") or []
-
-print(f"\nActive instances: {len(active_instances)}")
-
-for inst in active_instances:
-    print(
-        "\nINSTANCE"
-        f"\n  instanceId: {inst.get('instanceId')}"
-        f"\n  agentId:    {inst.get('agentId')}"
-        f"\n  title:      {inst.get('agentTitle')}"
-        f"\n  name:       {inst.get('name')}"
-        f"\n  status:     {inst.get('status')}"
-        f"\n  expiresAt:  {inst.get('expiresAt')}"
-    )
-
-
-# ============================================================
-# 4. CHECK WHETHER ACTIVE CLONECUT INSTANCE EXISTS
-# ============================================================
-
-matching_instance = None
-
-if agent_id:
-    for inst in active_instances:
-        if inst.get("agentId") == agent_id:
-            matching_instance = inst
-            break
-
-if matching_instance:
-    print("\n" + "=" * 70)
-    print("🎉 FOUND ACTIVE CLONECUT INSTANCE")
-    print("=" * 70)
-
-    print("Agent ID:   ", matching_instance.get("agentId"))
-    print("Instance ID:", matching_instance.get("instanceId"))
-    print("Title:      ", matching_instance.get("agentTitle"))
-    print("Status:     ", matching_instance.get("status"))
-    print("Expires:    ", matching_instance.get("expiresAt"))
-
-else:
-    print("\n❌ لا يوجد Active Instance مربوط بـ CloneCut.")
-
-
-# ============================================================
-# 5. EXPIRED INSTANCES
-# ============================================================
-
-status, expired_data = request(
-    "GET",
-    "/agent/instance",
-    params={
-        "status": "expired"
-    }
-)
-
-pretty("🔴 EXPIRED INSTANCES", expired_data)
-
-expired_instances = []
-
-if isinstance(expired_data, dict):
-    data = expired_data.get("data") or {}
-    expired_instances = data.get("instances") or []
-
-print(f"\nExpired instances: {len(expired_instances)}")
-
-for inst in expired_instances:
-    print(
-        "\nEXPIRED INSTANCE"
-        f"\n  instanceId: {inst.get('instanceId')}"
-        f"\n  agentId:    {inst.get('agentId')}"
-        f"\n  title:      {inst.get('agentTitle')}"
-        f"\n  name:       {inst.get('name')}"
-    )
-
-
-# ============================================================
-# 6. SUMMARY
-# ============================================================
-
-print("\n" + "=" * 70)
-print("📋 FINAL SUMMARY")
-print("=" * 70)
-
-print("Token:                ✅ موجود")
-print("CloneCut search:      ", "✅" if clonecut else "⚠️ غير مؤكد")
-print("Active instances:     ", len(active_instances))
-print("Expired instances:    ", len(expired_instances))
-
-if matching_instance:
-    print("\n🚀 النتيجة:")
-    print("CloneCut عندك لديه Instance فعال.")
-    print("instanceId =", matching_instance.get("instanceId"))
-    print("\nنقدر ننتقل بعدها لاختبار A10.")
-else:
-    print("\n🟡 النتيجة:")
-    print("ما في Active CloneCut Instance ظاهر حاليًا.")
-    print("❗ لم يتم شراء أي شيء.")
-    print("❗ لم يتم إنشاء أي Order.")
-    print("❗ لم يتم خصم أي Credits.")
+        return jsonify({
+            "ok": False,
+            "error": safe_error_text(str(e)),
+            "purchase_created": False,
+            "credits_spent": False
+        }), 500
