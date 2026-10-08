@@ -39,13 +39,31 @@ HF_SPACE = os.getenv(
 SHOT_COUNT = 2
 SHOT_DURATION = 5
 
-# Wan API limits from /hftest4
+
+# =========================================================
+# WAN PRODUCTION SETTINGS
+# =========================================================
+
 GEN_WIDTH = 576
 GEN_HEIGHT = 832
 GEN_FRAMES = 81
 GEN_STEPS = 20
 GEN_GUIDANCE = 5.0
 GEN_SEED = 0
+
+
+# =========================================================
+# WAN LOW-COST TEST SETTINGS
+# USED ONLY BY /hftest5
+# =========================================================
+
+TEST_GEN_WIDTH = 320
+TEST_GEN_HEIGHT = 320
+TEST_GEN_FRAMES = 21
+TEST_GEN_STEPS = 5
+TEST_GEN_GUIDANCE = 5.0
+TEST_GEN_SEED = 0
+
 
 # Parameter 10 has range 0-2
 GEN_PARAM_10 = 1.0
@@ -535,12 +553,12 @@ def get_generate_endpoint(
 
 
 # =========================================================
-# IMPORTANT:
-# WAN API PARAMETERS ARE UNNAMED
+# WAN ARGUMENTS
 # =========================================================
 
 def build_wan_arguments(
-    prompt
+    prompt,
+    test_mode=False
 ):
 
     """
@@ -559,6 +577,32 @@ def build_wan_arguments(
     11 parameter   string
     """
 
+    if test_mode:
+
+        width = TEST_GEN_WIDTH
+        height = TEST_GEN_HEIGHT
+        frames = TEST_GEN_FRAMES
+        steps = TEST_GEN_STEPS
+        guidance = TEST_GEN_GUIDANCE
+        seed = TEST_GEN_SEED
+
+        log.info(
+            "WAN_MODE=LOW_COST_TEST"
+        )
+
+    else:
+
+        width = GEN_WIDTH
+        height = GEN_HEIGHT
+        frames = GEN_FRAMES
+        steps = GEN_STEPS
+        guidance = GEN_GUIDANCE
+        seed = GEN_SEED
+
+        log.info(
+            "WAN_MODE=PRODUCTION"
+        )
+
     args = [
 
         # 1
@@ -574,22 +618,22 @@ def build_wan_arguments(
         ),
 
         # 4
-        GEN_WIDTH,
+        width,
 
         # 5
-        GEN_HEIGHT,
+        height,
 
         # 6
-        GEN_FRAMES,
+        frames,
 
         # 7
-        GEN_STEPS,
+        steps,
 
         # 8
-        GEN_GUIDANCE,
+        guidance,
 
         # 9
-        GEN_SEED,
+        seed,
 
         # 10
         GEN_PARAM_10,
@@ -608,12 +652,15 @@ def build_wan_arguments(
     ):
 
         if index == 2:
+
             log.info(
                 "WAN_ARG_%s=%s",
                 index,
                 str(value)[:1000]
             )
+
         else:
+
             log.info(
                 "WAN_ARG_%s=%r",
                 index,
@@ -622,6 +669,10 @@ def build_wan_arguments(
 
     return args
 
+
+# =========================================================
+# EXTRACT VIDEO
+# =========================================================
 
 def extract_video_source(
     result
@@ -732,6 +783,10 @@ def extract_video_source(
     return None
 
 
+# =========================================================
+# DOWNLOAD
+# =========================================================
+
 def download_url(
     url,
     destination
@@ -773,9 +828,14 @@ def download_url(
     return destination
 
 
+# =========================================================
+# GENERATE AI VIDEO
+# =========================================================
+
 def generate_ai_video(
     prompt,
-    output_dir
+    output_dir,
+    test_mode=False
 ):
 
     log.info(
@@ -789,6 +849,11 @@ def generate_ai_video(
     log.info(
         "HF_PROMPT=%s",
         prompt
+    )
+
+    log.info(
+        "HF_TEST_MODE=%s",
+        test_mode
     )
 
     log.info(
@@ -815,14 +880,9 @@ def generate_ai_video(
             "HF_GENERATE_ENDPOINT_FOUND"
         )
 
-        # -------------------------------------
-        # DO NOT USE PARAMETER NAMES
-        # They are None in this API.
-        # Use exact positional order.
-        # -------------------------------------
-
         args = build_wan_arguments(
-            prompt
+            prompt,
+            test_mode=test_mode
         )
 
         log.info(
@@ -858,16 +918,20 @@ def generate_ai_video(
             f"scene_{uuid.uuid4().hex}.mp4"
         )
 
-        if isinstance(
-            source,
-            str
-        ) and (
-            source.startswith(
-                "http://"
+        if (
+            isinstance(
+                source,
+                str
             )
-            or
-            source.startswith(
-                "https://"
+            and
+            (
+                source.startswith(
+                    "http://"
+                )
+                or
+                source.startswith(
+                    "https://"
+                )
             )
         ):
 
@@ -1370,6 +1434,7 @@ def create_srt(
                 continue
 
             start = current
+
             end = (
                 current
                 + duration
@@ -1497,10 +1562,6 @@ def create_reel(
 
     try:
 
-        # -----------------------------------------
-        # STORYBOARD
-        # -----------------------------------------
-
         storyboard = create_storyboard(
             user_idea
         )
@@ -1518,10 +1579,6 @@ def create_reel(
             "cta",
             DEFAULT_CTA
         )
-
-        # -----------------------------------------
-        # VIDEO
-        # -----------------------------------------
 
         raw_dir = ensure_dir(
             os.path.join(
@@ -1555,13 +1612,15 @@ def create_reel(
             )
 
             if not prompt:
+
                 raise RuntimeError(
                     f"Scene {index} prompt is empty"
                 )
 
             raw_video = generate_ai_video(
                 prompt,
-                raw_dir
+                raw_dir,
+                test_mode=False
             )
 
             normalized = os.path.join(
@@ -1578,10 +1637,6 @@ def create_reel(
                 normalized
             )
 
-        # -----------------------------------------
-        # VIDEO CONCAT
-        # -----------------------------------------
-
         concat_video = os.path.join(
             work_dir,
             "video_concat.mp4"
@@ -1591,10 +1646,6 @@ def create_reel(
             normalized_videos,
             concat_video
         )
-
-        # -----------------------------------------
-        # TTS
-        # -----------------------------------------
 
         audio_dir = ensure_dir(
             os.path.join(
@@ -1627,6 +1678,7 @@ def create_reel(
                 narration_text = ""
 
             if not narration_text:
+
                 narration_text = " "
 
             audio_path = os.path.join(
@@ -1655,10 +1707,6 @@ def create_reel(
                     "duration": video_duration
                 }
             )
-
-        # -----------------------------------------
-        # CTA
-        # -----------------------------------------
 
         if cta:
 
@@ -1693,10 +1741,6 @@ def create_reel(
                     }
                 )
 
-        # -----------------------------------------
-        # AUDIO CONCAT
-        # -----------------------------------------
-
         audio_concat = os.path.join(
             work_dir,
             "audio.m4a"
@@ -1706,10 +1750,6 @@ def create_reel(
             audio_files,
             audio_concat
         )
-
-        # -----------------------------------------
-        # MUX
-        # -----------------------------------------
 
         muxed = os.path.join(
             work_dir,
@@ -1722,10 +1762,6 @@ def create_reel(
             muxed
         )
 
-        # -----------------------------------------
-        # SRT
-        # -----------------------------------------
-
         srt = os.path.join(
             work_dir,
             "captions.srt"
@@ -1735,10 +1771,6 @@ def create_reel(
             subtitle_items,
             srt
         )
-
-        # -----------------------------------------
-        # FINAL
-        # -----------------------------------------
 
         final = os.path.join(
             work_dir,
@@ -1826,7 +1858,8 @@ def run_hf_test():
 
         video = generate_ai_video(
             prompt,
-            test_dir
+            test_dir,
+            test_mode=True
         )
 
         duration = get_duration(
@@ -1904,10 +1937,7 @@ def process_message(
         text
     )
 
-    # -----------------------------------------
     # START
-    # -----------------------------------------
-
     if text == "/start":
 
         send_message(
@@ -1919,10 +1949,7 @@ def process_message(
 
         return
 
-    # -----------------------------------------
     # TEST 3
-    # -----------------------------------------
-
     if text == "/hftest3":
 
         send_message(
@@ -1963,10 +1990,7 @@ def process_message(
 
         return
 
-    # -----------------------------------------
     # TEST 4
-    # -----------------------------------------
-
     if text == "/hftest4":
 
         send_message(
@@ -2022,17 +2046,14 @@ def process_message(
 
         return
 
-    # -----------------------------------------
     # TEST 5
-    # -----------------------------------------
-
     if text == "/hftest5":
 
         send_message(
             chat_id,
-            "🎥 بدأت اختبار Wan مباشر...\n\n"
-            "هذه المرة أستخدم ترتيب "
-            "الـ API الحقيقي الذي ظهر عندنا.\n"
+            "🎥 بدأت اختبار Wan اقتصادي...\n\n"
+            "320×320 | 21 frames | 5 steps\n"
+            "الهدف الآن فقط نتأكد أن Wan يعمل.\n\n"
             "اصبر شوي."
         )
 
@@ -2078,18 +2099,17 @@ def process_message(
             ):
 
                 try:
+
                     os.remove(
                         video
                     )
+
                 except Exception:
                     pass
 
         return
 
-    # -----------------------------------------
     # NORMAL VIDEO
-    # -----------------------------------------
-
     send_message(
         chat_id,
         "🎬 وصلت الفكرة.\n"
@@ -2131,9 +2151,11 @@ def process_message(
         )
 
         try:
+
             os.remove(
                 final_video
             )
+
         except Exception:
             pass
 
@@ -2319,6 +2341,26 @@ if __name__ == "__main__":
     log.info(
         "GEN_GUIDANCE=%s",
         GEN_GUIDANCE
+    )
+
+    log.info(
+        "TEST_GEN_WIDTH=%s",
+        TEST_GEN_WIDTH
+    )
+
+    log.info(
+        "TEST_GEN_HEIGHT=%s",
+        TEST_GEN_HEIGHT
+    )
+
+    log.info(
+        "TEST_GEN_FRAMES=%s",
+        TEST_GEN_FRAMES
+    )
+
+    log.info(
+        "TEST_GEN_STEPS=%s",
+        TEST_GEN_STEPS
     )
 
     log.info(
