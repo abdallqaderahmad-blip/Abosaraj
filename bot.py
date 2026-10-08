@@ -9,51 +9,62 @@ import subprocess
 import asyncio
 import threading
 import time
-import hashlib
 
 import requests
 import edge_tts
 
 from flask import Flask, request, jsonify
 from groq import Groq
-from gradio_client import Client
 
 
 # =========================================================
 # CONFIG
 # =========================================================
 
-BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
-GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
-HF_TOKEN = os.getenv("HF_TOKEN", "").strip()
+BOT_TOKEN = os.getenv(
+    "BOT_TOKEN",
+    ""
+).strip()
 
-PORT = int(os.getenv("PORT", "10000"))
+GROQ_API_KEY = os.getenv(
+    "GROQ_API_KEY",
+    ""
+).strip()
+
+PORT = int(
+    os.getenv(
+        "PORT",
+        "10000"
+    )
+)
 
 GROQ_MODEL = os.getenv(
     "GROQ_MODEL",
     "llama-3.3-70b-versatile"
 )
 
-HF_SPACE = os.getenv(
-    "HF_SPACE",
-    "numanajmal0/wan-video-api"
+
+# =========================================================
+# CAPAFY / CLONECUT
+# =========================================================
+
+CAPAFY_BASE_URL = (
+    "https://api.capafy.ai"
 )
-
-
-# =========================================================
-# CAPAFY CONFIG
-# =========================================================
-
-CAPAFY_BASE_URL = "https://api.capafy.ai"
 
 CAPAFY_ACCESS_TOKEN = os.getenv(
     "CAPAFY_ACCESS_TOKEN",
     ""
 ).strip()
 
-CAPAFY_TEST_KEY = os.getenv(
-    "CAPAFY_TEST_KEY",
+CAPAFY_INSTANCE_ID = os.getenv(
+    "CAPAFY_INSTANCE_ID",
     ""
+).strip()
+
+CLONECUT_AGENT_ID = os.getenv(
+    "CLONECUT_AGENT_ID",
+    "5133292529"
 ).strip()
 
 
@@ -64,54 +75,24 @@ CAPAFY_TEST_KEY = os.getenv(
 SHOT_COUNT = 2
 SHOT_DURATION = 5
 
-
-# =========================================================
-# WAN PRODUCTION SETTINGS
-# =========================================================
-
-GEN_WIDTH = 576
-GEN_HEIGHT = 832
-GEN_FRAMES = 81
-GEN_STEPS = 20
-GEN_GUIDANCE = 5.0
-GEN_SEED = 0
-
-
-# =========================================================
-# WAN TEST SETTINGS
-# =========================================================
-
-TEST_GEN_WIDTH = 320
-TEST_GEN_HEIGHT = 320
-TEST_GEN_FRAMES = 21
-TEST_GEN_STEPS = 5
-TEST_GEN_GUIDANCE = 5.0
-TEST_GEN_SEED = 0
-
-
-# =========================================================
-# WAN EXTRA PARAMETERS
-# =========================================================
-
-GEN_PARAM_10 = 1.0
-GEN_PARAM_11 = ""
-
-GEN_FPS = 16
-
 FINAL_WIDTH = 720
 FINAL_HEIGHT = 1280
 FINAL_FPS = 16
 
-TTS_VOICE = "ar-SA-HamedNeural"
+TTS_VOICE = (
+    "ar-SA-HamedNeural"
+)
 
-DEFAULT_CTA = "إذا عجبك الفيديو تابعنا للمزيد"
+DEFAULT_CTA = (
+    "إذا عجبك الفيديو تابعنا للمزيد"
+)
 
 
 # =========================================================
 # SAFETY / RETRY
 # =========================================================
 
-MAX_VIDEO_RETRIES = 2
+MAX_CAPAFY_RETRIES = 2
 
 GENERATION_LOCK = threading.Lock()
 
@@ -126,10 +107,16 @@ MAX_PROCESSED_UPDATES = 1000
 
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(message)s"
+    format=(
+        "%(asctime)s | "
+        "%(levelname)s | "
+        "%(message)s"
+    )
 )
 
-log = logging.getLogger("abosaraj")
+log = logging.getLogger(
+    "abosaraj"
+)
 
 
 # =========================================================
@@ -147,15 +134,17 @@ def safe_error_text(error):
 
     text = str(error)
 
-    for secret in [
+    secrets = [
         BOT_TOKEN,
         GROQ_API_KEY,
-        HF_TOKEN,
         CAPAFY_ACCESS_TOKEN,
-        CAPAFY_TEST_KEY,
-        os.getenv("CAPAFY_API_KEY", "").strip(),
-        os.getenv("CAPAFY_TEST_KEY", "").strip()
-    ]:
+        os.getenv(
+            "CAPAFY_API_KEY",
+            ""
+        ).strip()
+    ]
+
+    for secret in secrets:
 
         if secret:
 
@@ -165,28 +154,6 @@ def safe_error_text(error):
             )
 
     return text
-
-
-def is_hf_quota_error(error):
-
-    text = safe_error_text(error).lower()
-
-    quota_words = [
-        "zerogpu quota",
-        "free zerogpu quota",
-        "quota",
-        "exceeded your free",
-        "try again in",
-        "subscribe to hugging face pro",
-        "daily quota",
-        "usage limit",
-        "rate limit"
-    ]
-
-    return any(
-        word in text
-        for word in quota_words
-    )
 
 
 def ensure_dir(path):
@@ -200,8 +167,7 @@ def ensure_dir(path):
 
 
 # =========================================================
-# CAPAFY API HELPER
-# READ-ONLY
+# CAPAFY HTTP
 # =========================================================
 
 def capafy_request(
@@ -209,7 +175,7 @@ def capafy_request(
     endpoint,
     params=None,
     payload=None,
-    timeout=30
+    timeout=60
 ):
 
     token = os.getenv(
@@ -230,15 +196,17 @@ def capafy_request(
     )
 
     headers = {
-        "Authorization": f"Bearer {token}",
+        "Authorization": (
+            f"Bearer {token}"
+        ),
         "Accept": "application/json"
     }
 
     if payload is not None:
 
-        headers["Content-Type"] = (
-            "application/json"
-        )
+        headers[
+            "Content-Type"
+        ] = "application/json"
 
     log.info(
         "CAPAFY_REQUEST method=%s endpoint=%s",
@@ -269,1215 +237,762 @@ def capafy_request(
 
         data = response.text[:10000]
 
-    return (
-        response.status_code,
-        data
+    if response.status_code >= 400:
+
+        raise RuntimeError(
+            "Capafy HTTP "
+            f"{response.status_code}: "
+            f"{str(data)[:4000]}"
+        )
+
+    return data
+
+
+# =========================================================
+# CAPAFY INSTANCE
+# =========================================================
+
+def get_active_instances():
+
+    data = capafy_request(
+        "GET",
+        "/agent/instance",
+        params={
+            "status": "active"
+        },
+        timeout=60
     )
 
-
-# =========================================================
-# CAPAFY SAFE AGENT SUMMARY
-# =========================================================
-
-def capafy_safe_agent(agent):
-
     if not isinstance(
-        agent,
-        dict
-    ):
-
-        return {
-            "raw_type": type(agent).__name__
-        }
-
-    return {
-
-        "agentId": agent.get(
-            "agentId"
-        ),
-
-        "agentVersionId": agent.get(
-            "agentVersionId"
-        ),
-
-        "title": agent.get(
-            "title"
-        ),
-
-        "tags": agent.get(
-            "tags"
-        ),
-
-        "categoryName": agent.get(
-            "categoryName"
-        ),
-
-        "agentType": agent.get(
-            "agentType"
-        ),
-
-        "billingMode": agent.get(
-            "billingMode"
-        ),
-
-        "billings": agent.get(
-            "billings"
-        ),
-
-        "model": agent.get(
-            "model"
-        ),
-
-        "salesVolume": agent.get(
-            "salesVolume"
-        ),
-
-        "rating": agent.get(
-            "rating"
-        ),
-
-        "creditScore": agent.get(
-            "creditScore"
-        ),
-
-        "score": agent.get(
-            "score"
-        )
-    }
-
-
-# =========================================================
-# CAPAFY SAFE INSTANCE SUMMARY
-# =========================================================
-
-def capafy_safe_instance(instance):
-
-    if not isinstance(
-        instance,
-        dict
-    ):
-
-        return {
-            "raw_type": type(instance).__name__
-        }
-
-    return {
-
-        "instanceId": instance.get(
-            "instanceId"
-        ),
-
-        "agentId": instance.get(
-            "agentId"
-        ),
-
-        "agentVersionId": instance.get(
-            "agentVersionId"
-        ),
-
-        "agentTitle": instance.get(
-            "agentTitle"
-        ),
-
-        "name": instance.get(
-            "name"
-        ),
-
-        "status": instance.get(
-            "status"
-        ),
-
-        "createdAt": instance.get(
-            "createdAt"
-        ),
-
-        "expiresAt": instance.get(
-            "expiresAt"
-        )
-    }
-
-
-# =========================================================
-# CAPAFY SEARCH RESULT EXTRACTION
-# =========================================================
-
-def extract_capafy_agents(
-    search_data
-):
-
-    if not isinstance(
-        search_data,
+        data,
         dict
     ):
 
         return []
 
-    data = search_data.get(
+    body = data.get(
         "data"
     )
 
-    if isinstance(
-        data,
+    if not isinstance(
+        body,
         dict
     ):
 
-        agents = data.get(
-            "list"
-        )
+        return []
 
-        if isinstance(
-            agents,
-            list
-        ):
-
-            return agents
-
-        agents = data.get(
-            "agents"
-        )
-
-        if isinstance(
-            agents,
-            list
-        ):
-
-            return agents
-
-    agents = search_data.get(
-        "list"
+    instances = body.get(
+        "instances"
     )
 
-    if isinstance(
-        agents,
+    if not isinstance(
+        instances,
         list
     ):
 
-        return agents
+        return []
 
-    return []
+    return instances
 
 
-# =========================================================
-# CAPAFY SAFE TEST
-# =========================================================
+def find_clonecut_instance():
 
-@app.route(
-    "/capafy-test",
-    methods=["GET"]
-)
-def capafy_test():
-
-    debug_key = os.getenv(
-        "CAPAFY_TEST_KEY",
+    configured = os.getenv(
+        "CAPAFY_INSTANCE_ID",
         ""
     ).strip()
 
-    supplied_key = request.args.get(
-        "key",
-        ""
-    ).strip()
+    if configured:
 
-    if not debug_key:
+        log.info(
+            "USING_CONFIGURED_CAPAFY_INSTANCE=%s",
+            configured
+        )
 
-        return jsonify({
-            "ok": False,
-            "error": "CAPAFY_TEST_KEY غير موجود في Render"
-        }), 500
+        return configured
 
-    if supplied_key != debug_key:
+    instances = (
+        get_active_instances()
+    )
 
-        return jsonify({
+    for instance in instances:
 
-            "ok": False,
+        if not isinstance(
+            instance,
+            dict
+        ):
 
-            "error": "Unauthorized",
+            continue
 
-            "debug": {
-
-                "supplied_present": bool(
-                    supplied_key
-                ),
-
-                "stored_present": bool(
-                    debug_key
-                ),
-
-                "supplied_length": len(
-                    supplied_key
-                ),
-
-                "stored_length": len(
-                    debug_key
-                ),
-
-                "supplied_hash": hashlib.sha256(
-                    supplied_key.encode()
-                ).hexdigest()[:12],
-
-                "stored_hash": hashlib.sha256(
-                    debug_key.encode()
-                ).hexdigest()[:12]
-            }
-
-        }), 401
-
-    result = {
-
-        "ok": True,
-
-        "token_present": bool(
-            os.getenv(
-                "CAPAFY_ACCESS_TOKEN",
+        agent_id = str(
+            instance.get(
+                "agentId",
                 ""
-            ).strip()
+            )
+        )
+
+        instance_id = str(
+            instance.get(
+                "instanceId",
+                ""
+            )
+        )
+
+        if (
+            agent_id
+            == CLONECUT_AGENT_ID
+            and instance_id
+        ):
+
+            log.info(
+                "CLONECUT_ACTIVE_INSTANCE_FOUND=%s",
+                instance_id
+            )
+
+            return instance_id
+
+    return None
+
+
+# =========================================================
+# CAPAFY MESSAGE HISTORY
+# =========================================================
+
+def get_instance_messages(
+    instance_id
+):
+
+    return capafy_request(
+        "GET",
+        (
+            "/agent/relay/instances/"
+            f"{instance_id}/messages"
         ),
+        timeout=60
+    )
 
-        "searches": [],
 
-        "clonecut_matches": [],
+# =========================================================
+# CAPAFY INTERRUPT
+# =========================================================
 
-        "clonecut_details": [],
+def interrupt_instance(
+    instance_id
+):
 
-        "active_instances": [],
+    return capafy_request(
+        "POST",
+        (
+            "/agent/relay/instances/"
+            f"{instance_id}/interrupt"
+        ),
+        timeout=60
+    )
 
-        "expired_instances": [],
 
-        "matching_instance": None,
+# =========================================================
+# EXTRACT URLS FROM ANY OBJECT
+# =========================================================
 
-        "summary": {
+def extract_urls(
+    value
+):
 
-            "clonecut_found": False,
+    found = []
 
-            "active_instance_count": 0,
+    if value is None:
 
-            "expired_instance_count": 0,
+        return found
 
-            "matching_active_clonecut": False,
+    if isinstance(
+        value,
+        str
+    ):
 
-            "purchase_created": False,
+        matches = re.findall(
+            r"https?://[^\s\"'<>]+",
+            value
+        )
 
-            "credits_spent": False
-        }
-    }
+        for item in matches:
 
-    try:
+            cleaned = item.rstrip(
+                ".,);]}"
+            )
 
-        search_queries = [
+            if cleaned not in found:
 
-            "CloneCut",
-
-            "Seedance",
-
-            "Viral Clone",
-
-            "AI video",
-
-            "video generation"
-        ]
-
-        all_agents = {}
-
-        for query in search_queries:
-
-            try:
-
-                status, search_data = capafy_request(
-
-                    "POST",
-
-                    "/agent/agents/search",
-
-                    params={
-
-                        "query": query,
-
-                        "page": 1,
-
-                        "pageSize": 20
-                    }
+                found.append(
+                    cleaned
                 )
 
-                agents = extract_capafy_agents(
-                    search_data
-                )
+        return found
 
-                search_result = {
+    if isinstance(
+        value,
+        dict
+    ):
 
-                    "query": query,
+        for key, item in value.items():
 
-                    "http_status": status,
-
-                    "count": len(
-                        agents
-                    ),
-
-                    "agents": []
-                }
-
-                for agent in agents:
-
-                    safe_agent = (
-                        capafy_safe_agent(
-                            agent
-                        )
-                    )
-
-                    search_result[
-                        "agents"
-                    ].append(
-                        safe_agent
-                    )
-
-                    agent_id = agent.get(
-                        "agentId"
-                    )
-
-                    if agent_id:
-
-                        all_agents[
-                            str(agent_id)
-                        ] = agent
-
-                result[
-                    "searches"
-                ].append(
-                    search_result
-                )
-
-            except Exception as search_error:
-
-                result[
-                    "searches"
-                ].append({
-
-                    "query": query,
-
-                    "http_status": None,
-
-                    "count": 0,
-
-                    "error": safe_error_text(
-                        search_error
-                    )
-                })
-
-        clonecut_agents = []
-
-        for agent in all_agents.values():
-
-            searchable = json.dumps(
-                agent,
-                ensure_ascii=False
+            key_lower = str(
+                key
             ).lower()
 
             if (
-                "clonecut"
-                in searchable
+                "url"
+                in key_lower
                 or
-                "seedance"
-                in searchable
+                "file"
+                in key_lower
                 or
-                "viral clone"
-                in searchable
+                "video"
+                in key_lower
+                or
+                "download"
+                in key_lower
+                or
+                "output"
+                in key_lower
             ):
 
-                clonecut_agents.append(
-                    agent
-                )
-
-        unique_clonecut = {}
-
-        for agent in clonecut_agents:
-
-            agent_id = agent.get(
-                "agentId"
-            )
-
-            if agent_id:
-
-                unique_clonecut[
-                    str(agent_id)
-                ] = agent
-
-        clonecut_agents = list(
-            unique_clonecut.values()
-        )
-
-        result[
-            "clonecut_matches"
-        ] = [
-
-            capafy_safe_agent(
-                agent
-            )
-
-            for agent
-            in clonecut_agents
-        ]
-
-        for agent in clonecut_agents:
-
-            agent_id = agent.get(
-                "agentId"
-            )
-
-            if not agent_id:
-
-                continue
-
-            try:
-
-                status, detail_data = (
-                    capafy_request(
-                        "GET",
-                        f"/agent/agent/agents/{agent_id}"
+                found.extend(
+                    extract_urls(
+                        item
                     )
                 )
-
-                detail_output = {
-
-                    "agentId": agent_id,
-
-                    "http_status": status
-                }
-
-                if isinstance(
-                    detail_data,
-                    dict
-                ):
-
-                    data = detail_data.get(
-                        "data"
-                    )
-
-                    if isinstance(
-                        data,
-                        dict
-                    ):
-
-                        detail_output[
-                            "agentType"
-                        ] = data.get(
-                            "agentType"
-                        )
-
-                        detail_output[
-                            "name"
-                        ] = data.get(
-                            "name"
-                        )
-
-                        detail_output[
-                            "desc"
-                        ] = data.get(
-                            "desc"
-                        )
-
-                        detail_output[
-                            "agentStatus"
-                        ] = data.get(
-                            "agentStatus"
-                        )
-
-                        latest = data.get(
-                            "latestOnlineVersion"
-                        )
-
-                        if isinstance(
-                            latest,
-                            dict
-                        ):
-
-                            detail_output[
-                                "latestOnlineVersion"
-                            ] = {
-
-                                "agentVersionId":
-                                    latest.get(
-                                        "agentVersionId"
-                                    ),
-
-                                "agentPackageId":
-                                    latest.get(
-                                        "agentPackageId"
-                                    ),
-
-                                "agentRuntime":
-                                    latest.get(
-                                        "agentRuntime"
-                                    ),
-
-                                "title":
-                                    latest.get(
-                                        "title"
-                                    ),
-
-                                "model":
-                                    latest.get(
-                                        "model"
-                                    ),
-
-                                "version":
-                                    latest.get(
-                                        "version"
-                                    ),
-
-                                "concurrencyLimit":
-                                    latest.get(
-                                        "concurrencyLimit"
-                                    ),
-
-                                "estimatedExecutionMinutes":
-                                    latest.get(
-                                        "estimatedExecutionMinutes"
-                                    ),
-
-                                "billings":
-                                    latest.get(
-                                        "billings"
-                                    )
-                            }
-
-                result[
-                    "clonecut_details"
-                ].append(
-                    detail_output
-                )
-
-            except Exception as detail_error:
-
-                result[
-                    "clonecut_details"
-                ].append({
-
-                    "agentId": agent_id,
-
-                    "http_status": None,
-
-                    "error": safe_error_text(
-                        detail_error
-                    )
-                })
-
-        try:
-
-            status, active_data = (
-                capafy_request(
-                    "GET",
-                    "/agent/instance",
-                    params={
-                        "status": "active"
-                    }
-                )
-            )
-
-            active_instances = []
-
-            if isinstance(
-                active_data,
-                dict
-            ):
-
-                data = active_data.get(
-                    "data"
-                )
-
-                if isinstance(
-                    data,
-                    dict
-                ):
-
-                    active_instances = (
-                        data.get(
-                            "instances"
-                        ) or []
-                    )
-
-            result[
-                "active_instances"
-            ] = [
-
-                capafy_safe_instance(
-                    instance
-                )
-
-                for instance
-                in active_instances
-            ]
-
-            result[
-                "summary"
-            ][
-                "active_instance_count"
-            ] = len(
-                active_instances
-            )
-
-        except Exception as active_error:
-
-            active_instances = []
-
-            result[
-                "active_instances"
-            ] = {
-
-                "error": safe_error_text(
-                    active_error
-                )
-            }
-
-        clonecut_ids = {
-
-            str(
-                agent.get(
-                    "agentId"
-                )
-            )
-
-            for agent
-            in clonecut_agents
-
-            if agent.get(
-                "agentId"
-            )
-        }
-
-        matching_instance = None
-
-        if isinstance(
-            active_instances,
-            list
-        ):
-
-            for instance in active_instances:
-
-                instance_agent_id = instance.get(
-                    "agentId"
-                )
-
-                if (
-                    instance_agent_id
-                    and
-                    str(
-                        instance_agent_id
-                    )
-                    in clonecut_ids
-                ):
-
-                    matching_instance = (
-                        capafy_safe_instance(
-                            instance
-                        )
-                    )
-
-                    break
-
-        result[
-            "matching_instance"
-        ] = matching_instance
-
-        result[
-            "summary"
-        ][
-            "matching_active_clonecut"
-        ] = bool(
-            matching_instance
-        )
-
-        try:
-
-            status, expired_data = (
-                capafy_request(
-                    "GET",
-                    "/agent/instance",
-                    params={
-                        "status": "expired"
-                    }
-                )
-            )
-
-            expired_instances = []
-
-            if isinstance(
-                expired_data,
-                dict
-            ):
-
-                data = expired_data.get(
-                    "data"
-                )
-
-                if isinstance(
-                    data,
-                    dict
-                ):
-
-                    expired_instances = (
-                        data.get(
-                            "instances"
-                        ) or []
-                    )
-
-            result[
-                "expired_instances"
-            ] = [
-
-                capafy_safe_instance(
-                    instance
-                )
-
-                for instance
-                in expired_instances
-            ]
-
-            result[
-                "summary"
-            ][
-                "expired_instance_count"
-            ] = len(
-                expired_instances
-            )
-
-        except Exception as expired_error:
-
-            result[
-                "expired_instances"
-            ] = {
-
-                "error": safe_error_text(
-                    expired_error
-                )
-            }
-
-        result[
-            "summary"
-        ][
-            "clonecut_found"
-        ] = bool(
-            clonecut_agents
-        )
-
-        result[
-            "summary"
-        ][
-            "purchase_created"
-        ] = False
-
-        result[
-            "summary"
-        ][
-            "credits_spent"
-        ] = False
-
-        return jsonify(
-            result
-        )
-
-    except Exception as error:
-
-        log.error(
-            "CAPAFY_TEST_ERROR=%s",
-            safe_error_text(error),
-            exc_info=True
-        )
-
-        return jsonify({
-
-            "ok": False,
-
-            "error": safe_error_text(
-                error
-            ),
-
-            "purchase_created": False,
-
-            "credits_spent": False
-
-        }), 500
-
-
-# =========================================================
-# CAPAFY CLONECUT DIRECT READ-ONLY TEST
-# =========================================================
-
-@app.route(
-    "/capafy-clonecut-test",
-    methods=["GET"]
-)
-def capafy_clonecut_test():
-
-    debug_key = os.getenv(
-        "CAPAFY_TEST_KEY",
-        ""
-    ).strip()
-
-    supplied_key = request.args.get(
-        "key",
-        ""
-    ).strip()
-
-    # -----------------------------------------------------
-    # SECURITY CHECK
-    # -----------------------------------------------------
-
-    if not debug_key:
-
-        return jsonify({
-            "ok": False,
-            "error": "CAPAFY_TEST_KEY is missing"
-        }), 500
-
-    if supplied_key != debug_key:
-
-        return jsonify({
-
-            "ok": False,
-
-            "error": "Unauthorized",
-
-            "debug": {
-
-                "supplied_present": bool(
-                    supplied_key
-                ),
-
-                "stored_present": bool(
-                    debug_key
-                ),
-
-                "supplied_length": len(
-                    supplied_key
-                ),
-
-                "stored_length": len(
-                    debug_key
-                ),
-
-                "supplied_hash": hashlib.sha256(
-                    supplied_key.encode()
-                ).hexdigest()[:12],
-
-                "stored_hash": hashlib.sha256(
-                    debug_key.encode()
-                ).hexdigest()[:12]
-            }
-
-        }), 401
-
-    result = {
-
-        "ok": True,
-
-        "test_type": "READ_ONLY",
-
-        "agent_id": "5133292529",
-
-        "clonecut_details": None,
-
-        "active_instances": [],
-
-        "matching_instance": None,
-
-        "summary": {
-
-            "agent_http_status": None,
-
-            "active_instances_http_status": None,
-
-            "clonecut_found": False,
-
-            "matching_active_instance": False,
-
-            "purchase_created": False,
-
-            "credits_spent": False
-        }
-    }
-
-    try:
-
-        # -------------------------------------------------
-        # 1. GET CLONECUT DIRECTLY
-        # -------------------------------------------------
-
-        status, detail_data = capafy_request(
-
-            "GET",
-
-            "/agent/agent/agents/5133292529"
-        )
-
-        result[
-            "summary"
-        ][
-            "agent_http_status"
-        ] = status
-
-        if isinstance(
-            detail_data,
-            dict
-        ):
-
-            data = detail_data.get(
-                "data"
-            )
-
-            if isinstance(
-                data,
-                dict
-            ):
-
-                result[
-                    "clonecut_details"
-                ] = {
-
-                    "agentId": data.get(
-                        "agentId"
-                    ),
-
-                    "agentType": data.get(
-                        "agentType"
-                    ),
-
-                    "name": data.get(
-                        "name"
-                    ),
-
-                    "desc": data.get(
-                        "desc"
-                    ),
-
-                    "agentStatus": data.get(
-                        "agentStatus"
-                    )
-                }
-
-                latest = data.get(
-                    "latestOnlineVersion"
-                )
-
-                if isinstance(
-                    latest,
-                    dict
-                ):
-
-                    result[
-                        "clonecut_details"
-                    ][
-                        "latestOnlineVersion"
-                    ] = {
-
-                        "agentVersionId":
-                            latest.get(
-                                "agentVersionId"
-                            ),
-
-                        "agentPackageId":
-                            latest.get(
-                                "agentPackageId"
-                            ),
-
-                        "agentRuntime":
-                            latest.get(
-                                "agentRuntime"
-                            ),
-
-                        "title":
-                            latest.get(
-                                "title"
-                            ),
-
-                        "model":
-                            latest.get(
-                                "model"
-                            ),
-
-                        "version":
-                            latest.get(
-                                "version"
-                            ),
-
-                        "concurrencyLimit":
-                            latest.get(
-                                "concurrencyLimit"
-                            ),
-
-                        "estimatedExecutionMinutes":
-                            latest.get(
-                                "estimatedExecutionMinutes"
-                            ),
-
-                        "billings":
-                            latest.get(
-                                "billings"
-                            )
-                    }
-
-                result[
-                    "summary"
-                ][
-                    "clonecut_found"
-                ] = True
 
             else:
 
-                result[
-                    "clonecut_details"
-                ] = {
-                    "raw": str(
-                        detail_data
-                    )[:4000]
-                }
+                found.extend(
+                    extract_urls(
+                        item
+                    )
+                )
 
-        else:
-
-            result[
-                "clonecut_details"
-            ] = {
-                "raw": str(
-                    detail_data
-                )[:4000]
-            }
-
-        # -------------------------------------------------
-        # 2. GET ACTIVE INSTANCES
-        # -------------------------------------------------
-
-        active_status, active_data = capafy_request(
-
-            "GET",
-
-            "/agent/instance",
-
-            params={
-                "status": "active"
-            }
+        return list(
+            dict.fromkeys(
+                found
+            )
         )
 
-        result[
-            "summary"
-        ][
-            "active_instances_http_status"
-        ] = active_status
+    if isinstance(
+        value,
+        (list, tuple)
+    ):
 
-        active_instances = []
+        for item in value:
 
-        if isinstance(
-            active_data,
-            dict
-        ):
-
-            data = active_data.get(
-                "data"
+            found.extend(
+                extract_urls(
+                    item
+                )
             )
 
-            if isinstance(
-                data,
-                dict
-            ):
-
-                instances = data.get(
-                    "instances"
-                )
-
-                if isinstance(
-                    instances,
-                    list
-                ):
-
-                    active_instances = instances
-
-        result[
-            "active_instances"
-        ] = [
-
-            capafy_safe_instance(
-                instance
+        return list(
+            dict.fromkeys(
+                found
             )
-
-            for instance
-            in active_instances
-        ]
-
-        # -------------------------------------------------
-        # 3. FIND CLONECUT INSTANCE
-        # -------------------------------------------------
-
-        for instance in active_instances:
-
-            if not isinstance(
-                instance,
-                dict
-            ):
-
-                continue
-
-            if str(
-                instance.get(
-                    "agentId",
-                    ""
-                )
-            ) == "5133292529":
-
-                result[
-                    "matching_instance"
-                ] = capafy_safe_instance(
-                    instance
-                )
-
-                result[
-                    "summary"
-                ][
-                    "matching_active_instance"
-                ] = True
-
-                break
-
-        # -------------------------------------------------
-        # ABSOLUTE SAFETY FLAGS
-        # -------------------------------------------------
-
-        result[
-            "summary"
-        ][
-            "purchase_created"
-        ] = False
-
-        result[
-            "summary"
-        ][
-            "credits_spent"
-        ] = False
-
-        return jsonify(
-            result
-        ), 200
-
-    except Exception as error:
-
-        log.error(
-            "CAPAFY_CLONECUT_TEST_ERROR=%s",
-            safe_error_text(error),
-            exc_info=True
         )
 
-        return jsonify({
-
-            "ok": False,
-
-            "error": safe_error_text(
-                error
-            ),
-
-            "purchase_created": False,
-
-            "credits_spent": False
-
-        }), 500
+    return found
 
 
 # =========================================================
-# COMMAND RUNNER
+# CAPAFY SSE PARSER
+# =========================================================
+
+def parse_sse_event(
+    raw_event
+):
+
+    raw_event = raw_event.strip()
+
+    if not raw_event:
+
+        return None
+
+    event_name = "message"
+
+    data_lines = []
+
+    for line in raw_event.splitlines():
+
+        line = line.strip(
+            "\r"
+        )
+
+        if line.startswith(
+            "event:"
+        ):
+
+            event_name = (
+                line[
+                    len("event:")
+                :].strip()
+            )
+
+        elif line.startswith(
+            "data:"
+        ):
+
+            data_lines.append(
+                line[
+                    len("data:")
+                :].lstrip()
+            )
+
+    if not data_lines:
+
+        return {
+            "event": event_name,
+            "data": raw_event
+        }
+
+    data_text = "\n".join(
+        data_lines
+    )
+
+    try:
+
+        data = json.loads(
+            data_text
+        )
+
+    except Exception:
+
+        data = data_text
+
+    return {
+        "event": event_name,
+        "data": data
+    }
+
+
+# =========================================================
+# CAPAFY SSE CHAT
+# =========================================================
+
+def capafy_chat(
+    instance_id,
+    content,
+    original_question=None,
+    next_step_plan=None,
+    files=None,
+    timeout=900
+):
+
+    if not instance_id:
+
+        raise RuntimeError(
+            "CAPAFY_INSTANCE_ID is missing"
+        )
+
+    token = os.getenv(
+        "CAPAFY_ACCESS_TOKEN",
+        ""
+    ).strip()
+
+    if not token:
+
+        raise RuntimeError(
+            "CAPAFY_ACCESS_TOKEN is missing"
+        )
+
+    url = (
+        CAPAFY_BASE_URL.rstrip("/")
+        + "/agent/relay/instances/"
+        + instance_id
+        + "/messages"
+    )
+
+    payload = {
+        "content": str(
+            content
+        )
+    }
+
+    if original_question:
+
+        payload[
+            "originalQuestion"
+        ] = str(
+            original_question
+        )
+
+    if next_step_plan:
+
+        payload[
+            "nextStepPlan"
+        ] = str(
+            next_step_plan
+        )
+
+    if files:
+
+        payload[
+            "files"
+        ] = files
+
+    headers = {
+        "Authorization": (
+            f"Bearer {token}"
+        ),
+        "Accept": (
+            "text/event-stream, "
+            "application/json"
+        ),
+        "Content-Type": (
+            "application/json"
+        ),
+        "Cache-Control": "no-cache"
+    }
+
+    log.info(
+        "CAPAFY_CHAT_START instance=%s",
+        instance_id
+    )
+
+    try:
+
+        response = requests.post(
+            url,
+            headers=headers,
+            json=payload,
+            stream=True,
+            timeout=(
+                30,
+                timeout
+            )
+        )
+
+    except Exception as error:
+
+        raise RuntimeError(
+            "Capafy connection failed: "
+            + safe_error_text(error)
+        )
+
+    log.info(
+        "CAPAFY_CHAT_STATUS=%s",
+        response.status_code
+    )
+
+    if response.status_code == 409:
+
+        response.close()
+
+        raise RuntimeError(
+            "CAPAFY_INSTANCE_BUSY"
+        )
+
+    if response.status_code >= 400:
+
+        try:
+
+            error_body = (
+                response.text[:5000]
+            )
+
+        except Exception:
+
+            error_body = ""
+
+        response.close()
+
+        raise RuntimeError(
+            "Capafy chat HTTP "
+            f"{response.status_code}: "
+            f"{error_body}"
+        )
+
+    event_buffer = []
+
+    reply_parts = []
+
+    all_urls = []
+
+    last_event_time = time.time()
+
+    completed = False
+
+    try:
+
+        for raw_line in response.iter_lines(
+            decode_unicode=True
+        ):
+
+            now = time.time()
+
+            if (
+                now - last_event_time
+                > timeout
+            ):
+
+                raise RuntimeError(
+                    "CAPAFY_SSE_TIMEOUT"
+                )
+
+            if raw_line is None:
+
+                continue
+
+            line = str(
+                raw_line
+            )
+
+            if line == "":
+
+                if event_buffer:
+
+                    event = (
+                        parse_sse_event(
+                            "\n".join(
+                                event_buffer
+                            )
+                        )
+                    )
+
+                    event_buffer = []
+
+                    if event:
+
+                        event_data = event.get(
+                            "data"
+                        )
+
+                        event_name = str(
+                            event.get(
+                                "event",
+                                ""
+                            )
+                        ).lower()
+
+                        log.info(
+                            "CAPAFY_SSE_EVENT=%s",
+                            event_name
+                        )
+
+                        urls = extract_urls(
+                            event_data
+                        )
+
+                        all_urls.extend(
+                            urls
+                        )
+
+                        if (
+                            event_name
+                            in [
+                                "reply",
+                                "message",
+                                "result"
+                            ]
+                        ):
+
+                            if isinstance(
+                                event_data,
+                                str
+                            ):
+
+                                reply_parts.append(
+                                    event_data
+                                )
+
+                            elif isinstance(
+                                event_data,
+                                dict
+                            ):
+
+                                for key in [
+                                    "reply",
+                                    "content",
+                                    "message",
+                                    "text",
+                                    "answer"
+                                ]:
+
+                                    value = (
+                                        event_data.get(
+                                            key
+                                        )
+                                    )
+
+                                    if isinstance(
+                                        value,
+                                        str
+                                    ) and value:
+
+                                        reply_parts.append(
+                                            value
+                                        )
+
+                        if event_name in [
+                            "reply",
+                            "completed",
+                            "complete",
+                            "done"
+                        ]:
+
+                            completed = True
+
+                        if event_name == "interrupted":
+
+                            raise RuntimeError(
+                                "CAPAFY_TASK_INTERRUPTED"
+                            )
+
+                        if event_name == "timeout":
+
+                            completed = True
+
+                last_event_time = now
+
+                continue
+
+            event_buffer.append(
+                line
+            )
+
+            last_event_time = now
+
+        if event_buffer:
+
+            event = parse_sse_event(
+                "\n".join(
+                    event_buffer
+                )
+            )
+
+            if event:
+
+                event_data = event.get(
+                    "data"
+                )
+
+                all_urls.extend(
+                    extract_urls(
+                        event_data
+                    )
+                )
+
+                if isinstance(
+                    event_data,
+                    str
+                ):
+
+                    reply_parts.append(
+                        event_data
+                    )
+
+                elif isinstance(
+                    event_data,
+                    dict
+                ):
+
+                    for key in [
+                        "reply",
+                        "content",
+                        "message",
+                        "text",
+                        "answer"
+                    ]:
+
+                        value = (
+                            event_data.get(
+                                key
+                            )
+                        )
+
+                        if isinstance(
+                            value,
+                            str
+                        ) and value:
+
+                            reply_parts.append(
+                                value
+                            )
+
+    finally:
+
+        response.close()
+
+    all_urls = list(
+        dict.fromkeys(
+            all_urls
+        )
+    )
+
+    reply_text = "\n".join(
+        x.strip()
+        for x in reply_parts
+        if str(x).strip()
+    ).strip()
+
+    log.info(
+        "CAPAFY_CHAT_DONE urls=%s reply_chars=%s",
+        len(all_urls),
+        len(reply_text)
+    )
+
+    return {
+        "completed": completed,
+        "reply": reply_text,
+        "urls": all_urls
+    }
+
+
+# =========================================================
+# DOWNLOAD
+# =========================================================
+
+def download_url(
+    url,
+    destination
+):
+
+    log.info(
+        "DOWNLOAD_START url=%s",
+        url[:300]
+    )
+
+    with requests.get(
+        url,
+        stream=True,
+        timeout=600
+    ) as response:
+
+        response.raise_for_status()
+
+        with open(
+            destination,
+            "wb"
+        ) as output:
+
+            for chunk in response.iter_content(
+                chunk_size=1024 * 1024
+            ):
+
+                if chunk:
+
+                    output.write(
+                        chunk
+                    )
+
+    size = os.path.getsize(
+        destination
+    )
+
+    log.info(
+        "DOWNLOAD_DONE size=%s",
+        size
+    )
+
+    return destination
+
+
+# =========================================================
+# VIDEO VALIDATION
 # =========================================================
 
 def run_cmd(
@@ -1509,835 +1024,40 @@ def run_cmd(
 
     except subprocess.TimeoutExpired:
 
-        log.error(
-            "COMMAND_TIMEOUT=%s",
-            " ".join(map(str, cmd))
-        )
-
         raise RuntimeError(
             "Command timed out"
         )
 
     except Exception as error:
 
-        log.error(
-            "COMMAND_EXCEPTION=%s",
-            safe_error_text(error),
-            exc_info=True
+        raise RuntimeError(
+            safe_error_text(error)
         )
-
-        raise
 
     if result.stdout:
 
         log.info(
             "COMMAND_STDOUT=%s",
-            result.stdout[-4000:]
+            result.stdout[-3000:]
         )
 
     if result.stderr:
 
         log.info(
             "COMMAND_STDERR=%s",
-            result.stderr[-4000:]
+            result.stderr[-3000:]
         )
 
     if result.returncode != 0:
 
-        log.error(
-            "COMMAND_ERROR=returncode=%s stderr=%s",
-            result.returncode,
-            result.stderr[-4000:]
-        )
-
         raise RuntimeError(
-            f"Command failed with code {result.returncode}"
+            "Command failed with code "
+            f"{result.returncode}: "
+            f"{result.stderr[-3000:]}"
         )
 
     return result
 
-
-# =========================================================
-# TELEGRAM API
-# =========================================================
-
-def telegram_api(
-    method,
-    payload=None,
-    files=None
-):
-
-    if not BOT_TOKEN:
-
-        log.error(
-            "BOT_TOKEN_MISSING"
-        )
-
-        return None
-
-    url = (
-        "https://api.telegram.org/"
-        f"bot{BOT_TOKEN}/{method}"
-    )
-
-    try:
-
-        response = requests.post(
-            url,
-            data=payload,
-            files=files,
-            timeout=120
-        )
-
-        if not response.ok:
-
-            log.error(
-                "TELEGRAM_API_ERROR "
-                "method=%s status=%s body=%s",
-                method,
-                response.status_code,
-                response.text[:4000]
-            )
-
-            return None
-
-        try:
-
-            return response.json()
-
-        except Exception:
-
-            return None
-
-    except Exception as error:
-
-        log.error(
-            "TELEGRAM_REQUEST_ERROR=%s",
-            safe_error_text(error),
-            exc_info=True
-        )
-
-        return None
-
-
-def send_message(
-    chat_id,
-    text
-):
-
-    return telegram_api(
-        "sendMessage",
-        payload={
-            "chat_id": chat_id,
-            "text": str(text)
-        }
-    )
-
-
-def send_video(
-    chat_id,
-    video_path,
-    caption=None
-):
-
-    log.info(
-        "SEND_VIDEO path=%s",
-        video_path
-    )
-
-    payload = {
-        "chat_id": chat_id
-    }
-
-    if caption:
-
-        payload["caption"] = caption
-
-    try:
-
-        with open(
-            video_path,
-            "rb"
-        ) as video_file:
-
-            return telegram_api(
-                "sendVideo",
-                payload=payload,
-                files={
-                    "video": (
-                        os.path.basename(
-                            video_path
-                        ),
-                        video_file,
-                        "video/mp4"
-                    )
-                }
-            )
-
-    except Exception as error:
-
-        log.error(
-            "SEND_VIDEO_ERROR=%s",
-            safe_error_text(error),
-            exc_info=True
-        )
-
-        return None
-
-
-# =========================================================
-# GROQ JSON EXTRACTION
-# =========================================================
-
-def extract_json_object(raw):
-
-    raw = str(raw).strip()
-
-    raw = re.sub(
-        r"^```(?:json)?",
-        "",
-        raw,
-        flags=re.IGNORECASE
-    )
-
-    raw = re.sub(
-        r"```$",
-        "",
-        raw
-    ).strip()
-
-    try:
-
-        return json.loads(raw)
-
-    except Exception:
-
-        pass
-
-    start = raw.find("{")
-    end = raw.rfind("}")
-
-    if start == -1 or end == -1 or end <= start:
-
-        raise ValueError(
-            "Could not find JSON object in Groq response"
-        )
-
-    candidate = raw[
-        start:end + 1
-    ]
-
-    return json.loads(candidate)
-
-
-# =========================================================
-# GROQ STORYBOARD
-# =========================================================
-
-def create_storyboard(
-    user_idea
-):
-
-    log.info(
-        "PHASE=STORYBOARD_START"
-    )
-
-    if not GROQ_API_KEY:
-
-        raise RuntimeError(
-            "GROQ_API_KEY is missing"
-        )
-
-    client = Groq(
-        api_key=GROQ_API_KEY
-    )
-
-    prompt = f"""
-أنت كاتب سيناريو ومخرج أفلام قصيرة سينمائية.
-
-حوّل فكرة المستخدم إلى فيديو قصير عمودي.
-
-فكرة المستخدم:
-{user_idea}
-
-أخرج JSON فقط.
-
-الشكل:
-
-{{
-  "title": "عنوان قصير",
-  "hook": "جملة افتتاحية قوية",
-  "narration": [
-    "التعليق الصوتي للمشهد الأول",
-    "التعليق الصوتي للمشهد الثاني"
-  ],
-  "cta": "دعوة قصيرة للمتابعة",
-  "scenes": [
-    {{
-      "scene": 1,
-      "prompt": "cinematic English visual prompt",
-      "duration": 5
-    }},
-    {{
-      "scene": 2,
-      "prompt": "cinematic English visual prompt",
-      "duration": 5
-    }}
-  ]
-}}
-
-القواعد:
-
-- عدد المشاهد: {SHOT_COUNT}
-- مدة المشهد تقريبًا {SHOT_DURATION} ثوانٍ.
-- prompts باللغة الإنجليزية.
-- cinematic realistic.
-- الشخصيات يجب أن تبقى متناسقة بين المشاهد.
-- المشاهد يجب أن تكون امتدادًا لبعضها.
-- لا تضع نصوصًا داخل الفيديو.
-- لا شعارات.
-- لا Watermarks.
-- لا تكتب شرحًا خارج JSON.
-- اجعل أول مشهد يحتوي على Hook بصري قوي.
-- اجعل نهاية آخر مشهد تدفع المشاهد لمعرفة ماذا سيحدث بعد ذلك.
-"""
-
-    try:
-
-        response = client.chat.completions.create(
-            model=GROQ_MODEL,
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "You are a professional "
-                        "cinematic director, screenwriter "
-                        "and storyboard designer."
-                    )
-                },
-                {
-                    "role": "user",
-                    "content": prompt
-                }
-            ],
-            temperature=0.7,
-            max_tokens=3000
-        )
-
-        raw = (
-            response
-            .choices[0]
-            .message
-            .content
-            .strip()
-        )
-
-        log.info(
-            "GROQ_RAW_RESPONSE=%s",
-            raw[:10000]
-        )
-
-        data = extract_json_object(
-            raw
-        )
-
-        if not isinstance(
-            data,
-            dict
-        ):
-
-            raise ValueError(
-                "Storyboard is not an object"
-            )
-
-        scenes = data.get(
-            "scenes"
-        )
-
-        if not isinstance(
-            scenes,
-            list
-        ):
-
-            raise ValueError(
-                "scenes is not a list"
-            )
-
-        if not scenes:
-
-            raise ValueError(
-                "No scenes returned"
-            )
-
-        scenes = scenes[
-            :SHOT_COUNT
-        ]
-
-        clean_scenes = []
-
-        for index, scene in enumerate(
-            scenes,
-            start=1
-        ):
-
-            if not isinstance(
-                scene,
-                dict
-            ):
-
-                continue
-
-            prompt_text = str(
-                scene.get(
-                    "prompt",
-                    ""
-                )
-            ).strip()
-
-            if not prompt_text:
-
-                continue
-
-            clean_scenes.append(
-                {
-                    "scene": index,
-                    "prompt": prompt_text,
-                    "duration": SHOT_DURATION
-                }
-            )
-
-        if not clean_scenes:
-
-            raise ValueError(
-                "No valid scenes after validation"
-            )
-
-        data["scenes"] = clean_scenes
-
-        narration = data.get(
-            "narration",
-            []
-        )
-
-        if not isinstance(
-            narration,
-            list
-        ):
-
-            narration = []
-
-        narration = [
-            str(x).strip()
-            for x in narration
-        ]
-
-        while len(narration) < len(
-            clean_scenes
-        ):
-
-            narration.append("")
-
-        data["narration"] = narration[
-            :len(clean_scenes)
-        ]
-
-        cta = str(
-            data.get(
-                "cta",
-                DEFAULT_CTA
-            )
-        ).strip()
-
-        data["cta"] = cta or DEFAULT_CTA
-
-        log.info(
-            "STORYBOARD_OK title=%s scenes=%s",
-            data.get("title"),
-            len(data["scenes"])
-        )
-
-        return data
-
-    except Exception as error:
-
-        log.error(
-            "STORYBOARD_ERROR=%s",
-            safe_error_text(error),
-            exc_info=True
-        )
-
-        raise
-
-
-# =========================================================
-# HUGGING FACE CLIENT
-# =========================================================
-
-def create_hf_client():
-
-    log.info(
-        "HF_CLIENT_CREATE space=%s token=%s",
-        HF_SPACE,
-        bool(HF_TOKEN)
-    )
-
-    if HF_TOKEN:
-
-        return Client(
-            HF_SPACE,
-            token=HF_TOKEN
-        )
-
-    return Client(
-        HF_SPACE
-    )
-
-
-def get_hf_api_dict(
-    client
-):
-
-    log.info(
-        "HF_VIEW_API_START"
-    )
-
-    api = client.view_api(
-        return_format="dict"
-    )
-
-    log.info(
-        "HF_VIEW_API_DONE"
-    )
-
-    return api
-
-
-def get_generate_endpoint(
-    api
-):
-
-    named = api.get(
-        "named_endpoints",
-        {}
-    )
-
-    if "/generate" in named:
-
-        return named["/generate"]
-
-    for name, endpoint in named.items():
-
-        if "generate" in name.lower():
-
-            return endpoint
-
-    raise RuntimeError(
-        "Could not find /generate endpoint"
-    )
-
-
-# =========================================================
-# HF SAFE CHECK
-# =========================================================
-
-def check_hf_space():
-
-    log.info(
-        "PHASE=HF_SAFE_CHECK_START"
-    )
-
-    try:
-
-        client = create_hf_client()
-
-        api = get_hf_api_dict(
-            client
-        )
-
-        endpoint = get_generate_endpoint(
-            api
-        )
-
-        params = endpoint.get(
-            "parameters",
-            []
-        )
-
-        if not params:
-
-            raise RuntimeError(
-                "Generate endpoint has no parameters"
-            )
-
-        log.info(
-            "HF_SAFE_CHECK_OK parameters=%s",
-            len(params)
-        )
-
-        return {
-            "ok": True,
-            "parameter_count": len(params)
-        }
-
-    except Exception as error:
-
-        log.error(
-            "HF_SAFE_CHECK_ERROR=%s",
-            safe_error_text(error),
-            exc_info=True
-        )
-
-        return {
-            "ok": False,
-            "error": safe_error_text(error)
-        }
-
-
-# =========================================================
-# WAN ARGUMENTS
-# =========================================================
-
-def build_wan_arguments(
-    prompt,
-    test_mode=False
-):
-
-    if test_mode:
-
-        width = TEST_GEN_WIDTH
-        height = TEST_GEN_HEIGHT
-        frames = TEST_GEN_FRAMES
-        steps = TEST_GEN_STEPS
-        guidance = TEST_GEN_GUIDANCE
-        seed = TEST_GEN_SEED
-
-        log.info(
-            "WAN_MODE=LOW_COST_TEST"
-        )
-
-    else:
-
-        width = GEN_WIDTH
-        height = GEN_HEIGHT
-        frames = GEN_FRAMES
-        steps = GEN_STEPS
-        guidance = GEN_GUIDANCE
-        seed = GEN_SEED
-
-        log.info(
-            "WAN_MODE=PRODUCTION"
-        )
-
-    args = [
-
-        "wan-base",
-
-        prompt,
-
-        (
-            "blurry, low quality, distorted, "
-            "deformed, bad anatomy, watermark, "
-            "text, logo"
-        ),
-
-        width,
-        height,
-        frames,
-        steps,
-        guidance,
-        seed,
-        GEN_PARAM_10,
-        GEN_PARAM_11
-    ]
-
-    for index, value in enumerate(
-        args,
-        start=1
-    ):
-
-        if index == 2:
-
-            log.info(
-                "WAN_ARG_%s=%s",
-                index,
-                str(value)[:1500]
-            )
-
-        else:
-
-            log.info(
-                "WAN_ARG_%s=%r",
-                index,
-                value
-            )
-
-    return args
-
-
-# =========================================================
-# EXTRACT VIDEO SOURCE
-# =========================================================
-
-def extract_video_source(
-    result
-):
-
-    log.info(
-        "HF_RESULT_TYPE=%s",
-        type(result).__name__
-    )
-
-    log.info(
-        "HF_RESULT_REPR=%s",
-        repr(result)[:6000]
-    )
-
-    if isinstance(
-        result,
-        str
-    ):
-
-        return result
-
-    if isinstance(
-        result,
-        dict
-    ):
-
-        for key in [
-            "video",
-            "path",
-            "url",
-            "value",
-            "data",
-            "file"
-        ]:
-
-            if key not in result:
-
-                continue
-
-            value = result[key]
-
-            if isinstance(
-                value,
-                str
-            ):
-
-                return value
-
-            if isinstance(
-                value,
-                dict
-            ):
-
-                nested = extract_video_source(
-                    value
-                )
-
-                if nested:
-
-                    return nested
-
-        for value in result.values():
-
-            if isinstance(
-                value,
-                str
-            ):
-
-                if (
-                    value.startswith("http://")
-                    or
-                    value.startswith("https://")
-                    or
-                    os.path.exists(value)
-                ):
-
-                    return value
-
-            if isinstance(
-                value,
-                dict
-            ):
-
-                nested = extract_video_source(
-                    value
-                )
-
-                if nested:
-
-                    return nested
-
-    if isinstance(
-        result,
-        (list, tuple)
-    ):
-
-        for item in result:
-
-            source = extract_video_source(
-                item
-            )
-
-            if source:
-
-                return source
-
-    return None
-
-
-# =========================================================
-# DOWNLOAD
-# =========================================================
-
-def download_url(
-    url,
-    destination
-):
-
-    log.info(
-        "HF_DOWNLOAD_START"
-    )
-
-    with requests.get(
-        url,
-        stream=True,
-        timeout=300
-    ) as response:
-
-        response.raise_for_status()
-
-        with open(
-            destination,
-            "wb"
-        ) as output:
-
-            for chunk in response.iter_content(
-                chunk_size=1024 * 1024
-            ):
-
-                if chunk:
-
-                    output.write(
-                        chunk
-                    )
-
-    size = os.path.getsize(
-        destination
-    )
-
-    log.info(
-        "HF_DOWNLOAD_DONE size=%s",
-        size
-    )
-
-    return destination
-
-
-# =========================================================
-# VIDEO VALIDATION
-# =========================================================
 
 def validate_video(
     path
@@ -2361,31 +1081,34 @@ def validate_video(
             f"Video file too small: {size}"
         )
 
-    try:
+    result = run_cmd(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            (
+                "default="
+                "noprint_wrappers=1:"
+                "nokey=1"
+            ),
+            path
+        ],
+        timeout=60
+    )
 
-        result = run_cmd(
-            [
-                "ffprobe",
-                "-v",
-                "error",
-                "-show_entries",
-                "format=duration",
-                "-of",
-                "default=noprint_wrappers=1:nokey=1",
-                path
-            ],
-            timeout=60
-        )
+    try:
 
         duration = float(
             result.stdout.strip()
         )
 
-    except Exception as error:
+    except Exception:
 
         raise RuntimeError(
-            "Video validation failed: "
-            + safe_error_text(error)
+            "Could not read video duration"
         )
 
     if duration <= 0:
@@ -2407,206 +1130,611 @@ def validate_video(
 
 
 # =========================================================
-# GENERATE AI VIDEO
+# GROQ JSON
 # =========================================================
 
-def generate_ai_video_once(
-    prompt,
-    output_dir,
-    test_mode=False
+def extract_json_object(
+    raw
 ):
 
-    check = check_hf_space()
+    raw = str(
+        raw
+    ).strip()
 
-    if not check["ok"]:
-
-        raise RuntimeError(
-            "HF_SAFE_CHECK_FAILED: "
-            + check["error"]
-        )
-
-    client = create_hf_client()
-
-    args = build_wan_arguments(
-        prompt,
-        test_mode=test_mode
+    raw = re.sub(
+        r"^```(?:json)?",
+        "",
+        raw,
+        flags=re.IGNORECASE
     )
 
-    log.info(
-        "HF_PREDICT_START"
-    )
+    raw = re.sub(
+        r"```$",
+        "",
+        raw
+    ).strip()
 
     try:
 
-        result = client.predict(
-            *args,
-            api_name="/generate"
+        return json.loads(
+            raw
         )
 
-    except Exception as error:
+    except Exception:
 
-        if is_hf_quota_error(error):
+        pass
 
-            raise RuntimeError(
-                "HF_QUOTA_EXHAUSTED: "
-                + safe_error_text(error)
-            )
-
-        raise
-
-    log.info(
-        "HF_PREDICT_SUCCESS"
+    start = raw.find(
+        "{"
     )
 
-    source = extract_video_source(
-        result
-    )
-
-    if not source:
-
-        raise RuntimeError(
-            "HF returned no video source"
-        )
-
-    destination = os.path.join(
-        output_dir,
-        f"scene_{uuid.uuid4().hex}.mp4"
+    end = raw.rfind(
+        "}"
     )
 
     if (
-        isinstance(source, str)
-        and
-        (
-            source.startswith("http://")
-            or
-            source.startswith("https://")
-        )
+        start == -1
+        or
+        end == -1
+        or
+        end <= start
     ):
 
-        download_url(
-            source,
-            destination
+        raise ValueError(
+            "Could not find JSON object"
         )
 
-    elif (
-        isinstance(source, str)
-        and
-        os.path.exists(source)
-    ):
-
-        shutil.copy2(
-            source,
-            destination
-        )
-
-    else:
-
-        raise RuntimeError(
-            "Invalid HF video source: "
-            + str(source)
-        )
-
-    validate_video(
-        destination
+    return json.loads(
+        raw[
+            start:end + 1
+        ]
     )
 
-    return destination
 
+# =========================================================
+# GROQ STORYBOARD
+# =========================================================
 
-def generate_ai_video(
-    prompt,
-    output_dir,
-    test_mode=False
+def create_storyboard(
+    user_idea
 ):
 
-    log.info(
-        "=" * 80
+    if not GROQ_API_KEY:
+
+        raise RuntimeError(
+            "GROQ_API_KEY is missing"
+        )
+
+    client = Groq(
+        api_key=GROQ_API_KEY
+    )
+
+    prompt = f"""
+أنت كاتب ومخرج محتوى أطفال محترف.
+
+حوّل فكرة المستخدم إلى فيديو قصير
+عمودي مناسب للأطفال من عمر 4 إلى 8 سنوات.
+
+فكرة المستخدم:
+{user_idea}
+
+نريد شخصيات ثابتة بين المشاهد.
+اجعل القصة بسيطة، ممتعة، آمنة، واضحة بصريًا،
+وبها بداية قوية جدًا.
+
+أخرج JSON فقط بهذا الشكل:
+
+{{
+  "title": "عنوان قصير",
+  "hook": "Hook",
+  "narration": [
+    "تعليق صوتي للمشهد الأول",
+    "تعليق صوتي للمشهد الثاني"
+  ],
+  "cta": "دعوة قصيرة",
+  "scenes": [
+    {{
+      "scene": 1,
+      "prompt": "English cinematic video prompt",
+      "duration": 5
+    }},
+    {{
+      "scene": 2,
+      "prompt": "English cinematic video prompt",
+      "duration": 5
+    }}
+  ]
+}}
+
+القواعد:
+
+- عدد المشاهد: {SHOT_COUNT}
+- مدة كل مشهد: {SHOT_DURATION} ثوانٍ تقريبًا.
+- prompts باللغة الإنجليزية.
+- الشخصيات يجب أن تبقى متناسقة.
+- نفس الملابس والألوان والشكل بين المشاهد.
+- أسلوب بصري سينمائي عالي الجودة.
+- مناسب للأطفال.
+- لا عنف دموي.
+- لا رعب.
+- لا محتوى جنسي.
+- لا شعارات.
+- لا Watermarks.
+- لا نصوص مكتوبة داخل الفيديو.
+- أول مشهد Hook بصري قوي.
+- آخر مشهد فيه نهاية لطيفة أو Hook للحلقة القادمة.
+- لا تكتب أي شيء خارج JSON.
+"""
+
+    response = client.chat.completions.create(
+        model=GROQ_MODEL,
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "You are an expert children's "
+                    "short-form video director."
+                )
+            },
+            {
+                "role": "user",
+                "content": prompt
+            }
+        ],
+        temperature=0.7,
+        max_tokens=3000
+    )
+
+    raw = (
+        response
+        .choices[0]
+        .message
+        .content
+        .strip()
     )
 
     log.info(
-        "PHASE=HF_VIDEO_GENERATION_START"
+        "GROQ_RESPONSE=%s",
+        raw[:8000]
+    )
+
+    data = extract_json_object(
+        raw
+    )
+
+    if not isinstance(
+        data,
+        dict
+    ):
+
+        raise RuntimeError(
+            "Storyboard is not an object"
+        )
+
+    scenes = data.get(
+        "scenes"
+    )
+
+    if not isinstance(
+        scenes,
+        list
+    ):
+
+        raise RuntimeError(
+            "Storyboard scenes missing"
+        )
+
+    clean_scenes = []
+
+    for index, scene in enumerate(
+        scenes[
+            :SHOT_COUNT
+        ],
+        start=1
+    ):
+
+        if not isinstance(
+            scene,
+            dict
+        ):
+
+            continue
+
+        prompt = str(
+            scene.get(
+                "prompt",
+                ""
+            )
+        ).strip()
+
+        if not prompt:
+
+            continue
+
+        clean_scenes.append(
+            {
+                "scene": index,
+                "prompt": prompt,
+                "duration": SHOT_DURATION
+            }
+        )
+
+    if not clean_scenes:
+
+        raise RuntimeError(
+            "No valid scenes"
+        )
+
+    data[
+        "scenes"
+    ] = clean_scenes
+
+    narration = data.get(
+        "narration",
+        []
+    )
+
+    if not isinstance(
+        narration,
+        list
+    ):
+
+        narration = []
+
+    narration = [
+        str(
+            item
+        ).strip()
+        for item in narration
+    ]
+
+    while len(
+        narration
+    ) < len(
+        clean_scenes
+    ):
+
+        narration.append(
+            ""
+        )
+
+    data[
+        "narration"
+    ] = narration[
+        :len(
+            clean_scenes
+        )
+    ]
+
+    cta = str(
+        data.get(
+            "cta",
+            DEFAULT_CTA
+        )
+    ).strip()
+
+    data[
+        "cta"
+    ] = (
+        cta
+        or
+        DEFAULT_CTA
+    )
+
+    return data
+
+
+# =========================================================
+# CLONECUT PROMPT
+# =========================================================
+
+def build_clonecut_prompt(
+    storyboard
+):
+
+    title = str(
+        storyboard.get(
+            "title",
+            ""
+        )
+    ).strip()
+
+    hook = str(
+        storyboard.get(
+            "hook",
+            ""
+        )
+    ).strip()
+
+    scenes = storyboard.get(
+        "scenes",
+        []
+    )
+
+    lines = []
+
+    lines.append(
+        "Create a vertical short-form video."
+    )
+
+    lines.append(
+        "Target platform: TikTok / Reels / Shorts."
+    )
+
+    lines.append(
+        "Aspect ratio: 9:16."
+    )
+
+    lines.append(
+        "Target audience: children ages 4-8."
+    )
+
+    lines.append(
+        "Keep the characters visually consistent."
+    )
+
+    lines.append(
+        "No logos, no watermark, no written text."
+    )
+
+    lines.append(
+        "Safe, colorful, family-friendly content."
+    )
+
+    if title:
+
+        lines.append(
+            f"TITLE: {title}"
+        )
+
+    if hook:
+
+        lines.append(
+            f"HOOK: {hook}"
+        )
+
+    lines.append(
+        ""
+    )
+
+    lines.append(
+        "SCENES:"
+    )
+
+    for index, scene in enumerate(
+        scenes,
+        start=1
+    ):
+
+        prompt = str(
+            scene.get(
+                "prompt",
+                ""
+            )
+        ).strip()
+
+        lines.append(
+            f"Scene {index} "
+            f"({SHOT_DURATION} seconds):"
+        )
+
+        lines.append(
+            prompt
+        )
+
+        lines.append(
+            ""
+        )
+
+    lines.append(
+        "Generate the finished video output."
+    )
+
+    lines.append(
+        "Return the generated video file."
+    )
+
+    return "\n".join(
+        lines
+    )
+
+
+# =========================================================
+# CLONECUT GENERATION
+# =========================================================
+
+def generate_with_clonecut(
+    storyboard,
+    output_dir
+):
+
+    instance_id = (
+        find_clonecut_instance()
+    )
+
+    if not instance_id:
+
+        raise RuntimeError(
+            "NO_CLONECUT_INSTANCE\n"
+            "CloneCut is not active yet. "
+            "Purchase/activate CloneCut first, "
+            "then add CAPAFY_INSTANCE_ID to Render."
+        )
+
+    prompt = build_clonecut_prompt(
+        storyboard
     )
 
     log.info(
-        "HF_PROMPT=%s",
-        prompt
-    )
-
-    log.info(
-        "HF_TEST_MODE=%s",
-        test_mode
-    )
-
-    ensure_dir(
-        output_dir
+        "CLONECUT_PROMPT=%s",
+        prompt[:10000]
     )
 
     last_error = None
 
     for attempt in range(
         1,
-        MAX_VIDEO_RETRIES + 1
+        MAX_CAPAFY_RETRIES + 1
     ):
-
-        log.info(
-            "HF_GENERATION_ATTEMPT=%s/%s",
-            attempt,
-            MAX_VIDEO_RETRIES
-        )
 
         try:
 
-            result = generate_ai_video_once(
-                prompt,
-                output_dir,
-                test_mode=test_mode
+            result = capafy_chat(
+                instance_id=instance_id,
+                content=prompt,
+                original_question=(
+                    "Create a short children's "
+                    "vertical video from this idea."
+                ),
+                next_step_plan=(
+                    "Return the generated video "
+                    "file when finished."
+                ),
+                timeout=900
+            )
+
+            urls = result.get(
+                "urls",
+                []
+            )
+
+            reply = result.get(
+                "reply",
+                ""
             )
 
             log.info(
-                "PHASE=HF_VIDEO_GENERATION_DONE"
+                "CLONECUT_REPLY=%s",
+                reply[:5000]
             )
 
-            return result
+            if not urls:
+
+                # Sometimes the SSE response
+                # contains the result metadata
+                # but the final file appears
+                # in message history.
+                try:
+
+                    history = (
+                        get_instance_messages(
+                            instance_id
+                        )
+                    )
+
+                    history_urls = (
+                        extract_urls(
+                            history
+                        )
+                    )
+
+                    urls.extend(
+                        history_urls
+                    )
+
+                except Exception as history_error:
+
+                    log.warning(
+                        "HISTORY_CHECK_FAILED=%s",
+                        safe_error_text(
+                            history_error
+                        )
+                    )
+
+            urls = list(
+                dict.fromkeys(
+                    urls
+                )
+            )
+
+            if not urls:
+
+                raise RuntimeError(
+                    "CloneCut finished without "
+                    "returning a video URL.\n"
+                    + reply[:2000]
+                )
+
+            # Prefer video-looking URLs.
+            video_urls = []
+
+            for url in urls:
+
+                lower = url.lower()
+
+                if any(
+                    ext in lower
+                    for ext in [
+                        ".mp4",
+                        ".mov",
+                        ".webm",
+                        ".m4v"
+                    ]
+                ):
+
+                    video_urls.append(
+                        url
+                    )
+
+            selected_url = (
+                video_urls[0]
+                if video_urls
+                else urls[0]
+            )
+
+            destination = os.path.join(
+                output_dir,
+                "clonecut_video.mp4"
+            )
+
+            download_url(
+                selected_url,
+                destination
+            )
+
+            validate_video(
+                destination
+            )
+
+            log.info(
+                "CLONECUT_VIDEO_READY=%s",
+                destination
+            )
+
+            return destination
 
         except Exception as error:
 
             last_error = error
 
-            error_text = safe_error_text(
-                error
+            error_text = (
+                safe_error_text(
+                    error
+                )
             )
 
             log.error(
-                "HF_GENERATION_ATTEMPT_ERROR=%s",
+                "CLONECUT_ATTEMPT_%s_ERROR=%s",
+                attempt,
                 error_text,
                 exc_info=True
             )
 
-            if is_hf_quota_error(
-                error
+            if (
+                "CAPAFY_INSTANCE_BUSY"
+                in error_text
             ):
 
-                log.error(
-                    "HF_QUOTA_NO_RETRY"
-                )
+                raise
 
-                break
-
-            if attempt < MAX_VIDEO_RETRIES:
-
-                wait_seconds = attempt * 3
-
-                log.info(
-                    "HF_RETRY_WAIT=%s",
-                    wait_seconds
-                )
+            if attempt < MAX_CAPAFY_RETRIES:
 
                 time.sleep(
-                    wait_seconds
+                    attempt * 3
                 )
 
     raise RuntimeError(
-        "HF_GENERATION_FAILED: "
+        "CLONECUT_GENERATION_FAILED: "
         + safe_error_text(
             last_error
         )
@@ -2614,17 +1742,13 @@ def generate_ai_video(
 
 
 # =========================================================
-# VIDEO NORMALIZE
+# NORMALIZE VIDEO
 # =========================================================
 
 def normalize_video(
     input_path,
     output_path
 ):
-
-    log.info(
-        "PHASE=VIDEO_NORMALIZE_START"
-    )
 
     run_cmd(
         [
@@ -2660,106 +1784,11 @@ def normalize_video(
 
             output_path
         ],
-        timeout=600
+        timeout=900
     )
 
     validate_video(
         output_path
-    )
-
-    log.info(
-        "PHASE=VIDEO_NORMALIZE_DONE"
-    )
-
-    return output_path
-
-
-# =========================================================
-# CONCAT VIDEOS
-# =========================================================
-
-def concat_videos(
-    video_paths,
-    output_path
-):
-
-    if not video_paths:
-
-        raise RuntimeError(
-            "No videos to concatenate"
-        )
-
-    log.info(
-        "PHASE=VIDEO_CONCAT_START count=%s",
-        len(video_paths)
-    )
-
-    list_file = (
-        output_path
-        + ".txt"
-    )
-
-    with open(
-        list_file,
-        "w",
-        encoding="utf-8"
-    ) as f:
-
-        for path in video_paths:
-
-            absolute = os.path.abspath(
-                path
-            )
-
-            escaped = absolute.replace(
-                "'",
-                "'\\''"
-            )
-
-            f.write(
-                f"file '{escaped}'\n"
-            )
-
-    try:
-
-        run_cmd(
-            [
-                "ffmpeg",
-                "-y",
-                "-f",
-                "concat",
-                "-safe",
-                "0",
-                "-i",
-                list_file,
-                "-c:v",
-                "libx264",
-                "-preset",
-                "veryfast",
-                "-pix_fmt",
-                "yuv420p",
-                "-an",
-                output_path
-            ],
-            timeout=900
-        )
-
-    finally:
-
-        if os.path.exists(
-            list_file
-        ):
-
-            os.remove(
-                list_file
-            )
-
-    validate_video(
-        output_path
-    )
-
-    log.info(
-        "PHASE=VIDEO_CONCAT_DONE"
     )
 
     return output_path
@@ -2797,29 +1826,12 @@ def generate_tts(
 
         text = " "
 
-    log.info(
-        "PHASE=TTS_START text=%s",
-        text
+    asyncio.run(
+        _tts(
+            text,
+            output_path
+        )
     )
-
-    try:
-
-        asyncio.run(
-            _tts(
-                text,
-                output_path
-            )
-        )
-
-    except Exception as error:
-
-        log.error(
-            "TTS_ERROR=%s",
-            safe_error_text(error),
-            exc_info=True
-        )
-
-        raise
 
     if not os.path.exists(
         output_path
@@ -2829,20 +1841,13 @@ def generate_tts(
             "TTS file was not created"
         )
 
-    size = os.path.getsize(
+    if os.path.getsize(
         output_path
-    )
-
-    if size < 100:
+    ) < 100:
 
         raise RuntimeError(
             "TTS file is empty"
         )
-
-    log.info(
-        "PHASE=TTS_DONE size=%s",
-        size
-    )
 
     return output_path
 
@@ -2863,22 +1868,18 @@ def get_duration(
             "-show_entries",
             "format=duration",
             "-of",
-            "default=noprint_wrappers=1:nokey=1",
+            (
+                "default="
+                "noprint_wrappers=1:"
+                "nokey=1"
+            ),
             path
         ],
         timeout=60
     )
 
-    value = result.stdout.strip()
-
-    if not value:
-
-        raise RuntimeError(
-            "Could not read duration"
-        )
-
     return float(
-        value
+        result.stdout.strip()
     )
 
 
@@ -2906,7 +1907,7 @@ def concat_audio(
         list_file,
         "w",
         encoding="utf-8"
-    ) as f:
+    ) as file:
 
         for path in audio_paths:
 
@@ -2919,7 +1920,7 @@ def concat_audio(
                 "'\\''"
             )
 
-            f.write(
+            file.write(
                 f"file '{escaped}'\n"
             )
 
@@ -2958,7 +1959,7 @@ def concat_audio(
 
 
 # =========================================================
-# CREATE SILENT AUDIO
+# SILENCE
 # =========================================================
 
 def create_silence(
@@ -2994,7 +1995,7 @@ def create_silence(
 
 
 # =========================================================
-# MUX
+# MUX AUDIO
 # =========================================================
 
 def mux_audio(
@@ -3003,22 +2004,10 @@ def mux_audio(
     output_path
 ):
 
-    log.info(
-        "PHASE=MUX_START"
-    )
-
-    video_duration = get_duration(
-        video_path
-    )
-
-    audio_duration = get_duration(
-        audio_path
-    )
-
-    log.info(
-        "MUX_DURATIONS video=%.3f audio=%.3f",
-        video_duration,
-        audio_duration
+    video_duration = (
+        get_duration(
+            video_path
+        )
     )
 
     run_cmd(
@@ -3062,10 +2051,6 @@ def mux_audio(
         output_path
     )
 
-    log.info(
-        "PHASE=MUX_DONE"
-    )
-
     return output_path
 
 
@@ -3079,22 +2064,29 @@ def format_srt_time(
 
     total_ms = int(
         round(
-            float(seconds) * 1000
+            float(seconds)
+            * 1000
         )
     )
 
-    hours = total_ms // 3600000
+    hours = (
+        total_ms
+        // 3600000
+    )
 
     minutes = (
-        total_ms % 3600000
+        total_ms
+        % 3600000
     ) // 60000
 
     secs = (
-        total_ms % 60000
+        total_ms
+        % 60000
     ) // 1000
 
     milliseconds = (
-        total_ms % 1000
+        total_ms
+        % 1000
     )
 
     return (
@@ -3111,14 +2103,13 @@ def create_srt(
 ):
 
     current = 0.0
-
     subtitle_index = 1
 
     with open(
         output_path,
         "w",
         encoding="utf-8"
-    ) as f:
+    ) as file:
 
         for item in items:
 
@@ -3140,7 +2131,6 @@ def create_srt(
             )
 
             start = current
-
             end = (
                 current
                 + duration
@@ -3148,16 +2138,17 @@ def create_srt(
 
             if text:
 
-                f.write(
+                file.write(
                     f"{subtitle_index}\n"
                 )
 
-                f.write(
-                    f"{format_srt_time(start)} --> "
+                file.write(
+                    f"{format_srt_time(start)}"
+                    " --> "
                     f"{format_srt_time(end)}\n"
                 )
 
-                f.write(
+                file.write(
                     text
                     + "\n\n"
                 )
@@ -3170,7 +2161,7 @@ def create_srt(
 
 
 # =========================================================
-# CAPTIONS
+# BURN CAPTIONS
 # =========================================================
 
 def burn_captions(
@@ -3178,10 +2169,6 @@ def burn_captions(
     srt_path,
     output_path
 ):
-
-    log.info(
-        "PHASE=CAPTIONS_START"
-    )
 
     subtitle_file = (
         os.path.abspath(
@@ -3244,10 +2231,6 @@ def burn_captions(
         output_path
     )
 
-    log.info(
-        "PHASE=CAPTIONS_DONE"
-    )
-
     return output_path
 
 
@@ -3264,39 +2247,25 @@ def create_reel(
     )
 
     log.info(
-        "=" * 80
-    )
-
-    log.info(
-        "PHASE=CREATE_REEL_START"
-    )
-
-    log.info(
-        "WORK_DIR=%s",
+        "CREATE_REEL_START work_dir=%s",
         work_dir
     )
 
     try:
 
-        storyboard = create_storyboard(
-            user_idea
-        )
+        # -------------------------------------------------
+        # 1. STORY
+        # -------------------------------------------------
 
-        scenes = storyboard[
-            "scenes"
-        ]
-
-        narration = storyboard.get(
-            "narration",
-            []
-        )
-
-        cta = str(
-            storyboard.get(
-                "cta",
-                DEFAULT_CTA
+        storyboard = (
+            create_storyboard(
+                user_idea
             )
-        ).strip()
+        )
+
+        # -------------------------------------------------
+        # 2. CLONECUT
+        # -------------------------------------------------
 
         raw_dir = ensure_dir(
             os.path.join(
@@ -3305,67 +2274,30 @@ def create_reel(
             )
         )
 
-        normalized_dir = ensure_dir(
-            os.path.join(
-                work_dir,
-                "normalized"
+        raw_video = (
+            generate_with_clonecut(
+                storyboard,
+                raw_dir
             )
         )
 
-        normalized_videos = []
+        # -------------------------------------------------
+        # 3. NORMALIZE
+        # -------------------------------------------------
 
-        for index, scene in enumerate(
-            scenes,
-            start=1
-        ):
-
-            log.info(
-                "SCENE_%s_START",
-                index
-            )
-
-            prompt = str(
-                scene.get(
-                    "prompt",
-                    ""
-                )
-            ).strip()
-
-            if not prompt:
-
-                raise RuntimeError(
-                    f"Scene {index} prompt is empty"
-                )
-
-            raw_video = generate_ai_video(
-                prompt,
-                raw_dir,
-                test_mode=False
-            )
-
-            normalized = os.path.join(
-                normalized_dir,
-                f"scene_{index}.mp4"
-            )
-
-            normalize_video(
-                raw_video,
-                normalized
-            )
-
-            normalized_videos.append(
-                normalized
-            )
-
-        concat_video = os.path.join(
+        normalized = os.path.join(
             work_dir,
-            "video_concat.mp4"
+            "normalized.mp4"
         )
 
-        concat_videos(
-            normalized_videos,
-            concat_video
+        normalize_video(
+            raw_video,
+            normalized
         )
+
+        # -------------------------------------------------
+        # 4. TTS
+        # -------------------------------------------------
 
         audio_dir = ensure_dir(
             os.path.join(
@@ -3374,29 +2306,27 @@ def create_reel(
             )
         )
 
-        audio_files = []
-        subtitle_items = []
+        narration = (
+            storyboard.get(
+                "narration",
+                []
+            )
+        )
 
-        for index, scene in enumerate(
-            scenes,
+        audio_files = []
+
+        for index, text in enumerate(
+            narration,
             start=1
         ):
 
-            if index - 1 < len(
-                narration
-            ):
+            text = str(
+                text
+            ).strip()
 
-                narration_text = str(
-                    narration[index - 1]
-                ).strip()
+            if not text:
 
-            else:
-
-                narration_text = ""
-
-            if not narration_text:
-
-                narration_text = " "
+                text = " "
 
             audio_path = os.path.join(
                 audio_dir,
@@ -3404,17 +2334,7 @@ def create_reel(
             )
 
             generate_tts(
-                narration_text,
-                audio_path
-            )
-
-            video_duration = get_duration(
-                normalized_videos[
-                    index - 1
-                ]
-            )
-
-            audio_duration = get_duration(
+                text,
                 audio_path
             )
 
@@ -3422,18 +2342,20 @@ def create_reel(
                 audio_path
             )
 
-            subtitle_items.append(
-                {
-                    "text": narration_text,
-                    "duration": video_duration
-                }
+        if not audio_files:
+
+            audio_path = os.path.join(
+                audio_dir,
+                "voice.mp3"
             )
 
-            log.info(
-                "SCENE_AUDIO_%s video=%.3f audio=%.3f",
-                index,
-                video_duration,
-                audio_duration
+            generate_tts(
+                " ",
+                audio_path
+            )
+
+            audio_files.append(
+                audio_path
             )
 
         audio_concat = os.path.join(
@@ -3446,29 +2368,32 @@ def create_reel(
             audio_concat
         )
 
-        video_duration = get_duration(
-            concat_video
+        # -------------------------------------------------
+        # 5. FIT AUDIO
+        # -------------------------------------------------
+
+        video_duration = (
+            get_duration(
+                normalized
+            )
         )
 
-        audio_duration = get_duration(
-            audio_concat
-        )
-
-        log.info(
-            "FINAL_AV_LENGTH video=%.3f audio=%.3f",
-            video_duration,
-            audio_duration
+        audio_duration = (
+            get_duration(
+                audio_concat
+            )
         )
 
         if audio_duration < video_duration:
 
             silence_path = os.path.join(
                 audio_dir,
-                "padding_silence.m4a"
+                "silence.m4a"
             )
 
             create_silence(
-                video_duration - audio_duration,
+                video_duration
+                - audio_duration,
                 silence_path
             )
 
@@ -3485,16 +2410,13 @@ def create_reel(
                 padded_audio
             )
 
-            audio_concat = padded_audio
-
-        if cta:
-
-            subtitle_items.append(
-                {
-                    "text": "",
-                    "duration": 0
-                }
+            audio_concat = (
+                padded_audio
             )
+
+        # -------------------------------------------------
+        # 6. MUX
+        # -------------------------------------------------
 
         muxed = os.path.join(
             work_dir,
@@ -3502,10 +2424,53 @@ def create_reel(
         )
 
         mux_audio(
-            concat_video,
+            normalized,
             audio_concat,
             muxed
         )
+
+        # -------------------------------------------------
+        # 7. CAPTIONS
+        # -------------------------------------------------
+
+        subtitle_items = []
+
+        if isinstance(
+            narration,
+            list
+        ):
+
+            scene_count = len(
+                storyboard.get(
+                    "scenes",
+                    []
+                )
+            )
+
+            per_scene_duration = (
+                video_duration
+                / max(
+                    1,
+                    scene_count
+                )
+            )
+
+            for text in narration:
+
+                text = str(
+                    text
+                ).strip()
+
+                if text:
+
+                    subtitle_items.append(
+                        {
+                            "text": text,
+                            "duration": (
+                                per_scene_duration
+                            )
+                        }
+                    )
 
         srt = os.path.join(
             work_dir,
@@ -3522,32 +2487,28 @@ def create_reel(
             "final.mp4"
         )
 
-        burn_captions(
-            muxed,
-            srt,
-            final
-        )
+        if subtitle_items:
 
-        if not os.path.exists(
-            final
-        ):
+            burn_captions(
+                muxed,
+                srt,
+                final
+            )
 
-            raise RuntimeError(
-                "Final MP4 missing"
+        else:
+
+            shutil.copy2(
+                muxed,
+                final
             )
 
         validate_video(
             final
         )
 
-        size = os.path.getsize(
-            final
-        )
-
-        log.info(
-            "CREATE_REEL_FINAL_SIZE=%s",
-            size
-        )
+        # -------------------------------------------------
+        # 8. PERSIST
+        # -------------------------------------------------
 
         persistent = os.path.join(
             tempfile.gettempdir(),
@@ -3562,20 +2523,11 @@ def create_reel(
         )
 
         log.info(
-            "PHASE=CREATE_REEL_DONE"
+            "CREATE_REEL_DONE path=%s",
+            persistent
         )
 
         return persistent
-
-    except Exception as error:
-
-        log.error(
-            "CREATE_REEL_ERROR=%s",
-            safe_error_text(error),
-            exc_info=True
-        )
-
-        raise
 
     finally:
 
@@ -3586,99 +2538,97 @@ def create_reel(
 
 
 # =========================================================
-# HF TEST 3
+# TELEGRAM
 # =========================================================
 
-def run_hf_test3():
+def telegram_api(
+    method,
+    payload=None,
+    files=None
+):
 
-    return check_hf_space()
+    if not BOT_TOKEN:
 
+        raise RuntimeError(
+            "BOT_TOKEN is missing"
+        )
 
-# =========================================================
-# HF TEST 4
-# =========================================================
-
-def run_hf_test4():
-
-    client = create_hf_client()
-
-    api = get_hf_api_dict(
-        client
+    url = (
+        "https://api.telegram.org/"
+        f"bot{BOT_TOKEN}/{method}"
     )
 
-    endpoint = get_generate_endpoint(
-        api
+    response = requests.post(
+        url,
+        data=payload,
+        files=files,
+        timeout=300
     )
 
-    params = endpoint.get(
-        "parameters",
-        []
-    )
+    if not response.ok:
 
-    return params
-
-
-# =========================================================
-# HF TEST 5
-# =========================================================
-
-def run_hf_test():
-
-    test_dir = tempfile.mkdtemp(
-        prefix="hf_test_"
-    )
-
-    prompt = (
-        "A cinematic realistic robot standing alone "
-        "in a dark futuristic laboratory, slowly looking "
-        "toward the camera, subtle natural body movement, "
-        "dramatic cinematic lighting, photorealistic "
-        "moving video"
-    )
+        raise RuntimeError(
+            "Telegram API "
+            f"{response.status_code}: "
+            f"{response.text[:3000]}"
+        )
 
     try:
 
-        video = generate_ai_video(
-            prompt,
-            test_dir,
-            test_mode=True
-        )
+        return response.json()
 
-        info = validate_video(
-            video
-        )
+    except Exception:
 
-        duration = info[
-            "duration"
-        ]
+        return None
 
-        size = info[
-            "size"
-        ]
 
-        persistent = os.path.join(
-            tempfile.gettempdir(),
-            "hf_test_"
-            + uuid.uuid4().hex
-            + ".mp4"
-        )
+def send_message(
+    chat_id,
+    text
+):
 
-        shutil.copy2(
-            video,
-            persistent
-        )
+    return telegram_api(
+        "sendMessage",
+        payload={
+            "chat_id": chat_id,
+            "text": str(text)
+        }
+    )
 
-        return (
-            persistent,
-            duration,
-            size
-        )
 
-    finally:
+def send_video(
+    chat_id,
+    video_path,
+    caption=None
+):
 
-        shutil.rmtree(
-            test_dir,
-            ignore_errors=True
+    payload = {
+        "chat_id": chat_id
+    }
+
+    if caption:
+
+        payload[
+            "caption"
+        ] = caption
+
+    with open(
+        video_path,
+        "rb"
+    ) as video_file:
+
+        return telegram_api(
+            "sendVideo",
+            payload=payload,
+            files={
+                "video": (
+                    os.path.basename(
+                        video_path
+                    ),
+                    video_file,
+                    "video/mp4"
+                )
+            }
         )
 
 
@@ -3700,18 +2650,15 @@ def is_duplicate_update(
 
     if update_id in PROCESSED_UPDATES:
 
-        log.warning(
-            "DUPLICATE_UPDATE=%s",
-            update_id
-        )
-
         return True
 
     PROCESSED_UPDATES.add(
         update_id
     )
 
-    if len(PROCESSED_UPDATES) > MAX_PROCESSED_UPDATES:
+    if len(
+        PROCESSED_UPDATES
+    ) > MAX_PROCESSED_UPDATES:
 
         PROCESSED_UPDATES.clear()
 
@@ -3757,9 +2704,11 @@ def process_message(
         "id"
     )
 
-    text = message.get(
-        "text",
-        ""
+    text = str(
+        message.get(
+            "text",
+            ""
+        )
     ).strip()
 
     if not chat_id or not text:
@@ -3767,248 +2716,88 @@ def process_message(
         return
 
     log.info(
-        "TELEGRAM_MESSAGE chat_id=%s text=%s",
+        "TELEGRAM_MESSAGE chat=%s text=%s",
         chat_id,
         text
     )
 
+    # -----------------------------------------------------
+    # START
+    # -----------------------------------------------------
+
     if text == "/start":
+
+        instance_id = (
+            find_clonecut_instance()
+        )
+
+        if instance_id:
+
+            status = (
+                "🟢 CloneCut مربوط وجاهز."
+            )
+
+        else:
+
+            status = (
+                "🟡 CloneCut لم يتم تفعيل Instance "
+                "له بعد."
+            )
 
         send_message(
             chat_id,
             "👋 أهلاً بك.\n\n"
-            "أرسل فكرة فيديو وسأحولها "
-            "إلى فيديو قصير سينمائي.\n\n"
-            "أوامر الاختبار:\n"
-            "/hftest3 — فحص آمن\n"
-            "/hftest4 — قراءة باراميترات Wan\n"
-            "/hftest5 — اختبار GPU اقتصادي"
+            "أرسل فكرة الفيديو وأنا أحولها "
+            "لفيديو قصير.\n\n"
+            f"{status}\n\n"
+            "المحرك الحالي: CloneCut / Seedance 2.0"
         )
 
         return
 
-    if text == "/hftest3":
+    # -----------------------------------------------------
+    # CAPAFY STATUS
+    # -----------------------------------------------------
 
-        send_message(
-            chat_id,
-            "🔎 أفحص Hugging Face بدون تشغيل Wan..."
-        )
+    if text == "/clonecut":
 
         try:
 
-            result = run_hf_test3()
+            instance_id = (
+                find_clonecut_instance()
+            )
 
-            if result["ok"]:
+            if instance_id:
 
                 send_message(
                     chat_id,
-                    "✅ Hugging Face يعمل.\n\n"
-                    f"عدد باراميترات /generate: "
-                    f"{result['parameter_count']}\n\n"
-                    "ℹ️ هذا الفحص لا يشغل GPU."
+                    "🟢 CloneCut جاهز.\n\n"
+                    f"Instance: {instance_id}"
                 )
 
             else:
 
                 send_message(
                     chat_id,
-                    "❌ فحص Hugging Face فشل:\n\n"
-                    + result["error"]
+                    "🟡 ما في CloneCut Instance "
+                    "فعالة حاليًا.\n\n"
+                    "فعّل CloneCut وبعدها أضف "
+                    "CAPAFY_INSTANCE_ID في Render."
                 )
 
         except Exception as error:
 
             send_message(
                 chat_id,
-                "❌ HF TEST 3 فشل:\n\n"
+                "❌ فحص CloneCut فشل:\n\n"
                 + safe_error_text(error)
             )
 
         return
 
-    if text == "/hftest4":
-
-        send_message(
-            chat_id,
-            "🔎 أقرأ باراميترات Wan..."
-        )
-
-        try:
-
-            params = run_hf_test4()
-
-            lines = []
-
-            for index, p in enumerate(
-                params,
-                start=1
-            ):
-
-                if not isinstance(
-                    p,
-                    dict
-                ):
-
-                    lines.append(
-                        f"{index}. {p}"
-                    )
-
-                    continue
-
-                lines.append(
-                    f"{index}. "
-                    f"name={p.get('name')} "
-                    f"default={p.get('default')} "
-                    f"type={p.get('type')} "
-                    f"choices={p.get('choices')}"
-                )
-
-            message_text = (
-                "✅ Generate parameters:\n\n"
-                + "\n".join(lines)
-            )
-
-            if len(
-                message_text
-            ) > 3900:
-
-                message_text = (
-                    message_text[:3900]
-                    + "\n\n..."
-                )
-
-            send_message(
-                chat_id,
-                message_text
-            )
-
-        except Exception as error:
-
-            send_message(
-                chat_id,
-                "❌ HF TEST 4 فشل:\n\n"
-                + safe_error_text(error)
-            )
-
-        return
-
-    if text == "/hftest5":
-
-        if not GENERATION_LOCK.acquire(
-            blocking=False
-        ):
-
-            send_message(
-                chat_id,
-                "⏳ يوجد توليد آخر يعمل حاليًا.\n\n"
-                "لن أشغل GPU ثاني حتى ينتهي الأول."
-            )
-
-            return
-
-        video = None
-
-        try:
-
-            send_message(
-                chat_id,
-                "🎥 بدأت اختبار Wan اقتصادي...\n\n"
-                "320×320 | 21 frames | 5 steps\n\n"
-                "⚠️ هذا الاختبار يشغل GPU فعليًا."
-            )
-
-            safe_check = check_hf_space()
-
-            if not safe_check["ok"]:
-
-                send_message(
-                    chat_id,
-                    "❌ Hugging Face غير جاهز.\n\n"
-                    + safe_check["error"]
-                )
-
-                return
-
-            video, duration, size = run_hf_test()
-
-            send_message(
-                chat_id,
-                "✅✅ Wan اشتغل!\n\n"
-                f"⏱️ المدة: {duration:.2f} ثانية\n"
-                f"📦 الحجم: "
-                f"{size / 1024 / 1024:.2f} MB\n\n"
-                "🎬 سأرسل فيديو الاختبار."
-            )
-
-            result = send_video(
-                chat_id,
-                video,
-                caption="🎥 Wan Test — SUCCESS"
-            )
-
-            if not result:
-
-                send_message(
-                    chat_id,
-                    "⚠️ التوليد نجح لكن Telegram "
-                    "لم يؤكد إرسال الفيديو."
-                )
-
-        except Exception as error:
-
-            error_text = safe_error_text(
-                error
-            )
-
-            log.error(
-                "HF_TEST_ERROR=%s",
-                error_text,
-                exc_info=True
-            )
-
-            if (
-                "HF_QUOTA_EXHAUSTED"
-                in error_text
-                or
-                is_hf_quota_error(error)
-            ):
-
-                send_message(
-                    chat_id,
-                    "🛑 ZeroGPU quota غير كافي حاليًا.\n\n"
-                    + error_text
-                    + "\n\n"
-                    "لا تعيد /hftest5 الآن "
-                    "حتى تتجدد الحصة."
-                )
-
-            else:
-
-                send_message(
-                    chat_id,
-                    "❌ اختبار Wan فشل.\n\n"
-                    + error_text
-                )
-
-        finally:
-
-            GENERATION_LOCK.release()
-
-            if video and os.path.exists(
-                video
-            ):
-
-                try:
-
-                    os.remove(
-                        video
-                    )
-
-                except Exception:
-
-                    pass
-
-        return
+    # -----------------------------------------------------
+    # NORMAL VIDEO
+    # -----------------------------------------------------
 
     if not GENERATION_LOCK.acquire(
         blocking=False
@@ -4016,8 +2805,8 @@ def process_message(
 
         send_message(
             chat_id,
-            "⏳ يوجد فيديو آخر قيد التوليد حاليًا.\n\n"
-            "لن أشغل GPU ثاني حتى ينتهي."
+            "⏳ في فيديو آخر قيد التوليد حاليًا.\n\n"
+            "استنى يخلص الأول."
         )
 
         return
@@ -4026,16 +2815,33 @@ def process_message(
 
     try:
 
+        instance_id = (
+            find_clonecut_instance()
+        )
+
+        if not instance_id:
+
+            send_message(
+                chat_id,
+                "🟡 البوت جاهز، لكن CloneCut "
+                "لسه ما إله Instance فعالة.\n\n"
+                "فعّل CloneCut أولًا، وبعدها "
+                "حط CAPAFY_INSTANCE_ID في Render."
+            )
+
+            return
+
         send_message(
             chat_id,
-            "🎬 وصلت الفكرة.\n"
-            "🧠 بناء القصة والمشاهد..."
+            "🎬 وصلت الفكرة.\n\n"
+            "🧠 أبني القصة والمشاهد..."
         )
 
         send_message(
             chat_id,
-            "🎥 توليد الفيديو...\n"
-            "⏳ اصبر شوي."
+            "🎥 أرسل الآن المهمة إلى "
+            "CloneCut / Seedance 2.0...\n\n"
+            "⏳ التوليد ممكن يأخذ عدة دقائق."
         )
 
         final_video = create_reel(
@@ -4044,14 +2850,17 @@ def process_message(
 
         send_message(
             chat_id,
-            "🎙️ تجهيز الصوت...\n"
-            "📝 تجهيز الكابشن..."
+            "🎙️ الفيديو جاهز.\n"
+            "📝 أجهز النسخة النهائية..."
         )
 
         result = send_video(
             chat_id,
             final_video,
-            caption="🎬 تم إنشاء الفيديو"
+            caption=(
+                "🎬 تم إنشاء الفيديو "
+                "بواسطة CloneCut"
+            )
         )
 
         if not result:
@@ -4060,14 +2869,17 @@ def process_message(
                 "Telegram failed to send video"
             )
 
-        log.info(
-            "FINAL_VIDEO_SENT"
+        send_message(
+            chat_id,
+            "✅ خلص الفيديو ووصلك."
         )
 
     except Exception as error:
 
-        error_text = safe_error_text(
-            error
+        error_text = (
+            safe_error_text(
+                error
+            )
         )
 
         log.error(
@@ -4077,35 +2889,49 @@ def process_message(
         )
 
         if (
-            "HF_QUOTA_EXHAUSTED"
+            "CAPAFY_INSTANCE_BUSY"
             in error_text
-            or
-            is_hf_quota_error(error)
         ):
 
             send_message(
                 chat_id,
-                "🛑 Hugging Face ZeroGPU quota "
-                "غير كافي حاليًا.\n\n"
-                "أوقفت العملية ولن أعيد التوليد "
-                "تلقائيًا حتى لا نستهلك الحصة."
+                "⏳ CloneCut مشغول حاليًا "
+                "بمهمة ثانية.\n\n"
+                "استنى المهمة الحالية تخلص "
+                "وبعدين جرّب مرة ثانية."
+            )
+
+        elif (
+            "NO_CLONECUT_INSTANCE"
+            in error_text
+        ):
+
+            send_message(
+                chat_id,
+                "🟡 CloneCut غير مفعّل بعد.\n\n"
+                "لازم نفعّل الـInstance أولًا "
+                "وبعدين نضع Instance ID في Render."
             )
 
         else:
 
             send_message(
                 chat_id,
-                "❌ صار خطأ أثناء صناعة الفيديو.\n\n"
-                "افتح Render Logs وشوف آخر "
-                "CREATE_REEL_ERROR."
+                "❌ صار خطأ أثناء إنشاء الفيديو.\n\n"
+                "آخر خطأ:\n"
+                + error_text[:2500]
             )
 
     finally:
 
         GENERATION_LOCK.release()
 
-        if final_video and os.path.exists(
+        if (
             final_video
+            and
+            os.path.exists(
+                final_video
+            )
         ):
 
             try:
@@ -4120,7 +2946,7 @@ def process_message(
 
 
 # =========================================================
-# BACKGROUND TELEGRAM JOB
+# BACKGROUND
 # =========================================================
 
 def process_message_background(
@@ -4136,7 +2962,7 @@ def process_message_background(
     except Exception as error:
 
         log.error(
-            "BACKGROUND_PROCESS_ERROR=%s",
+            "BACKGROUND_ERROR=%s",
             safe_error_text(error),
             exc_info=True
         )
@@ -4166,12 +2992,10 @@ def telegram_webhook():
                 }
             )
 
-        log.info(
-            "TELEGRAM_WEBHOOK_UPDATE_RECEIVED"
-        )
-
         thread = threading.Thread(
-            target=process_message_background,
+            target=(
+                process_message_background
+            ),
             args=(update,),
             daemon=True
         )
@@ -4213,7 +3037,16 @@ def home():
         {
             "status": "ok",
             "service": "abosaraj",
-            "hf_space": HF_SPACE,
+            "engine": "capafy-clonecut",
+            "clonecut_agent_id": (
+                CLONECUT_AGENT_ID
+            ),
+            "clonecut_instance_configured": bool(
+                os.getenv(
+                    "CAPAFY_INSTANCE_ID",
+                    ""
+                ).strip()
+            ),
             "model": GROQ_MODEL
         }
     )
@@ -4230,6 +3063,92 @@ def health():
             "status": "healthy"
         }
     )
+
+
+# =========================================================
+# CLONECUT HEALTH CHECK
+# =========================================================
+
+@app.route(
+    "/clonecut-status",
+    methods=["GET"]
+)
+def clonecut_status():
+
+    try:
+
+        instances = (
+            get_active_instances()
+        )
+
+        clonecut_instances = []
+
+        for instance in instances:
+
+            if not isinstance(
+                instance,
+                dict
+            ):
+
+                continue
+
+            if str(
+                instance.get(
+                    "agentId",
+                    ""
+                )
+            ) == CLONECUT_AGENT_ID:
+
+                clonecut_instances.append(
+                    {
+                        "instanceId": instance.get(
+                            "instanceId"
+                        ),
+                        "agentId": instance.get(
+                            "agentId"
+                        ),
+                        "status": instance.get(
+                            "status"
+                        ),
+                        "agentTitle": instance.get(
+                            "agentTitle"
+                        ),
+                        "createdAt": instance.get(
+                            "createdAt"
+                        ),
+                        "expiresAt": instance.get(
+                            "expiresAt"
+                        )
+                    }
+                )
+
+        return jsonify(
+            {
+                "ok": True,
+                "engine": "CloneCut",
+                "agentId": CLONECUT_AGENT_ID,
+                "configuredInstance": bool(
+                    os.getenv(
+                        "CAPAFY_INSTANCE_ID",
+                        ""
+                    ).strip()
+                ),
+                "activeCloneCutInstances": (
+                    clonecut_instances
+                )
+            }
+        )
+
+    except Exception as error:
+
+        return jsonify(
+            {
+                "ok": False,
+                "error": safe_error_text(
+                    error
+                )
+            }
+        ), 500
 
 
 # =========================================================
@@ -4289,63 +3208,22 @@ if __name__ == "__main__":
     )
 
     log.info(
-        "HF_SPACE=%s",
-        HF_SPACE
+        "ENGINE=CAPAFY_CLONECUT"
     )
 
     log.info(
-        "GROQ_MODEL=%s",
-        GROQ_MODEL
+        "CLONECUT_AGENT_ID=%s",
+        CLONECUT_AGENT_ID
     )
 
     log.info(
-        "GEN_WIDTH=%s",
-        GEN_WIDTH
-    )
-
-    log.info(
-        "GEN_HEIGHT=%s",
-        GEN_HEIGHT
-    )
-
-    log.info(
-        "GEN_FRAMES=%s",
-        GEN_FRAMES
-    )
-
-    log.info(
-        "GEN_STEPS=%s",
-        GEN_STEPS
-    )
-
-    log.info(
-        "GEN_GUIDANCE=%s",
-        GEN_GUIDANCE
-    )
-
-    log.info(
-        "TEST_GEN_WIDTH=%s",
-        TEST_GEN_WIDTH
-    )
-
-    log.info(
-        "TEST_GEN_HEIGHT=%s",
-        TEST_GEN_HEIGHT
-    )
-
-    log.info(
-        "TEST_GEN_FRAMES=%s",
-        TEST_GEN_FRAMES
-    )
-
-    log.info(
-        "TEST_GEN_STEPS=%s",
-        TEST_GEN_STEPS
-    )
-
-    log.info(
-        "MAX_VIDEO_RETRIES=%s",
-        MAX_VIDEO_RETRIES
+        "CLONECUT_INSTANCE_PRESENT=%s",
+        bool(
+            os.getenv(
+                "CAPAFY_INSTANCE_ID",
+                ""
+            ).strip()
+        )
     )
 
     log.info(
@@ -4359,13 +3237,14 @@ if __name__ == "__main__":
     )
 
     log.info(
-        "CAPAFY_TEST_KEY_PRESENT=%s",
-        bool(
-            os.getenv(
-                "CAPAFY_TEST_KEY",
-                ""
-            ).strip()
-        )
+        "GROQ_MODEL=%s",
+        GROQ_MODEL
+    )
+
+    log.info(
+        "FINAL_VIDEO=%sx%s",
+        FINAL_WIDTH,
+        FINAL_HEIGHT
     )
 
     log.info(
