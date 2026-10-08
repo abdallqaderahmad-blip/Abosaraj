@@ -24,6 +24,7 @@ GROQ_API_KEY = os.environ["GROQ_API_KEY"]
 WAVESPEED_API_KEY = os.environ["WAVESPEED_API_KEY"]
 
 PORT = int(os.getenv("PORT", "10000"))
+
 RENDER_EXTERNAL_URL = os.getenv(
     "RENDER_EXTERNAL_URL",
     ""
@@ -34,16 +35,16 @@ GROQ_MODEL = os.getenv(
     "openai/gpt-oss-120b"
 )
 
+
 # =========================================================
 # EPISODE FORMAT
 # =========================================================
-#
-# CURRENT TEST:
+
+# CURRENT TEST
 # 4 shots x 5 seconds = 20 seconds
 #
-# After the complete pipeline works:
+# AFTER PIPELINE IS STABLE:
 # 12 shots x 5 seconds = 60 seconds
-#
 
 SHOT_COUNT = 4
 SHOT_DURATION = 5
@@ -52,7 +53,51 @@ VIDEO_WIDTH = 720
 VIDEO_HEIGHT = 1280
 VIDEO_FPS = 24
 
-TTS_VOICE = "ar-SA-HamedNeural"
+
+# =========================================================
+# CHARACTER VOICES
+# =========================================================
+#
+# Azure / Edge TTS Arabic voices.
+#
+# Each character has a stable voice.
+#
+# The actual voice can later be replaced without
+# changing the story engine.
+#
+
+VOICE_CONFIG = {
+
+    "male_lead": {
+        "voice": "ar-SY-LaithNeural",
+        "rate": "-10%",
+        "pitch": "-3Hz",
+    },
+
+    "princess": {
+        "voice": "ar-SA-ZariyahNeural",
+        "rate": "-6%",
+        "pitch": "0Hz",
+    },
+
+    "king": {
+        "voice": "ar-EG-ShakirNeural",
+        "rate": "-8%",
+        "pitch": "-4Hz",
+    },
+
+    "guard": {
+        "voice": "ar-IQ-BasselNeural",
+        "rate": "-2%",
+        "pitch": "-1Hz",
+    },
+
+    "narrator": {
+        "voice": "ar-SA-HamedNeural",
+        "rate": "-8%",
+        "pitch": "-2Hz",
+    }
+}
 
 
 # =========================================================
@@ -354,13 +399,13 @@ def download_file(
 # IMAGE GENERATION
 # =========================================================
 
-def generate_character_reference(
-    character_prompt,
+def generate_cast_reference(
+    cast_prompt,
     output_path
 ):
 
     log(
-        "Generating master character..."
+        "Generating master CAST reference..."
     )
 
     task = wavespeed_submit(
@@ -369,7 +414,7 @@ def generate_character_reference(
 
         {
             "prompt":
-                character_prompt,
+                cast_prompt,
 
             "size":
                 "1024*1536",
@@ -393,7 +438,7 @@ def generate_character_reference(
 
 
 def generate_scene_image(
-    character_url,
+    cast_url,
     prompt,
     output_path,
     seed
@@ -412,7 +457,7 @@ def generate_scene_image(
                 prompt,
 
             "image":
-                character_url,
+                cast_url,
 
             "size":
                 "1024*1536",
@@ -474,7 +519,10 @@ def generate_video(
                 "bad anatomy, deformed face, "
                 "extra fingers, duplicate people, "
                 "melting face, flicker, jitter, "
-                "low quality, blurry, distorted hands"
+                "low quality, blurry, distorted hands, "
+                "game art, anime, illustration, "
+                "plastic skin, posed character, "
+                "static camera"
             )
         }
     )
@@ -485,6 +533,138 @@ def generate_video(
 # =========================================================
 # GROQ JSON SCHEMA
 # =========================================================
+
+CHARACTER_SCHEMA = {
+
+    "type": "object",
+
+    "additionalProperties": False,
+
+    "properties": {
+
+        "identity": {
+            "type": "string"
+        },
+
+        "age": {
+            "type": "string"
+        },
+
+        "face": {
+            "type": "string"
+        },
+
+        "hair": {
+            "type": "string"
+        },
+
+        "clothes": {
+            "type": "string"
+        },
+
+        "colors": {
+            "type": "string"
+        }
+    },
+
+    "required": [
+        "identity",
+        "age",
+        "face",
+        "hair",
+        "clothes",
+        "colors"
+    ]
+}
+
+
+DIALOGUE_SCHEMA = {
+
+    "type": "object",
+
+    "additionalProperties": False,
+
+    "properties": {
+
+        "speaker": {
+            "type": "string",
+            "enum": [
+                "male_lead",
+                "princess",
+                "king",
+                "guard",
+                "narrator"
+            ]
+        },
+
+        "text": {
+            "type": "string"
+        },
+
+        "emotion": {
+            "type": "string"
+        }
+    },
+
+    "required": [
+        "speaker",
+        "text",
+        "emotion"
+    ]
+}
+
+
+SCENE_SCHEMA = {
+
+    "type": "object",
+
+    "additionalProperties": False,
+
+    "properties": {
+
+        "action": {
+            "type": "string"
+        },
+
+        "dialogue": {
+
+            "type": "array",
+
+            "minItems": 1,
+
+            "maxItems": 2,
+
+            "items":
+                DIALOGUE_SCHEMA
+        },
+
+        "scene_image_prompt": {
+            "type": "string"
+        },
+
+        "video_prompt": {
+            "type": "string"
+        },
+
+        "camera": {
+            "type": "string"
+        },
+
+        "sound": {
+            "type": "string"
+        }
+    },
+
+    "required": [
+        "action",
+        "dialogue",
+        "scene_image_prompt",
+        "video_prompt",
+        "camera",
+        "sound"
+    ]
+}
+
 
 STORY_SCHEMA = {
 
@@ -502,7 +682,7 @@ STORY_SCHEMA = {
             "type": "string"
         },
 
-        "character": {
+        "cast": {
 
             "type": "object",
 
@@ -510,38 +690,24 @@ STORY_SCHEMA = {
 
             "properties": {
 
-                "identity": {
-                    "type": "string"
-                },
+                "male_lead":
+                    CHARACTER_SCHEMA,
 
-                "age": {
-                    "type": "string"
-                },
+                "princess":
+                    CHARACTER_SCHEMA,
 
-                "face": {
-                    "type": "string"
-                },
+                "wolf":
+                    CHARACTER_SCHEMA,
 
-                "hair": {
-                    "type": "string"
-                },
-
-                "clothes": {
-                    "type": "string"
-                },
-
-                "colors": {
-                    "type": "string"
-                }
+                "king":
+                    CHARACTER_SCHEMA
             },
 
             "required": [
-                "identity",
-                "age",
-                "face",
-                "hair",
-                "clothes",
-                "colors"
+                "male_lead",
+                "princess",
+                "wolf",
+                "king"
             ]
         },
 
@@ -549,7 +715,7 @@ STORY_SCHEMA = {
             "type": "string"
         },
 
-        "character_image_prompt": {
+        "cast_reference_prompt": {
             "type": "string"
         },
 
@@ -561,52 +727,17 @@ STORY_SCHEMA = {
 
             "maxItems": 4,
 
-            "items": {
-
-                "type": "object",
-
-                "additionalProperties": False,
-
-                "properties": {
-
-                    "narration_ar": {
-                        "type": "string"
-                    },
-
-                    "scene_image_prompt": {
-                        "type": "string"
-                    },
-
-                    "video_prompt": {
-                        "type": "string"
-                    },
-
-                    "camera": {
-                        "type": "string"
-                    },
-
-                    "sound": {
-                        "type": "string"
-                    }
-                },
-
-                "required": [
-                    "narration_ar",
-                    "scene_image_prompt",
-                    "video_prompt",
-                    "camera",
-                    "sound"
-                ]
-            }
+            "items":
+                SCENE_SCHEMA
         }
     },
 
     "required": [
         "title",
         "hook",
-        "character",
+        "cast",
         "visual_style",
-        "character_image_prompt",
+        "cast_reference_prompt",
         "scenes"
     ]
 }
@@ -621,25 +752,44 @@ def create_story(
 ):
 
     log(
-        "Groq: generating story..."
+        "Groq: generating cinematic screenplay..."
     )
 
     system_prompt = f"""
-أنت كاتب سيناريو ومخرج سينمائي
-ومدير تصوير ومشرف استمرارية.
 
-نريد إنتاج Microdrama عربي قصير.
+أنت الآن:
 
-النوع:
+كاتب سيناريو سينمائي عربي،
+مخرج،
+مدير تصوير،
+ومشرف استمرارية.
 
-Mystery / Suspense /
-Psychological Thriller.
+نريد إنتاج مسلسل Microdrama عربي
+سينمائي قصير.
 
-الفكرة:
+الفكرة الأساسية التي نريد بناء العالم حولها:
+
+- رجل غامض وجذاب يمتلك قوة خارقة
+- أميرة تقع في حبه
+- والدها الملك يرفض زواجهما
+- ذئبة بيضاء صغيرة تصبح مرتبطة بهما
+- الذئبة تكبر عبر الحلقات
+- لاحقاً تصبح الذئبة قوية وتنقذهما
+- هناك سر قديم يربط البطل بالقصر
+
+الفكرة التي أدخلها المستخدم الآن:
 
 {user_idea}
 
-عدد اللقطات المطلوب بالضبط:
+النوع:
+
+Dark Fantasy
+Romance
+Mystery
+Suspense
+Supernatural Drama
+
+عدد اللقطات:
 
 {SHOT_COUNT}
 
@@ -647,68 +797,107 @@ Psychological Thriller.
 
 {SHOT_DURATION} ثوانٍ.
 
-الهدف ليس slideshow.
+=========================================
+قواعد السيناريو
+=========================================
 
-كل لقطة يجب أن تبدو كجزء
-من فيلم حقيقي.
+لا تكتب قصة عامة.
+
+اكتب مشهداً من مسلسل حقيقي.
+
+كل لقطة يجب أن تحرك القصة.
 
 كل لقطة يجب أن تحتوي على:
 
-- حركة شخصية
+- حدث واضح
+- حركة شخصيات
 - حركة كاميرا
 - حركة بيئة
-- إضاءة سينمائية
-- عمق مجال
-- composition
-- cinematic pacing
+- إضاءة
+- إحساس
+- صوت/جو
+- حوار عندما يكون مناسباً
 
-يجب الحفاظ على نفس الشخصية
-في جميع اللقطات.
+لا تجعل كل الشخصيات تتكلم.
 
-الشخصية الرئيسية واحدة فقط.
+لا تجعل الحوار شرحاً لما نراه.
 
-لا تستخدم أطفالاً.
+الحوار يجب أن يكون طبيعياً
+ومختصراً ومناسباً لفيلم.
 
-لا تستخدم gore.
+=========================================
+الشخصيات
+=========================================
 
-لا تستخدم محتوى جنسياً.
+male_lead:
 
-لا توجد شعارات.
+رجل 28-32 سنة.
 
-لا توجد watermarks.
+جذاب.
 
-لا توجد كتابة داخل الصور.
+غامض.
 
-narration_ar يجب أن يكون
-عربياً طبيعياً ومثيراً.
+هادئ.
 
-كل لقطة:
-جملة أو جملتان فقط.
+ذكي.
 
-scene_image_prompt بالإنجليزية.
+ليس شريراً بشكل مباشر.
 
-video_prompt بالإنجليزية.
+شعر داكن.
 
-camera بالإنجليزية.
+ملامح رجولية واقعية.
 
-sound بالإنجليزية.
+ملابس داكنة أنيقة.
 
-أول لقطة يجب أن تحتوي Hook.
+قوة خارقة مخفية.
 
-اللقطة الرابعة يجب أن تحتوي
-كشفاً أو cliffhanger.
+لا تجعله يبدو كـ game character.
 
-الأسلوب البصري:
+لا armor إلا إذا كان ضرورياً.
 
-realistic cinematic Arabic drama,
-professional film lighting,
-natural human skin,
-shallow depth of field,
-realistic camera movement,
-high production value,
-vertical composition.
+princess:
 
-أنت مسؤول عن الاستمرارية.
+أميرة شابة بالغة.
+
+جميلة.
+
+قوية الشخصية.
+
+رومانسية ولكن ليست ضعيفة.
+
+ملابس ملكية واقعية.
+
+لا مبالغة كرتونية.
+
+wolf:
+
+ذئبة بيضاء صغيرة.
+
+واقعية.
+
+فرو أبيض.
+
+عيون مميزة.
+
+في بداية السلسلة تكون صغيرة.
+
+لا تجعلها كلباً.
+
+king:
+
+رجل ملكي أكبر سناً.
+
+مهيب.
+
+قوي.
+
+ليس شريراً سطحياً.
+
+يعرف شيئاً خطيراً عن البطل.
+
+=========================================
+الاستمرارية
+=========================================
 
 نفس الوجه.
 
@@ -716,22 +905,221 @@ vertical composition.
 
 نفس الشعر.
 
-نفس الملابس.
+نفس الملابس الأساسية.
 
 نفس الألوان.
 
-نفس الشخصية.
+نفس هوية الشخصية.
 
-لا تغير الشخصية بين اللقطات.
+لا تغيّر الشخصيات بين اللقطات.
+
+=========================================
+الحوار
+=========================================
+
+كل dialogue يجب أن يحتوي:
+
+speaker
+
+text
+
+emotion
+
+speaker يجب أن يكون واحداً من:
+
+male_lead
+princess
+king
+guard
+narrator
+
+استخدم maximum شخصيتين متحدثتين
+في اللقطة الواحدة.
+
+كل لقطة:
+
+1 أو 2 جمل قصيرة فقط.
+
+الحوار يجب أن يكون مناسباً
+لـ {SHOT_DURATION} ثوانٍ.
+
+لا تكتب جمل طويلة.
+
+لا تضع أسماء الشخصيات داخل text.
+
+مثال صحيح:
+
+speaker:
+male_lead
+
+text:
+"لا تخافي... أنا هنا."
+
+emotion:
+"calm but mysterious"
+
+=========================================
+الذئبة
+=========================================
+
+الذئبة لا تتكلم.
+
+استخدم أصواتها فقط ضمن sound:
+
+whimper
+
+growl
+
+howl
+
+breathing
+
+=========================================
+الأسلوب البصري
+=========================================
+
+realistic cinematic Arabic fantasy drama,
+
+professional film lighting,
+
+realistic human skin,
+
+realistic fabric,
+
+realistic animal fur,
+
+volumetric moonlight,
+
+atmospheric fog,
+
+shallow depth of field,
+
+anamorphic cinematic look,
+
+dramatic rim lighting,
+
+natural body movement,
+
+emotional facial acting,
+
+foreground/background separation,
+
+cinematic camera movement,
+
+high production value,
+
+vertical 9:16 composition.
+
+لا:
+
+anime
+
+cartoon
+
+illustration
+
+game art
+
+plastic skin
+
+overly perfect CGI
+
+watermark
+
+logo
+
+text inside image
+
+=========================================
+CAST REFERENCE
+=========================================
+
+أنشئ cast reference واحد
+يحافظ على شكل:
+
+male_lead
+princess
+wolf
+king
+
+يجب أن يكون:
+
+cinematic character lineup,
+
+realistic faces,
+
+full body where possible,
+
+consistent lighting,
+
+neutral but cinematic environment,
+
+clear separation between characters,
+
+high detail,
+
+photorealistic.
+
+لا تجعل الشخصيات تبدو كأنها
+صورة جماعية عشوائية.
+
+=========================================
+الحبكة
+=========================================
+
+أول لقطة:
+
+HOOK قوي.
+
+اللقطة الرابعة:
+
+CLIFFHANGER قوي.
+
+يجب أن يشعر المشاهد:
+
+"ماذا سيحدث بعد ذلك؟"
+
+لا تحل كل الأسرار.
+
+اترك أسئلة للمشاهد.
+
+لا تستخدم أطفالاً.
+
+لا تستخدم gore.
+
+لا تستخدم محتوى جنسياً.
+
+لا تستخدم شعارات.
+
+لا تستخدم watermarks.
+
+=========================================
+OUTPUT
+=========================================
+
+أخرج JSON فقط وفق Schema.
+
+لا تضف أي نص خارج JSON.
 """
 
     user_prompt = f"""
-حوّل الفكرة التالية إلى حلقة
-Microdrama سينمائية:
+
+حوّل فكرة المستخدم التالية
+إلى حلقة Microdrama سينمائية:
 
 {user_idea}
 
-أخرج النتيجة وفق الـJSON Schema المقدم.
+تذكر:
+
+هذه الحلقة جزء من عالم مستمر.
+
+الشخصيات يجب أن تبدو
+كشخصيات مسلسل حقيقية.
+
+الحوار يجب أن يكون جزءاً
+من الحدث وليس تعليقاً عليه.
+
+أخرج JSON وفق الـSchema.
 """
 
     response = groq.chat.completions.create(
@@ -740,7 +1128,7 @@ Microdrama سينمائية:
 
         temperature=0.7,
 
-        max_tokens=12000,
+        max_tokens=16000,
 
         response_format={
 
@@ -794,7 +1182,7 @@ Microdrama سينمائية:
         )
 
     log(
-        "Groq JSON received."
+        "Groq screenplay JSON received."
     )
 
     try:
@@ -829,26 +1217,34 @@ Microdrama سينمائية:
             f"expected {SHOT_COUNT}"
         )
 
-    log(
-        f"Groq story ready: "
-        f"{result.get('title')}"
-    )
-
     return result
 
 
 # =========================================================
-# ARABIC TTS
+# TTS
 # =========================================================
 
 async def tts_async(
     text,
-    output
+    output,
+    voice_config
 ):
 
     communicator = edge_tts.Communicate(
+
         text=text,
-        voice=TTS_VOICE
+
+        voice=voice_config["voice"],
+
+        rate=voice_config.get(
+            "rate",
+            "0%"
+        ),
+
+        pitch=voice_config.get(
+            "pitch",
+            "0Hz"
+        )
     )
 
     await communicator.save(
@@ -858,13 +1254,34 @@ async def tts_async(
 
 def create_tts(
     text,
-    output
+    output,
+    speaker
 ):
 
+    if speaker not in VOICE_CONFIG:
+
+        raise RuntimeError(
+            f"Unknown speaker: {speaker}"
+        )
+
+    config = VOICE_CONFIG[speaker]
+
+    log(
+        f"TTS: {speaker} -> "
+        f"{config['voice']} | "
+        f"{config['rate']} | "
+        f"{config['pitch']}"
+    )
+
     asyncio.run(
+
         tts_async(
+
             text,
-            output
+
+            output,
+
+            config
         )
     )
 
@@ -904,6 +1321,61 @@ def run_ffmpeg(
 
         raise RuntimeError(
             result.stderr[-5000:]
+        )
+
+
+# =========================================================
+# MEDIA DURATION
+# =========================================================
+
+def get_media_duration(
+    path
+):
+
+    command = [
+
+        "ffprobe",
+
+        "-v",
+        "error",
+
+        "-show_entries",
+        "format=duration",
+
+        "-of",
+        "default=noprint_wrappers=1:nokey=1",
+
+        str(path)
+    ]
+
+    result = subprocess.run(
+
+        command,
+
+        stdout=subprocess.PIPE,
+
+        stderr=subprocess.PIPE,
+
+        text=True
+    )
+
+    if result.returncode != 0:
+
+        raise RuntimeError(
+            result.stderr[-3000:]
+        )
+
+    try:
+
+        return float(
+            result.stdout.strip()
+        )
+
+    except ValueError:
+
+        raise RuntimeError(
+            f"Invalid media duration: "
+            f"{path}"
         )
 
 
@@ -1004,29 +1476,56 @@ def concat_videos(
 
 
 # =========================================================
-# CONCAT AUDIO — FIXED
+# AUDIO NORMALIZATION
+# =========================================================
+
+def normalize_audio(
+    source,
+    output
+):
+
+    run_ffmpeg([
+
+        "-i",
+        str(source),
+
+        "-vn",
+
+        "-ac",
+        "1",
+
+        "-ar",
+        "24000",
+
+        "-c:a",
+        "pcm_s16le",
+
+        str(output)
+    ])
+
+    if not output.exists():
+
+        raise RuntimeError(
+            f"Audio normalization failed: "
+            f"{output}"
+        )
+
+    if output.stat().st_size <= 44:
+
+        raise RuntimeError(
+            f"Normalized audio is empty: "
+            f"{output}"
+        )
+
+
+# =========================================================
+# CONCAT AUDIO
 # =========================================================
 
 def concat_audio(
     audios,
     output
 ):
-
-    """
-    Edge-TTS produces MP3 files.
-
-    We do NOT concatenate the MP3 files directly.
-
-    Every MP3 is first normalized to:
-        WAV
-        PCM s16le
-        24 kHz
-        mono
-
-    Then all WAV files are concatenated.
-
-    Finally the result is encoded to AAC.
-    """
 
     normalized_files = []
 
@@ -1044,55 +1543,27 @@ def concat_audio(
         audio = Path(audio)
 
         normalized = (
+
             output.parent /
+
             f"normalized_audio_{index}.wav"
         )
 
-        log(
-            f"Normalizing audio "
-            f"{index}/{total}: "
-            f"{audio.name}"
+        normalize_audio(
+
+            audio,
+
+            normalized
         )
-
-        run_ffmpeg([
-
-            "-i",
-            str(audio),
-
-            "-vn",
-
-            "-ac",
-            "1",
-
-            "-ar",
-            "24000",
-
-            "-c:a",
-            "pcm_s16le",
-
-            str(normalized)
-        ])
-
-        if not normalized.exists():
-
-            raise RuntimeError(
-                f"Audio normalization "
-                f"failed: {normalized}"
-            )
-
-        if normalized.stat().st_size <= 44:
-
-            raise RuntimeError(
-                f"Normalized audio is empty: "
-                f"{normalized}"
-            )
 
         normalized_files.append(
             normalized
         )
 
     list_file = (
+
         output.parent /
+
         "audio_wav_list.txt"
     )
 
@@ -1104,7 +1575,9 @@ def concat_audio(
         for audio in normalized_files:
 
             safe_path = (
+
                 str(audio)
+
                 .replace(
                     "'",
                     "'\\''"
@@ -1114,10 +1587,6 @@ def concat_audio(
             f.write(
                 f"file '{safe_path}'\n"
             )
-
-    log(
-        "Concatenating normalized WAV files..."
-    )
 
     run_ffmpeg([
 
@@ -1142,21 +1611,264 @@ def concat_audio(
     if not output.exists():
 
         raise RuntimeError(
-            "Audio concatenation produced "
-            "no output file."
+            "Audio concatenation failed."
         )
 
-    if output.stat().st_size == 0:
+    return output
+
+
+# =========================================================
+# SCENE AUDIO
+# =========================================================
+
+def create_scene_audio(
+    scene,
+    scene_index,
+    workdir
+):
+
+    dialogue_files = []
+
+    dialogue_meta = []
+
+    dialogue = scene.get(
+        "dialogue",
+        []
+    )
+
+    if not dialogue:
 
         raise RuntimeError(
-            "Audio concatenation produced "
-            "an empty file."
+            f"Scene {scene_index} "
+            f"contains no dialogue."
         )
 
-    log(
-        f"Audio concatenation complete: "
-        f"{output.name}"
+    for line_index, line in enumerate(
+        dialogue,
+        start=1
+    ):
+
+        speaker = line["speaker"]
+
+        text = line["text"]
+
+        audio = (
+
+            workdir /
+
+            f"scene_{scene_index}_"
+            f"line_{line_index}_"
+            f"{speaker}.mp3"
+        )
+
+        log(
+            f"Scene {scene_index}: "
+            f"{speaker}: {text}"
+        )
+
+        create_tts(
+
+            text,
+
+            audio,
+
+            speaker
+        )
+
+        if not audio.exists():
+
+            raise RuntimeError(
+                f"TTS failed: {audio}"
+            )
+
+        if audio.stat().st_size == 0:
+
+            raise RuntimeError(
+                f"TTS generated empty file: "
+                f"{audio}"
+            )
+
+        duration = get_media_duration(
+            audio
+        )
+
+        dialogue_files.append(
+            audio
+        )
+
+        dialogue_meta.append({
+
+            "speaker":
+                speaker,
+
+            "text":
+                text,
+
+            "duration":
+                duration
+        })
+
+    # ---------------------------------------------
+    # Normalize each line
+    # ---------------------------------------------
+
+    normalized_files = []
+
+    for index, audio in enumerate(
+        dialogue_files,
+        start=1
+    ):
+
+        normalized = (
+
+            workdir /
+
+            f"scene_{scene_index}_"
+            f"normalized_{index}.wav"
+        )
+
+        normalize_audio(
+
+            audio,
+
+            normalized
+        )
+
+        normalized_files.append(
+            normalized
+        )
+
+    # ---------------------------------------------
+    # Concat lines
+    # ---------------------------------------------
+
+    list_file = (
+
+        workdir /
+
+        f"scene_{scene_index}_audio.txt"
     )
+
+    with list_file.open(
+        "w",
+        encoding="utf-8"
+    ) as f:
+
+        for audio in normalized_files:
+
+            safe_path = (
+
+                str(audio)
+
+                .replace(
+                    "'",
+                    "'\\''"
+                )
+            )
+
+            f.write(
+                f"file '{safe_path}'\n"
+            )
+
+    scene_audio = (
+
+        workdir /
+
+        f"scene_{scene_index}_dialogue.m4a"
+    )
+
+    run_ffmpeg([
+
+        "-f",
+        "concat",
+
+        "-safe",
+        "0",
+
+        "-i",
+        str(list_file),
+
+        "-c:a",
+        "aac",
+
+        "-b:a",
+        "128k",
+
+        str(scene_audio)
+    ])
+
+    total_duration = get_media_duration(
+        scene_audio
+    )
+
+    log(
+        f"Scene {scene_index} dialogue "
+        f"duration: {total_duration:.2f}s"
+    )
+
+    return (
+        scene_audio,
+        dialogue_meta,
+        total_duration
+    )
+
+
+# =========================================================
+# BUILD FULL DIALOGUE TRACK
+# =========================================================
+
+def build_dialogue_track(
+    scene_audio_files,
+    output
+):
+
+    list_file = (
+
+        output.parent /
+
+        "scene_dialogue_list.txt"
+    )
+
+    with list_file.open(
+        "w",
+        encoding="utf-8"
+    ) as f:
+
+        for audio in scene_audio_files:
+
+            safe_path = (
+
+                str(audio)
+
+                .replace(
+                    "'",
+                    "'\\''"
+                )
+            )
+
+            f.write(
+                f"file '{safe_path}'\n"
+            )
+
+    run_ffmpeg([
+
+        "-f",
+        "concat",
+
+        "-safe",
+        "0",
+
+        "-i",
+        str(list_file),
+
+        "-c:a",
+        "aac",
+
+        "-b:a",
+        "128k",
+
+        str(output)
+    ])
 
     return output
 
@@ -1180,7 +1892,7 @@ def create_ambience(
         (
             "anoisesrc="
             "color=brown:"
-            "amplitude=0.025:"
+            "amplitude=0.018:"
             f"duration={duration}"
         ),
 
@@ -1189,7 +1901,7 @@ def create_ambience(
         (
             "lowpass=f=900,"
             "highpass=f=80,"
-            "volume=0.55"
+            "volume=0.45"
         ),
 
         "-c:a",
@@ -1278,39 +1990,71 @@ def seconds_to_srt(
 
 def create_srt(
     scenes,
+    scene_dialogue_meta,
     output
 ):
 
     lines = []
 
-    for index, scene in enumerate(
+    global_time = 0.0
+
+    subtitle_index = 1
+
+    for scene_index, scene in enumerate(
         scenes,
         start=1
     ):
 
-        start = (
-            index - 1
-        ) * SHOT_DURATION
+        meta = scene_dialogue_meta[
+            scene_index - 1
+        ]
 
-        end = (
-            index
-        ) * SHOT_DURATION
+        local_time = 0.0
 
-        lines.append(
-            str(index)
-        )
+        for line in meta:
 
-        lines.append(
-            f"{seconds_to_srt(start)} "
-            f"--> "
-            f"{seconds_to_srt(end)}"
-        )
+            duration = float(
+                line["duration"]
+            )
 
-        lines.append(
-            scene["narration_ar"]
-        )
+            start = (
+                global_time
+                + local_time
+            )
 
-        lines.append("")
+            end = (
+                start
+                + duration
+            )
+
+            # -------------------------------------
+            # Keep subtitle from becoming too long
+            # -------------------------------------
+
+            text = line["text"]
+
+            lines.append(
+                str(subtitle_index)
+            )
+
+            lines.append(
+
+                f"{seconds_to_srt(start)} "
+                f"--> "
+                f"{seconds_to_srt(end)}"
+            )
+
+            lines.append(
+                text
+            )
+
+            lines.append("")
+
+            subtitle_index += 1
+
+            local_time += duration
+
+        global_time += SHOT_DURATION
 
     output.write_text(
         "\n".join(lines),
@@ -1329,26 +2073,41 @@ def add_captions(
 ):
 
     subtitle_path = (
+
         str(srt)
+
         .replace(
             "\\",
             "/"
         )
+
         .replace(
             ":",
             "\\:"
         )
     )
 
+    # DejaVu Sans is used instead of Arial
+    # because Arabic glyphs must exist on Render.
+
     style = (
-        "FontName=Arial,"
+
+        "FontName=DejaVu Sans,"
+
         "FontSize=22,"
+
         "PrimaryColour=&H00FFFFFF,"
+
         "OutlineColour=&H00000000,"
+
         "BorderStyle=1,"
+
         "Outline=2,"
+
         "Shadow=1,"
+
         "Alignment=2,"
+
         "MarginV=70"
     )
 
@@ -1436,16 +2195,16 @@ def create_episode(
     )
 
     log(
-        "CREATING EPISODE"
+        "CREATING CINEMATIC EPISODE"
     )
 
     log(
         "================================"
     )
 
-    # -----------------------------------------------------
-    # 1. STORY
-    # -----------------------------------------------------
+    # =====================================================
+    # 1. STORY / SCREENPLAY
+    # =====================================================
 
     story = create_story(
         user_idea
@@ -1455,33 +2214,40 @@ def create_episode(
         f"TITLE: {story['title']}"
     )
 
-    # -----------------------------------------------------
-    # 2. MASTER CHARACTER
-    # -----------------------------------------------------
-
-    character_image = (
-        workdir /
-        "character.jpg"
+    log(
+        f"HOOK: {story['hook']}"
     )
 
-    generate_character_reference(
+    # =====================================================
+    # 2. CAST REFERENCE
+    # =====================================================
+
+    cast_image = (
+
+        workdir /
+
+        "cast_reference.jpg"
+    )
+
+    generate_cast_reference(
 
         story[
-            "character_image_prompt"
+            "cast_reference_prompt"
         ],
 
-        character_image
+        cast_image
     )
 
-    character_url = (
+    cast_url = (
+
         upload_to_wavespeed(
-            character_image
+            cast_image
         )
     )
 
-    # -----------------------------------------------------
-    # 3. SCENES
-    # -----------------------------------------------------
+    # =====================================================
+    # 3. SCENES / VIDEO
+    # =====================================================
 
     scene_videos = []
 
@@ -1499,13 +2265,58 @@ def create_episode(
         )
 
         # ---------------------------------------------
-        # Scene image
+        # Build character continuity block
         # ---------------------------------------------
 
-        scene_image = (
-            workdir /
-            f"scene_{index}.jpg"
-        )
+        cast = story["cast"]
+
+        male = cast["male_lead"]
+
+        princess = cast["princess"]
+
+        wolf = cast["wolf"]
+
+        king = cast["king"]
+
+        continuity_prompt = f"""
+
+CAST CONTINUITY:
+
+MALE LEAD:
+Identity: {male['identity']}
+Age: {male['age']}
+Face: {male['face']}
+Hair: {male['hair']}
+Clothes: {male['clothes']}
+Colors: {male['colors']}
+
+PRINCESS:
+Identity: {princess['identity']}
+Age: {princess['age']}
+Face: {princess['face']}
+Hair: {princess['hair']}
+Clothes: {princess['clothes']}
+Colors: {princess['colors']}
+
+WHITE WOLF:
+Identity: {wolf['identity']}
+Age: {wolf['age']}
+Face: {wolf['face']}
+Hair/Fur: {wolf['hair']}
+Clothes: {wolf['clothes']}
+Colors: {wolf['colors']}
+
+KING:
+Identity: {king['identity']}
+Age: {king['age']}
+Face: {king['face']}
+Hair: {king['hair']}
+Clothes: {king['clothes']}
+Colors: {king['colors']}
+
+Preserve exact recurring identities.
+Do not randomly redesign characters.
+"""
 
         scene_prompt = (
 
@@ -1513,29 +2324,17 @@ def create_episode(
 
             + "\n"
 
-            + story["character"]["identity"]
-
-            + "\nAge: "
-
-            + story["character"]["age"]
-
-            + "\nFace: "
-
-            + story["character"]["face"]
-
-            + "\nHair: "
-
-            + story["character"]["hair"]
-
-            + "\nClothes: "
-
-            + story["character"]["clothes"]
-
-            + "\nColors: "
-
-            + story["character"]["colors"]
+            + continuity_prompt
 
             + "\n"
+
+            + "SCENE ACTION:\n"
+
+            + scene["action"]
+
+            + "\n"
+
+            + "SCENE VISUAL:\n"
 
             + scene[
                 "scene_image_prompt"
@@ -1543,16 +2342,71 @@ def create_episode(
 
             + "\n"
 
-            + (
-                "Maintain the exact same "
-                "main character identity, "
-                "face, hair, clothing and colors."
-            )
+            + """
+CINEMATIC REQUIREMENTS:
+
+photorealistic,
+
+cinematic film still,
+
+realistic human skin,
+
+realistic fabric,
+
+realistic animal fur,
+
+volumetric lighting,
+
+atmospheric fog,
+
+shallow depth of field,
+
+anamorphic look,
+
+dramatic rim light,
+
+natural poses,
+
+natural facial expressions,
+
+foreground/background separation,
+
+vertical 9:16,
+
+high production value.
+
+No text.
+
+No subtitles.
+
+No logo.
+
+No watermark.
+
+No anime.
+
+No cartoon.
+
+No illustration.
+
+No game art.
+"""
+        )
+
+        # ---------------------------------------------
+        # Scene image
+        # ---------------------------------------------
+
+        scene_image = (
+
+            workdir /
+
+            f"scene_{index}.jpg"
         )
 
         generate_scene_image(
 
-            character_url,
+            cast_url,
 
             scene_prompt,
 
@@ -1562,10 +2416,11 @@ def create_episode(
         )
 
         # ---------------------------------------------
-        # Upload scene image
+        # Upload scene
         # ---------------------------------------------
 
         scene_url = (
+
             upload_to_wavespeed(
                 scene_image
             )
@@ -1585,21 +2440,39 @@ def create_episode(
 
             + "\n"
 
-            + "Natural cinematic movement."
+            + """
+Cinematic natural movement.
 
-            + "\n"
+Characters must move naturally.
 
-            + (
-                "Keep the character "
-                "identity consistent."
-            )
+Facial expressions must remain realistic.
 
-            + "\n"
+Camera movement should be subtle and film-like.
 
-            + (
-                "No text, no subtitles, "
-                "no logos."
-            )
+Environmental movement:
+
+wind,
+
+cloth movement,
+
+hair movement,
+
+fog,
+
+leaves,
+
+natural light changes.
+
+No frozen poses.
+
+No sudden morphing.
+
+No text.
+
+No subtitles.
+
+No logos.
+"""
         )
 
         video_url = generate_video(
@@ -1612,22 +2485,30 @@ def create_episode(
         )
 
         raw_video = (
+
             workdir /
+
             f"raw_{index}.mp4"
         )
 
         normalized_video = (
+
             workdir /
+
             f"scene_{index}.mp4"
         )
 
         download_file(
+
             video_url,
+
             raw_video
         )
 
         normalize_video(
+
             raw_video,
+
             normalized_video
         )
 
@@ -1635,25 +2516,31 @@ def create_episode(
             normalized_video
         )
 
-    # -----------------------------------------------------
+    # =====================================================
     # 4. JOIN VIDEO
-    # -----------------------------------------------------
+    # =====================================================
 
     joined_video = (
+
         workdir /
+
         "joined.mp4"
     )
 
     concat_videos(
+
         scene_videos,
+
         joined_video
     )
 
-    # -----------------------------------------------------
-    # 5. ARABIC VOICE
-    # -----------------------------------------------------
+    # =====================================================
+    # 5. CHARACTER DIALOGUE AUDIO
+    # =====================================================
 
-    voice_files = []
+    scene_audio_files = []
+
+    scene_dialogue_meta = []
 
     for index, scene in enumerate(
 
@@ -1662,59 +2549,119 @@ def create_episode(
         start=1
     ):
 
-        audio = (
-            workdir /
-            f"voice_{index}.mp3"
-        )
-
         log(
-            f"Creating Arabic voice "
-            f"{index}/{SHOT_COUNT}..."
+            f"Building dialogue audio "
+            f"for scene {index}..."
         )
 
-        create_tts(
+        (
+            scene_audio,
+            dialogue_meta,
+            total_duration
+        ) = create_scene_audio(
 
-            scene[
-                "narration_ar"
-            ],
+            scene,
 
-            audio
+            index,
+
+            workdir
         )
 
-        if not audio.exists():
+        # ---------------------------------------------
+        # Safety check
+        # ---------------------------------------------
 
-            raise RuntimeError(
-                f"TTS did not create "
-                f"file: {audio}"
+        if total_duration > SHOT_DURATION:
+
+            log(
+                f"WARNING: Scene {index} "
+                f"dialogue is "
+                f"{total_duration:.2f}s "
+                f"for a {SHOT_DURATION}s shot."
             )
 
-        if audio.stat().st_size == 0:
+            # Compress slightly so the dialogue
+            # does not spill badly into the next scene.
 
-            raise RuntimeError(
-                f"TTS created empty file: "
-                f"{audio}"
+            fitted_audio = (
+
+                workdir /
+
+                f"scene_{index}_fitted.m4a"
             )
 
-        voice_files.append(
-            audio
+            ratio = (
+
+                total_duration /
+                SHOT_DURATION
+            )
+
+            # Limit the compression to avoid
+            # destroying voice quality.
+
+            ratio = max(
+                1.0,
+                min(
+                    ratio,
+                    1.35
+                )
+            )
+
+            tempo = ratio
+
+            run_ffmpeg([
+
+                "-i",
+                str(scene_audio),
+
+                "-filter:a",
+                f"atempo={tempo:.4f}",
+
+                "-c:a",
+                "aac",
+
+                "-b:a",
+                "128k",
+
+                str(fitted_audio)
+            ])
+
+            scene_audio = fitted_audio
+
+        scene_audio_files.append(
+            scene_audio
         )
+
+        scene_dialogue_meta.append(
+            dialogue_meta
+        )
+
+    # =====================================================
+    # 6. FULL DIALOGUE TRACK
+    # =====================================================
 
     voice_track = (
+
         workdir /
+
         "voice.m4a"
     )
 
-    concat_audio(
-        voice_files,
+    build_dialogue_track(
+
+        scene_audio_files,
+
         voice_track
     )
 
-    # -----------------------------------------------------
-    # 6. AMBIENCE
-    # -----------------------------------------------------
+    # =====================================================
+    # 7. AMBIENCE
+    # =====================================================
 
     ambience = (
+
         workdir /
+
         "ambience.m4a"
     )
 
@@ -1726,8 +2673,14 @@ def create_episode(
         * SHOT_DURATION
     )
 
+    # =====================================================
+    # 8. MIX
+    # =====================================================
+
     mixed_audio = (
+
         workdir /
+
         "mixed_audio.m4a"
     )
 
@@ -1740,12 +2693,14 @@ def create_episode(
         mixed_audio
     )
 
-    # -----------------------------------------------------
-    # 7. AUDIO + VIDEO
-    # -----------------------------------------------------
+    # =====================================================
+    # 9. AUDIO + VIDEO
+    # =====================================================
 
     voiced_video = (
+
         workdir /
+
         "voiced.mp4"
     )
 
@@ -1758,22 +2713,34 @@ def create_episode(
         voiced_video
     )
 
-    # -----------------------------------------------------
-    # 8. CAPTIONS
-    # -----------------------------------------------------
+    # =====================================================
+    # 10. SUBTITLES
+    # =====================================================
 
     srt = (
+
         workdir /
+
         "captions.srt"
     )
 
     create_srt(
+
         story["scenes"],
+
+        scene_dialogue_meta,
+
         srt
     )
 
+    # =====================================================
+    # 11. FINAL VIDEO
+    # =====================================================
+
     final_video = (
+
         workdir /
+
         "final.mp4"
     )
 
@@ -1812,7 +2779,9 @@ def telegram_api(
 ):
 
     url = (
+
         "https://api.telegram.org/"
+
         f"bot{BOT_TOKEN}/{method}"
     )
 
@@ -1919,19 +2888,21 @@ def process_message(
 
             "🎬 بدأت صناعة الحلقة...\n\n"
 
-            "🧠 كتابة القصة\n"
+            "🧠 كتابة السيناريو\n"
 
-            "👤 تثبيت الشخصية\n"
+            "🎭 بناء الشخصيات\n"
 
-            "🎨 بناء المشاهد\n"
+            "🎨 تثبيت الـ Cast\n"
 
-            "🎥 توليد الحركة السينمائية\n"
+            "🎥 بناء المشاهد\n"
 
-            "🎙️ الصوت العربي\n"
+            "🎬 الحركة السينمائية\n"
 
-            "📝 النص العربي\n"
+            "🎙️ أصوات الشخصيات\n"
 
-            "🎧 المؤثرات\n"
+            "📝 الترجمة العربية\n"
+
+            "🎧 الجو والمؤثرات\n"
 
             "✂️ المونتاج"
         )
@@ -1954,6 +2925,7 @@ def process_message(
 
             (
                 f"🎬 {story['title']}\n\n"
+
                 f"{story['hook']}"
             )
         )
@@ -1975,6 +2947,7 @@ def process_message(
                 chat_id,
 
                 "❌ صار خطأ أثناء صناعة الحلقة.\n\n"
+
                 "راجع Logs في Render."
             )
 
@@ -2036,7 +3009,10 @@ def health():
             SHOT_COUNT,
 
         "duration":
-            SHOT_DURATION
+            SHOT_DURATION,
+
+        "voices":
+            VOICE_CONFIG
     }
 
 
@@ -2047,19 +3023,25 @@ def health():
 def telegram_webhook():
 
     update = (
+
         request.get_json(
             silent=True
         )
+
         or {}
     )
 
     message = (
+
         update.get("message")
+
         or {}
     )
 
     chat = (
+
         message.get("chat")
+
         or {}
     )
 
@@ -2085,10 +3067,14 @@ def telegram_webhook():
 
             "🔥 أهلاً بك في Abosaraj.\n\n"
 
-            "اكتب فكرة الحلقة، مثال:\n\n"
+            "اكتب فكرة الحلقة.\n\n"
 
-            "رجل يسمع صوت زوجته المتوفاة "
-            "كل ليلة الساعة 3:17."
+            "مثال:\n\n"
+
+            "أميرة تهرب من قصر أبيها "
+            "بعد أن يقع قلبها في حب رجل غامض "
+            "يمتلك قوة محرمة، "
+            "وتجد في الغابة ذئبة بيضاء صغيرة."
         )
 
         return "ok", 200
@@ -2190,8 +3176,19 @@ if __name__ == "__main__":
     )
 
     log(
-        f"TTS: {TTS_VOICE}"
+        "VOICE CAST:"
     )
+
+    for character, config in (
+        VOICE_CONFIG.items()
+    ):
+
+        log(
+            f"  {character}: "
+            f"{config['voice']} "
+            f"rate={config['rate']} "
+            f"pitch={config['pitch']}"
+        )
 
     setup_webhook()
 
