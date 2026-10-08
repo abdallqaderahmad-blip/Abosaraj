@@ -4,7 +4,6 @@ import requests,edge_tts
 from flask import Flask,request
 from groq import Groq
 
-# ================= CONFIG =================
 BOT_TOKEN=os.environ["BOT_TOKEN"]
 GROQ_API_KEY=os.environ["GROQ_API_KEY"]
 WAVESPEED_API_KEY=os.getenv("WAVESPEED_API_KEY","")
@@ -12,16 +11,13 @@ PORT=int(os.getenv("PORT","10000"))
 RENDER_EXTERNAL_URL=os.getenv("RENDER_EXTERNAL_URL","").rstrip("/")
 GROQ_MODEL=os.getenv("GROQ_MODEL","openai/gpt-oss-120b")
 
-def envbool(k,d):
-    return os.getenv(k,d).lower() in ("1","true","yes","on")
-
+def envbool(k,d): return os.getenv(k,d).lower() in ("1","true","yes","on")
 TEST_MODE=envbool("TEST_MODE","true")
 LIPSYNC_ENABLED=envbool("LIPSYNC_ENABLED","false")
 LIPSYNC_MODE=os.getenv("LIPSYNC_MODE","face").lower()
 DEFAULT_LIPSYNC_EMOTION=os.getenv("LIPSYNC_EMOTION","neutral")
 MAX_LIPSYNC_SCENES=int(os.getenv("MAX_LIPSYNC_SCENES","1"))
 PRODUCTION_SCENE_LIMIT=int(os.getenv("PRODUCTION_SCENE_LIMIT","0"))
-
 SOUND_DESIGN_ENABLED=envbool("SOUND_DESIGN_ENABLED","true")
 MMAUDIO_STEPS=int(os.getenv("MMAUDIO_STEPS","25"))
 MMAUDIO_GUIDANCE=float(os.getenv("MMAUDIO_GUIDANCE","4.5"))
@@ -56,8 +52,7 @@ logging_lock=threading.Lock()
 processing_chats=set()
 
 def log(x):
-    with logging_lock:
-        print(f"[ABOSARAJ] {time.strftime('%H:%M:%S')} {x}",flush=True)
+    with logging_lock: print(f"[ABOSARAJ] {time.strftime('%H:%M:%S')} {x}",flush=True)
 
 def auth_headers():
     return {"Authorization":f"Bearer {WAVESPEED_API_KEY}","Content-Type":"application/json"}
@@ -69,7 +64,7 @@ def wavespeed_submit(model,payload):
     if TEST_MODE: raise RuntimeError("BLOCKED: WaveSpeed while TEST_MODE=true")
     if not WAVESPEED_API_KEY: raise RuntimeError("WAVESPEED_API_KEY is missing.")
     r=requests.post(f"{WAVESPEED_BASE}/{model}",headers=auth_headers(),json=payload,timeout=(10,60))
-    r.raise_for_status(); b=r.json()
+    r.raise_for_status();b=r.json()
     if b.get("code")!=200: raise RuntimeError(b.get("message","WaveSpeed task failed"))
     tid=b.get("data",{}).get("id")
     if not tid: raise RuntimeError(f"WaveSpeed returned no task id: {b}")
@@ -82,9 +77,9 @@ def wavespeed_wait(tid,timeout=900):
     while True:
         if time.time()-started>timeout: raise TimeoutError(f"WaveSpeed timeout: {tid}")
         r=requests.get(f"{WAVESPEED_BASE}/predictions/{tid}/result",headers=get_headers(),timeout=30)
-        r.raise_for_status(); b=r.json()
+        r.raise_for_status();b=r.json()
         if b.get("code")!=200: raise RuntimeError(b)
-        d=b["data"]; status=str(d.get("status","")).lower()
+        d=b["data"];status=str(d.get("status","")).lower()
         log(f"Task {tid}: {status}")
         if status=="completed":
             out=d.get("outputs")
@@ -103,7 +98,7 @@ def upload_to_wavespeed(path):
     path=Path(path)
     r=requests.post(f"{WAVESPEED_BASE}/media/uploads",headers=auth_headers(),
                     json={"filename":path.name,"size":path.stat().st_size},timeout=30)
-    r.raise_for_status(); b=r.json()
+    r.raise_for_status();b=r.json()
     if b.get("code")!=200: raise RuntimeError(b)
     d=b["data"]
     with path.open("rb") as f:
@@ -112,10 +107,9 @@ def upload_to_wavespeed(path):
     return d["download_url"]
 
 def download_file(url,path):
-    r=requests.get(url,timeout=180); r.raise_for_status()
-    Path(path).write_bytes(r.content); return path
+    r=requests.get(url,timeout=180);r.raise_for_status()
+    Path(path).write_bytes(r.content);return path
 
-# ================= GROQ SCHEMAS =================
 CHARACTER_SCHEMA={
 "type":"object","additionalProperties":False,
 "properties":{k:{"type":"string"} for k in ("identity","age","face","hair","clothes","colors")},
@@ -152,48 +146,28 @@ STORY_SCHEMA={
 "scenes":{"type":"array","minItems":4,"maxItems":4,"items":SCENE_SCHEMA}},
 "required":["title","hook","cast","visual_style","cast_reference_prompt","scenes"]}
 
-# ================= STORY =================
 def create_story(user_idea):
     system=f"""
-أنت كاتب سيناريو عربي ومخرج ومدير تصوير ومشرف استمرارية
-ومصمم صوت سينمائي.
+أنت كاتب سيناريو عربي ومخرج ومدير تصوير ومشرف استمرارية ومصمم صوت سينمائي.
+اصنع Microdrama عربي Dark Fantasy + Romance + Mystery + Suspense + Supernatural Drama.
 
-اصنع Microdrama عربي:
-Dark Fantasy + Romance + Mystery + Suspense + Supernatural Drama.
-
-العالم:
-رجل غامض جذاب بقوة خارقة، أميرة تحبه، ملك يعرف سراً خطيراً عنه،
-وذئبة بيضاء صغيرة لا تتكلم.
-
-الفكرة:
-{user_idea}
+العالم: رجل غامض جذاب بقوة خارقة، أميرة تحبه، ملك يعرف سراً خطيراً عنه، وذئبة بيضاء صغيرة لا تتكلم.
+الفكرة: {user_idea}
 
 اصنع {SHOT_COUNT} لقطات، مدة كل لقطة {SHOT_DURATION} ثوانٍ.
-
-Visual:
-realistic cinematic Arabic fantasy drama, photorealistic,
-professional film lighting, realistic skin/fabric/fur,
-volumetric moonlight, fog, shallow DOF, anamorphic look,
-rim light, natural body/head/eye/blink/mouth/hand/arm/finger/
-breathing/cloth/hair movement, realistic hands and eyes,
-vertical 9:16, high production value.
-
+Visual: realistic cinematic Arabic fantasy drama, photorealistic, professional film lighting,
+realistic skin/fabric/fur, volumetric moonlight, fog, shallow DOF, anamorphic look,
+rim light, natural body/head/eye/blink/mouth/hand/arm/finger/breathing/cloth/hair movement,
+realistic hands and eyes, vertical 9:16, high production value.
 ممنوع anime/cartoon/illustration/game art/plastic skin/text/logo/watermark.
 
-كل لقطة فيها متحدث بشري واحد فقط، وحوار قصير 5-12 كلمة.
+كل لقطة فيها متحدث بشري واحد فقط وحوار قصير 5-12 كلمة.
 الذئبة لا تتكلم، فقط whimper/growl/howl/breathing.
-
-sound = cue sheet تنفيذي يحتوي environment,Foley,footsteps,cloth,
-hair,metal/wood,wolf vocalization,whoosh,impact,supernatural power,
-risers/stingers والتوقيت التقريبي [0.0-1.5s].
+sound = cue sheet تنفيذي يحتوي environment,Foley,footsteps,cloth,hair,metal/wood,
+wolf vocalization,whoosh,impact,supernatural power,risers/stingers والتوقيت التقريبي.
 لا تضع موسيقى داخل sound.
-
-music = instrumental cinematic score فقط بلا غناء أو كلمات.
-حدد mood والآلات والطاقة والتصعيد.
-
-كل لقطة: hook ثم تصعيد ثم كشف/خطر ثم cliffhanger.
-لا تحل الأسرار.
-
+music = instrumental cinematic score فقط بلا غناء أو كلمات، مع mood والآلات والطاقة والتصعيد.
+كل لقطة hook ثم تصعيد ثم كشف/خطر ثم cliffhanger. لا تحل الأسرار.
 JSON فقط.
 """
     r=groq.chat.completions.create(
@@ -204,17 +178,17 @@ JSON فقط.
             {"role":"system","content":system},
             {"role":"user","content":f"حوّل الفكرة إلى {SHOT_COUNT} لقطات مدة كل منها {SHOT_DURATION} ثوانٍ. JSON فقط.\n\n{user_idea}"}
         ])
-    if not r.choices[0].message.content: raise RuntimeError("Groq returned empty story.")
-    story=json.loads(r.choices[0].message.content)
+    content=r.choices[0].message.content
+    if not content: raise RuntimeError("Groq returned empty story.")
+    story=json.loads(content)
     if len(story.get("scenes",[]))!=SHOT_COUNT: raise RuntimeError("Wrong scene count.")
     return story
 
-# ================= FFMPEG =================
 def run_cmd(cmd,timeout=300):
     log("CMD: "+" ".join(map(str,cmd)))
     r=subprocess.run(cmd,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,timeout=timeout)
     if r.returncode:
-        log(r.stderr[-4000:]); raise RuntimeError(f"Command failed: {r.returncode}")
+        log(r.stderr[-4000:]);raise RuntimeError(f"Command failed: {r.returncode}")
     return r
 
 def ffprobe_duration(path):
@@ -228,17 +202,6 @@ def normalize_audio_to_wav(inp,out,duration=None):
     cmd=["ffmpeg","-y","-i",str(inp),"-ac","1","-ar","24000","-sample_fmt","s16"]
     if duration:cmd+=["-t",str(duration)]
     cmd+=[str(out)];run_cmd(cmd,120);return out
-
-def find_arabic_font():
-    for p in [
-        "/usr/share/fonts/truetype/noto/NotoNaskhArabic-Regular.ttf",
-        "/usr/share/fonts/opentype/noto/NotoNaskhArabic-Regular.ttf",
-        "/usr/share/fonts/truetype/noto/NotoSansArabic-Regular.ttf",
-        "/usr/share/fonts/opentype/noto/NotoKufiArabic-Regular.ttf",
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-        "/usr/share/fonts/truetype/freefont/FreeSans.ttf"]:
-        if Path(p).exists():return p
-    return None
 
 def ass_escape(x):
     return str(x).replace("\\","\\\\").replace("{","\\{").replace("}","\\}")
@@ -257,9 +220,9 @@ def create_ass(meta,out):
     "[Events]","Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text"]
     for x in meta:
         lines.append(f"Dialogue: 0,{ass_time(x['start'])},{ass_time(x['end'])},Default,,0,0,0,,{ass_escape(x['text'])}")
-    Path(out).write_text("\n".join(lines),encoding="utf-8");return out
+    Path(out).write_text("\n".join(lines),encoding="utf-8")
+    return out
 
-# ================= TTS =================
 async def _tts(text,voice,out,rate="-5%",pitch=None):
     kw={"text":text,"voice":voice,"rate":rate}
     if pitch:kw["pitch"]=pitch
@@ -282,30 +245,29 @@ def silent(duration,out):
              "anullsrc=channel_layout=stereo:sample_rate=48000",
              "-t",str(duration),"-ar","48000","-ac","2",str(out)],120)
     return out
-    # ================= AUDIO TRACKS =================
+
 def build_dialogue_track(scenes,duration,workdir):
-    workdir=Path(workdir);items=[]
+    items=[]
     for i,scene in enumerate(scenes):
         ds=scene.get("dialogue",[])
         if not ds:continue
         d=ds[0];text=str(d.get("text","")).strip();speaker=d.get("speaker","narrator")
         if not text:continue
-        mp3=workdir/f"d{i}.mp3";wav=workdir/f"d{i}.wav";fit=workdir/f"d{i}_fit.wav"
+        mp3=Path(workdir)/f"d{i}.mp3";wav=Path(workdir)/f"d{i}.wav";fit=Path(workdir)/f"d{i}_fit.wav"
         create_voice_audio(text,speaker,mp3);normalize_audio_to_wav(mp3,wav);fit_audio(wav,fit,SHOT_DURATION)
         items.append((i,fit))
-    if not items:return silent(duration,workdir/"dialogue_track.wav")
-    cmd=["ffmpeg","-y"]
-    for _,p in items:cmd+=["-i",str(p)]
-    filters=[];labels=[]
+    if not items:return silent(duration,Path(workdir)/"dialogue_track.wav")
+    cmd=["ffmpeg","-y"];filters=[];labels=[]
     for n,(i,p) in enumerate(items):
-        delay=i*SHOT_DURATION*1000;lab=f"a{n}"
+        cmd+=["-i",str(p)]
+        lab=f"a{n}";delay=i*SHOT_DURATION*1000
         filters.append(f"[{n}:a]adelay={delay}|{delay},aresample=48000,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo[{lab}]")
         labels.append(f"[{lab}]")
     if len(labels)==1:
         filters.append(f"{labels[0]}atrim=0:{duration},asetpts=N/SR/TB[d]")
     else:
         filters.append("".join(labels)+f"amix=inputs={len(labels)}:duration=longest:dropout_transition=0,atrim=0:{duration},asetpts=N/SR/TB[d]")
-    out=workdir/"dialogue_track.wav"
+    out=Path(workdir)/"dialogue_track.wav"
     cmd+=["-filter_complex",";".join(filters),"-map","[d]","-t",str(duration),"-ar","48000","-ac","2",str(out)]
     run_cmd(cmd,180);return out
 
@@ -316,7 +278,6 @@ def create_local_ambience(duration,out):
              "-t",str(duration),"-ar","48000","-ac","2",str(out)],120)
     return out
 
-# ================= TEST VIDEO =================
 def create_test_scene_video(i,out):
     a=["0x17101f","0x10202a","0x201710","0x111c14"][i%4]
     b=["0x382345","0x193d4a","0x4b3018","0x203c25"][i%4]
@@ -326,11 +287,11 @@ def create_test_scene_video(i,out):
        f"color={b}@0.35:t=fill,"
        "drawbox=x='220+100*cos(t*0.5)':y='500+70*sin(t)':w=280:h=280:"
        "color=white@0.07:t=fill")
-    run_cmd(["ffmpeg","-y","-f","lavfi","-i",f,"-t",str(SHOT_DURATION),"-r",str(VIDEO_FPS),
-             "-an","-c:v","libx264","-preset","veryfast","-pix_fmt","yuv420p",str(out)])
+    run_cmd(["ffmpeg","-y","-f","lavfi","-i",f,"-t",str(SHOT_DURATION),
+             "-r",str(VIDEO_FPS),"-an","-c:v","libx264","-preset","veryfast",
+             "-pix_fmt","yuv420p",str(out)])
     return out
 
-# ================= IMAGE / VIDEO =================
 def generate_image(prompt,out):
     if TEST_MODE:return None
     tid=wavespeed_submit(IMAGE_MODEL,{"prompt":prompt,"size":"720*1280"})
@@ -339,37 +300,34 @@ def generate_image(prompt,out):
 def generate_cast_reference(story,out):
     p=story.get("cast_reference_prompt") or """
 Photorealistic cinematic Arabic fantasy cast reference.
-Exactly four recurring characters:
-handsome mysterious supernatural man, beautiful Arabian princess,
-small white female wolf pup, powerful Arab king.
-Consistent identity, clothing and proportions.
-Realistic skin, fabric and fur, moonlight, fog, anamorphic film look,
-high production value, vertical 9:16.
-No text, labels, logo, watermark, anime, cartoon, illustration or game art.
+Exactly four recurring characters: handsome mysterious supernatural man,
+beautiful Arabian princess, small white female wolf pup, powerful Arab king.
+Consistent identity, clothing and proportions. Realistic skin,fabric,fur,
+moonlight,fog,anamorphic film look,high production value,vertical 9:16.
+No text,labels,logo,watermark,anime,cartoon,illustration or game art.
 """
     return generate_image(p,out)
-
 def generate_scene_video(image_path,prompt,out):
     if TEST_MODE:return None
     image_url=upload_to_wavespeed(image_path)
     p=f"""{prompt}
-Natural cinematic motion: subtle eyes, blinking, facial expression,
-mouth, breathing, head, shoulders, hands, fingers, body weight,
-walking when appropriate, hair, cloth, fog and animal fur.
-Preserve exact identity, face, clothing, anatomy and environment.
-No morphing, extra fingers, deformed hands, duplicated characters,
-text, watermark or logo. Photorealistic cinematic 9:16."""
-    tid=wavespeed_submit(VIDEO_MODEL,{"image":image_url,"prompt":p,"duration":SHOT_DURATION,"resolution":"480p"})
+Natural cinematic motion: subtle eyes, blinking, facial expression, mouth,
+breathing, head, shoulders, hands, fingers, body weight, walking when appropriate,
+hair, cloth, fog and animal fur. Preserve exact identity, face, clothing,
+anatomy and environment. No morphing,extra fingers,deformed hands,
+duplicated characters,text,watermark or logo. Photorealistic cinematic 9:16."""
+    tid=wavespeed_submit(VIDEO_MODEL,{"image":image_url,"prompt":p,
+                                     "duration":SHOT_DURATION,"resolution":"480p"})
     return download_file(wavespeed_wait(tid,900),out)
 
 def generate_lipsync_video(video,audio,out):
     if TEST_MODE or not LIPSYNC_ENABLED:return video
     vu=upload_to_wavespeed(video);au=upload_to_wavespeed(audio)
-    tid=wavespeed_submit(LIPSYNC_MODEL,{"video":vu,"audio":au,"model_mode":LIPSYNC_MODE,"emotion":DEFAULT_LIPSYNC_EMOTION})
+    tid=wavespeed_submit(LIPSYNC_MODEL,{"video":vu,"audio":au,
+                                        "model_mode":LIPSYNC_MODE,
+                                        "emotion":DEFAULT_LIPSYNC_EMOTION})
     return download_file(wavespeed_wait(tid,900),out)
-
-# ================= MMAUDIO =================
-def generate_scene_sfx(video,sound,idx,workdir):
+    def generate_scene_sfx(video,sound,idx,workdir):
     if not SOUND_DESIGN_ENABLED or TEST_MODE or not video:return None
     vu=upload_to_wavespeed(video)
     prompt=f"""
@@ -379,108 +337,89 @@ Follow visible actions precisely.
 Cue sheet:
 {sound}
 
-Include realistic environment, Foley, footsteps, cloth, hair, wood,
-metal, animal sounds, wolf breathing/whimper/growl/howl when visible,
-wind, leaves, whooshes, impacts, supernatural energy, low rumbles,
-risers, stingers and spatial perspective.
-
+Include realistic environment,Foley,footsteps,cloth,hair,wood,metal,
+animal sounds,wolf breathing/whimper/growl/howl when visible,wind,leaves,
+whooshes,impacts,supernatural energy,low rumbles,risers,stingers and spatial perspective.
 Match exact timing and physical movement.
-NO speech, dialogue, narration, singing, lyrics, music, melody or voice.
-Professional cinematic film sound, natural dynamic range, no clipping.
+NO speech,dialogue,narration,singing,lyrics,music,melody or voice.
+Professional cinematic film sound,natural dynamic range,no clipping.
 """
     payload={
-        "video":vu,
-        "prompt":prompt,
-        "duration":SHOT_DURATION,
-        "steps":MMAUDIO_STEPS,
-        "guidance_scale":MMAUDIO_GUIDANCE,
+        "video":vu,"prompt":prompt,"duration":SHOT_DURATION,
+        "steps":MMAUDIO_STEPS,"guidance_scale":MMAUDIO_GUIDANCE,
         "negative_prompt":"speech, dialogue, narration, singing, lyrics, music, melody, voice, distortion, clipping, digital noise"}
     tid=wavespeed_submit(SFX_MODEL,payload)
-    raw=workdir/f"sfx_{idx:02d}.wav"
-    norm=workdir/f"sfx_{idx:02d}_norm.wav"
+    raw=Path(workdir)/f"sfx_{idx:02d}.wav"
+    norm=Path(workdir)/f"sfx_{idx:02d}_norm.wav"
     download_file(wavespeed_wait(tid,900),raw)
     return normalize_audio_to_wav(raw,norm,SHOT_DURATION)
 
 def build_sfx_track(files,duration,workdir):
-    workdir=Path(workdir)
-    # Keep original scene index; missing SFX must not shift later scenes.
     valid=[(i,p) for i,p in enumerate(files) if p and Path(p).exists()]
-    if not valid:return silent(duration,workdir/"sfx_track.wav")
+    if not valid:return silent(duration,Path(workdir)/"sfx_track.wav")
     cmd=["ffmpeg","-y"];filters=[];labels=[]
     for n,(i,p) in enumerate(valid):
         cmd+=["-i",str(p)]
-        delay=i*SHOT_DURATION*1000;lab=f"s{n}"
+        lab=f"s{n}";delay=i*SHOT_DURATION*1000
         filters.append(f"[{n}:a]adelay={delay}|{delay},aresample=48000,volume={SFX_VOLUME},aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo[{lab}]")
         labels.append(f"[{lab}]")
     if len(labels)==1:
         filters.append(f"{labels[0]}atrim=0:{duration},asetpts=N/SR/TB[s]")
     else:
         filters.append("".join(labels)+f"amix=inputs={len(labels)}:duration=longest:dropout_transition=0,atrim=0:{duration},asetpts=N/SR/TB[s]")
-    out=workdir/"sfx_track.wav"
-    cmd+=["-filter_complex",";".join(filters),"-map","[s]","-t",str(duration),"-ar","48000","-ac","2",str(out)]
+    out=Path(workdir)/"sfx_track.wav"
+    cmd+=["-filter_complex",";".join(filters),"-map","[s]","-t",str(duration),
+          "-ar","48000","-ac","2",str(out)]
     run_cmd(cmd,180);return out
 
-# ================= MUSIC =================
 def build_music_prompt(story,scenes):
     cues="\n".join(f"Scene {i+1}: {s.get('music','')}" for i,s in enumerate(scenes) if s.get("music"))
     return f"""
 Instrumental cinematic score for Arabic dark fantasy romance mystery.
 Title: {story.get('title','Dark Arabic Fantasy')}
-
-Mood: romantic mystery, supernatural dread, ancient secret,
-night forest, royal palace, forbidden love, danger, emotional tension,
-slow escalation and unresolved cliffhanger.
-
-Instrumentation: oud-like plucked texture, low cinematic strings,
-deep cello, soft frame drum, subtle Arabic percussion, atmospheric pads,
-distant choir-like texture WITHOUT WORDS, deep sub bass, sparse piano,
-metallic supernatural textures.
-
-Begin intimate and mysterious, gradually increase tension,
-darker harmonic movement, supernatural revelation and strong unresolved ending.
-
-Absolutely instrumental. No vocals, lyrics or spoken words.
-
+Mood: romantic mystery, supernatural dread, ancient secret,night forest,
+royal palace,forbidden love,danger,emotional tension,slow escalation,
+unresolved cliffhanger.
+Instrumentation: oud-like plucked texture,low cinematic strings,deep cello,
+soft frame drum,subtle Arabic percussion,atmospheric pads,distant choir-like
+texture WITHOUT WORDS,deep sub bass,sparse piano,metallic supernatural textures.
+Begin intimate and mysterious,gradually increase tension,darker harmonic movement,
+supernatural revelation and strong unresolved ending.
+Absolutely instrumental. No vocals,lyrics or spoken words.
 Scene cues:
 {cues}
 """
 
 def generate_music(story,scenes,duration,workdir):
     if not MUSIC_ENABLED or TEST_MODE:return None
-    payload={
-        "prompt":build_music_prompt(story,scenes),
-        "duration":int(max(5,min(240,duration))),
-        "instrumental":True,
-        "seed":24117}
+    payload={"prompt":build_music_prompt(story,scenes),
+             "duration":int(max(5,min(240,duration))),
+             "instrumental":True,"seed":24117}
     tid=wavespeed_submit(MUSIC_MODEL,payload)
-    raw=workdir/"music_raw.wav";out=workdir/"music.wav"
+    raw=Path(workdir)/"music_raw.wav";out=Path(workdir)/"music.wav"
     download_file(wavespeed_wait(tid,900),raw)
     run_cmd(["ffmpeg","-y","-i",str(raw),"-af",
              f"aresample=48000,volume={MUSIC_VOLUME},atrim=0:{duration},asetpts=N/SR/TB",
              "-t",str(duration),"-ar","48000","-ac","2",str(out)],180)
     return out
 
-# ================= FINAL MIX =================
 def mix_final_audio(dialogue,sfx,music,ambience,duration,out):
-    paths=[dialogue,sfx,music,ambience]
-    cmd=["ffmpeg","-y"]
+    paths=[dialogue,sfx,music,ambience];cmd=["ffmpeg","-y"]
     for p in paths:
         if p and Path(p).exists():cmd+=["-i",str(p)]
-        else:cmd+=["-f","lavfi","-t",str(duration),"-i","anullsrc=channel_layout=stereo:sample_rate=48000"]
+        else:cmd+=["-f","lavfi","-t",str(duration),"-i",
+                   "anullsrc=channel_layout=stereo:sample_rate=48000"]
     filters=[
         f"[0:a]aresample=48000,volume={VOICE_VOLUME},atrim=0:{duration},asetpts=N/SR/TB[v]",
         f"[1:a]aresample=48000,volume={SFX_VOLUME},atrim=0:{duration},asetpts=N/SR/TB[s]",
         f"[2:a]aresample=48000,volume={MUSIC_VOLUME},atrim=0:{duration},asetpts=N/SR/TB[m]",
         f"[3:a]aresample=48000,volume={AMBIENCE_VOLUME},atrim=0:{duration},asetpts=N/SR/TB[a]",
         "[v][s][m][a]amix=inputs=4:duration=longest:dropout_transition=0,"
-        "alimiter=limit=0.95:attack=5:release=50,"
-        "aresample=48000[aout]"
-    ]
+        "alimiter=limit=0.95:attack=5:release=50,aresample=48000[aout]"]
     cmd+=["-filter_complex",";".join(filters),"-map","[aout]","-t",str(duration),
           "-ar","48000","-ac","2","-c:a","aac","-b:a","192k",str(out)]
     run_cmd(cmd,240);return out
 
-# ================= VIDEO =================
 def normalize_scene_video(inp,out):
     run_cmd(["ffmpeg","-y","-i",str(inp),"-vf",
              f"scale={VIDEO_WIDTH}:{VIDEO_HEIGHT}:force_original_aspect_ratio=decrease,"
@@ -490,17 +429,13 @@ def normalize_scene_video(inp,out):
     return out
 
 def concat_videos(files,out):
-    """
-    Safe concat list.
-    IMPORTANT: no backslash inside an f-string expression.
-    """
-    lf=Path(out).parent/"concat_list.txt"
-    lines=[]
+    lf=Path(out).parent/"concat_list.txt";lines=[]
     for video in files:
         p=str(Path(video).resolve()).replace("'","'\\''")
         lines.append("file '"+p+"'")
     lf.write_text("\n".join(lines),encoding="utf-8")
-    run_cmd(["ffmpeg","-y","-f","concat","-safe","0","-i",str(lf),"-c","copy",str(out)],180)
+    run_cmd(["ffmpeg","-y","-f","concat","-safe","0","-i",str(lf),
+             "-c","copy",str(out)],180)
     return out
 
 def add_audio_to_video(video,audio,duration,out):
@@ -522,10 +457,11 @@ def build_scene_meta(scenes):
 def burn_subtitles(video,ass,out):
     esc=str(Path(ass)).replace("\\","\\\\").replace(":","\\:")
     run_cmd(["ffmpeg","-y","-i",str(video),"-vf",f"subtitles='{esc}'",
-             "-c:v","libx264","-preset","veryfast","-crf","19","-pix_fmt","yuv420p",
-             "-c:a","copy","-t",str(ffprobe_duration(video)),str(out)],240)
+             "-c:v","libx264","-preset","veryfast","-crf","19",
+             "-pix_fmt","yuv420p","-c:a","copy","-t",str(ffprobe_duration(video)),
+             str(out)],240)
     return out
-    # ================= PRODUCTION =================
+
 def produce_episode(story,workdir):
     workdir=Path(workdir);workdir.mkdir(parents=True,exist_ok=True)
     scenes=story.get("scenes",[])
@@ -534,13 +470,9 @@ def produce_episode(story,workdir):
     count=len(scenes);duration=count*SHOT_DURATION
     log(f"Producing {count} scenes ({duration}s)")
 
-    if not TEST_MODE:
-        generate_cast_reference(story,workdir/"cast_reference.png")
+    if not TEST_MODE:generate_cast_reference(story,workdir/"cast_reference.png")
 
-    scene_videos=[];sfx_files=[]
-
-    # Create the exact dialogue audio that React-1 will use.
-    dialogue_scene_audio=[]
+    scene_videos=[];sfx_files=[];dialogue_scene_audio=[]
     for i,s in enumerate(scenes):
         ds=s.get("dialogue",[])
         if ds:
@@ -562,19 +494,16 @@ def produce_episode(story,workdir):
         final=workdir/f"scene_{i:02d}_final.mp4"
         norm=workdir/f"scene_{i:02d}_normalized.mp4"
 
-        if TEST_MODE:
-            create_test_scene_video(i,base)
+        if TEST_MODE:create_test_scene_video(i,base)
         else:
             image=workdir/f"scene_{i:02d}.png"
             generate_image(s.get("scene_image_prompt",""),image)
             generate_scene_video(image,s.get("video_prompt",""),base)
 
         speaker,audio=dialogue_scene_audio[i]
-
         if LIPSYNC_ENABLED and not TEST_MODE and i<MAX_LIPSYNC_SCENES and speaker in {"male_lead","princess","king","guard","narrator"}:
             generate_lipsync_video(base,audio,final)
-        else:
-            shutil.copyfile(base,final)
+        else:shutil.copyfile(base,final)
 
         normalize_scene_video(final,norm)
         scene_videos.append(norm)
@@ -611,7 +540,6 @@ def produce_episode(story,workdir):
     log(f"FINAL VIDEO READY: {final} ({fd:.2f}s)")
     return {"video":final,"duration":fd,"scene_count":count}
 
-# ================= TELEGRAM =================
 def telegram_api(method,payload=None,files=None):
     r=requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/{method}",
                     data=payload or {},files=files,timeout=180)
@@ -660,15 +588,14 @@ def process_story_for_chat(chat_id,idea):
         (workdir/"story.json").write_text(json.dumps(story,ensure_ascii=False,indent=2),encoding="utf-8")
         send_message(chat_id,f"🎬 السيناريو جاهز.\n📖 {story.get('title','Untitled')}\n\nهلا بنبني الحلقة.")
         result=produce_episode(story,workdir)
-        caption=(
-            "🎬 ABOSARAJ\n\n"
-            f"📖 {story.get('title','حلقة جديدة')}\n"
-            f"🎞️ {result['scene_count']} مشاهد\n"
-            f"⏱️ {result['duration']:.1f} ثانية\n\n"
-            "🎙️ Multi-Character Voices: ON\n"
-            f"🔊 Cinematic SFX: {'ON' if SOUND_DESIGN_ENABLED and not TEST_MODE else 'TEST-SILENT'}\n"
-            f"🎵 Cinematic Score: {'ON' if MUSIC_ENABLED and not TEST_MODE else 'TEST-SILENT'}\n"
-            "📝 Arabic Subtitles: ON")
+        caption=("🎬 ABOSARAJ\n\n"
+                 f"📖 {story.get('title','حلقة جديدة')}\n"
+                 f"🎞️ {result['scene_count']} مشاهد\n"
+                 f"⏱️ {result['duration']:.1f} ثانية\n\n"
+                 "🎙️ Multi-Character Voices: ON\n"
+                 f"🔊 Cinematic SFX: {'ON' if SOUND_DESIGN_ENABLED and not TEST_MODE else 'TEST-SILENT'}\n"
+                 f"🎵 Cinematic Score: {'ON' if MUSIC_ENABLED and not TEST_MODE else 'TEST-SILENT'}\n"
+                 "📝 Arabic Subtitles: ON")
         if LIPSYNC_ENABLED and not TEST_MODE:caption+="\n👄 Lip Sync: ON"
         send_video(chat_id,result["video"],caption)
         send_message(chat_id,"✅ الحلقة وصلت.")
@@ -683,7 +610,6 @@ def process_story_for_chat(chat_id,idea):
 def start_processing(chat_id,idea):
     threading.Thread(target=process_story_for_chat,args=(chat_id,idea),daemon=True).start()
 
-# ================= FLASK =================
 @app.get("/")
 def home():
     return {"status":"ok","service":"Abosaraj","test_mode":TEST_MODE,
@@ -691,24 +617,23 @@ def home():
 
 @app.get("/health")
 def health():
-    return {
-        "status":"healthy","service":"abosaraj","test_mode":TEST_MODE,
-        "wavespeed_configured":bool(WAVESPEED_API_KEY),
-        "groq_configured":bool(GROQ_API_KEY),
-        "sound_design_enabled":SOUND_DESIGN_ENABLED,
-        "music_enabled":MUSIC_ENABLED,
-        "lipsync_enabled":LIPSYNC_ENABLED,
-        "lipsync_mode":LIPSYNC_MODE,
-        "max_lipsync_scenes":MAX_LIPSYNC_SCENES,
-        "production_scene_limit":PRODUCTION_SCENE_LIMIT}
+    return {"status":"healthy","service":"abosaraj","test_mode":TEST_MODE,
+            "wavespeed_configured":bool(WAVESPEED_API_KEY),
+            "groq_configured":bool(GROQ_API_KEY),
+            "sound_design_enabled":SOUND_DESIGN_ENABLED,
+            "music_enabled":MUSIC_ENABLED,"lipsync_enabled":LIPSYNC_ENABLED,
+            "lipsync_mode":LIPSYNC_MODE,"max_lipsync_scenes":MAX_LIPSYNC_SCENES,
+            "production_scene_limit":PRODUCTION_SCENE_LIMIT}
 
 @app.post("/webhook")
+@app.post("/telegram/webhook")
 def webhook():
     update=request.get_json(silent=True) or {}
     message=update.get("message") or {}
     chat=message.get("chat") or {}
     chat_id=chat.get("id")
     text=message.get("text")
+    log(f"Telegram update received: chat={chat_id}, text={text!r}")
     if not chat_id or not text:return {"ok":True}
     text=text.strip()
 
@@ -739,7 +664,6 @@ def webhook():
     start_processing(chat_id,text)
     return {"ok":True}
 
-# ================= WEBHOOK =================
 def setup_webhook():
     if TEST_MODE:
         log("TEST_MODE=true — webhook setup skipped.")
@@ -753,25 +677,19 @@ def setup_webhook():
             data={"url":f"{RENDER_EXTERNAL_URL}/webhook"},
             timeout=30)
         log("Webhook response: "+r.text)
-    except Exception as e:
-        log("Webhook setup failed: "+repr(e))
+    except Exception as e:log("Webhook setup failed: "+repr(e))
 
 def print_startup():
     log("========================================")
     log("ABOSARAJ AI VIDEO BOT")
     log("========================================")
     for k,v in {
-        "TEST_MODE":TEST_MODE,
-        "SOUND_DESIGN":SOUND_DESIGN_ENABLED,
-        "MUSIC":MUSIC_ENABLED,
-        "LIPSYNC":LIPSYNC_ENABLED,
-        "LIPSYNC_MODE":LIPSYNC_MODE,
-        "MAX_LIPSYNC_SCENES":MAX_LIPSYNC_SCENES,
+        "TEST_MODE":TEST_MODE,"SOUND_DESIGN":SOUND_DESIGN_ENABLED,
+        "MUSIC":MUSIC_ENABLED,"LIPSYNC":LIPSYNC_ENABLED,
+        "LIPSYNC_MODE":LIPSYNC_MODE,"MAX_LIPSYNC_SCENES":MAX_LIPSYNC_SCENES,
         "PRODUCTION_SCENE_LIMIT":PRODUCTION_SCENE_LIMIT,
-        "SHOT_COUNT":SHOT_COUNT,
-        "SHOT_DURATION":SHOT_DURATION,
-        "TOTAL_DURATION":TOTAL_DURATION,
-        "MMAUDIO_STEPS":MMAUDIO_STEPS,
+        "SHOT_COUNT":SHOT_COUNT,"SHOT_DURATION":SHOT_DURATION,
+        "TOTAL_DURATION":TOTAL_DURATION,"MMAUDIO_STEPS":MMAUDIO_STEPS,
         "MMAUDIO_GUIDANCE":MMAUDIO_GUIDANCE}.items():
         log(f"{k}={v}")
     log("========================================")
