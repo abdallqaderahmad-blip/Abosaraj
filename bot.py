@@ -1,16 +1,16 @@
 import os
-import re
 import json
 import time
-import uuid
 import asyncio
-import logging
+import shutil
 import tempfile
+import threading
 import subprocess
 from pathlib import Path
 
 import requests
 import edge_tts
+
 from flask import Flask, request
 from groq import Groq
 
@@ -26,380 +26,965 @@ WAVESPEED_API_KEY = os.environ["WAVESPEED_API_KEY"]
 PORT = int(os.getenv("PORT", "10000"))
 RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL", "").rstrip("/")
 
-GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+GROQ_MODEL = os.getenv(
+    "GROQ_MODEL",
+    "llama-3.3-70b-versatile"
+)
 
-VIDEO_SHOTS = 4
+# ---- Production format ----
+
+SHOT_COUNT = 4
 SHOT_DURATION = 5
 
-FINAL_WIDTH = 720
-FINAL_HEIGHT = 1280
-FINAL_FPS = 16
+VIDEO_WIDTH = 720
+VIDEO_HEIGHT = 1280
+VIDEO_FPS = 24
 
 TTS_VOICE = "ar-SA-HamedNeural"
 
-WAVESPEED_BASE = "https://api.wavespeed.ai/api/v3"
-IMAGE_MODEL = "wavespeed-ai/z-image/turbo"
-VIDEO_MODEL = "wavespeed-ai/wan-2.2/i2v-480p-ultra-fast"
+# ---- WaveSpeed ----
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(message)s"
+WAVESPEED_BASE = "https://api.wavespeed.ai/api/v3"
+
+IMAGE_MODEL = "wavespeed-ai/z-image/turbo"
+IMAGE_EDIT_MODEL = "wavespeed-ai/z-image-turbo/image-to-image"
+
+VIDEO_MODEL = (
+    "wavespeed-ai/wan-2.2/i2v-480p-ultra-fast"
 )
 
-log = logging.getLogger("abosaraj")
+# =========================================================
+# APP
+# =========================================================
 
 app = Flask(__name__)
 groq = Groq(api_key=GROQ_API_KEY)
 
-processed_updates = set()
+logging_lock = threading.Lock()
+
+
+def log(message):
+    with logging_lock:
+        print(
+            f"[ABOSARAJ] {time.strftime('%H:%M:%S')} "
+            f"{message}",
+            flush=True
+        )
 
 
 # =========================================================
-# BASIC HELPERS
+# HTTP
 # =========================================================
 
-def run_cmd(cmd):
-    log.info("CMD: %s", " ".join(map(str, cmd)))
-
-    result = subprocess.run(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True
-    )
-
-    if result.returncode != 0:
-        raise RuntimeError(result.stderr[-4000:])
-
-    return result.stdout
-
-
-def download_file(url, path):
-    r = requests.get(url, timeout=120)
-    r.raise_for_status()
-
-    with open(path, "wb") as f:
-        f.write(r.content)
-
-    return path
-
-
-# =========================================================
-# WAVESPEED
-# =========================================================
-
-def wavespeed_headers():
+def auth_headers():
     return {
         "Authorization": f"Bearer {WAVESPEED_API_KEY}",
         "Content-Type": "application/json"
     }
 
 
+def get_headers():
+    return {
+        "Authorization": f"Bearer {WAVESPEED_API_KEY}"
+    }
+
+
+# =========================================================
+# WAVESPEED
+# =========================================================
+
 def wavespeed_submit(model, payload):
+    """
+    Submit ONE task.
+
+    IMPORTANT:
+    We never blindly repeat this POST.
+    WaveSpeed warns that a disconnected response may still
+    mean the task was accepted/billed.
+    """
+
     url = f"{WAVESPEED_BASE}/{model}"
 
-    r = requests.post(
+    log(f"WaveSpeed submit: {model}")
+
+    response = requests.post(
         url,
-        headers=wavespeed_headers(),
+        headers=auth_headers(),
         json=payload,
         timeout=(10, 60)
     )
 
-    r.raise_for_status()
+    response.raise_for_status()
 
-    body = r.json()
+    body = response.json()
 
-    if body.get("code") not in (None, 200):
-        raise RuntimeError(body.get("message", "WaveSpeed submit failed"))
+    if body.get("code") != 200:
+        raise RuntimeError(
+            body.get("message", "WaveSpeed task failed")
+        )
 
-    data = body.get("data", body)
+    data = body["data"]
 
     task_id = data.get("id")
 
     if not task_id:
-        raise RuntimeError(f"No WaveSpeed task id: {body}")
+        raise RuntimeError(
+            f"WaveSpeed returned no task id: {body}"
+        )
+
+    log(f"Task created: {task_id}")
 
     return task_id
 
 
-def wavespeed_result(task_id, timeout=600):
-    url = f"{WAVESPEED_BASE}/predictions/{task_id}/result"
+def wavespeed_wait(task_id, timeout=900):
+    """
+    Poll the result.
+    GET requests are safe to retry.
+    """
+
+    url = (
+        f"{WAVESPEED_BASE}"
+        f"/predictions/{task_id}/result"
+    )
 
     started = time.time()
 
-    while time.time() - started < timeout:
+    while True:
 
-        r = requests.get(
+        if time.time() - started > timeout:
+            raise TimeoutError(
+                f"WaveSpeed timeout: {task_id}"
+            )
+
+        response = requests.get(
             url,
-            headers={
-                "Authorization": f"Bearer {WAVESPEED_API_KEY}"
-            },
+            headers=get_headers(),
             timeout=30
         )
 
-        r.raise_for_status()
+        response.raise_for_status()
 
-        body = r.json()
-        data = body.get("data", body)
+        body = response.json()
 
-        status = data.get("status", "").lower()
+        if body.get("code") != 200:
+            raise RuntimeError(body)
 
-        log.info("WaveSpeed %s -> %s", task_id, status)
+        data = body["data"]
+
+        status = str(
+            data.get("status", "")
+        ).lower()
+
+        log(
+            f"Task {task_id}: {status}"
+        )
 
         if status == "completed":
-            outputs = data.get("outputs") or data.get("output")
+
+            outputs = data.get("outputs")
 
             if not outputs:
-                raise RuntimeError(f"Completed but no output: {body}")
+                raise RuntimeError(
+                    f"No outputs: {body}"
+                )
 
-            if isinstance(outputs, list):
-                return outputs[0]
+            return outputs[0]
 
-            return outputs
-
-        if status in {
+        if status in (
             "failed",
             "cancelled",
             "timeout",
             "deleted"
-        }:
-            raise RuntimeError(f"WaveSpeed failed: {body}")
+        ):
+            raise RuntimeError(
+                f"WaveSpeed task {task_id} "
+                f"failed: {body}"
+            )
 
         time.sleep(2)
 
-    raise TimeoutError("WaveSpeed generation timeout")
+
+# =========================================================
+# WAVESPEED FILE UPLOAD
+# =========================================================
+
+def upload_to_wavespeed(path):
+    """
+    Upload a local image to WaveSpeed and return
+    its download_url.
+    """
+
+    path = Path(path)
+
+    size = path.stat().st_size
+
+    log(
+        f"Uploading reference: "
+        f"{path.name} ({size} bytes)"
+    )
+
+    ticket_response = requests.post(
+        f"{WAVESPEED_BASE}/media/uploads",
+        headers=auth_headers(),
+        json={
+            "filename": path.name,
+            "size": size
+        },
+        timeout=30
+    )
+
+    ticket_response.raise_for_status()
+
+    ticket = ticket_response.json()
+
+    if ticket.get("code") != 200:
+        raise RuntimeError(ticket)
+
+    data = ticket["data"]
+
+    upload_info = data["upload"]
+
+    with path.open("rb") as f:
+
+        upload_response = requests.put(
+            upload_info["url"],
+            headers=upload_info["headers"],
+            data=f,
+            timeout=300
+        )
+
+    upload_response.raise_for_status()
+
+    return data["download_url"]
 
 
-def generate_image(prompt):
-    log.info("Generating reference image")
+# =========================================================
+# IMAGE GENERATION
+# =========================================================
 
-    task_id = wavespeed_submit(
+def generate_character_reference(
+    character_prompt,
+    output_path
+):
+    """
+    Generate the master character image.
+    """
+
+    task = wavespeed_submit(
         IMAGE_MODEL,
         {
-            "prompt": prompt,
+            "prompt": character_prompt,
             "size": "1024*1536",
+            "output_format": "jpeg",
+            "seed": 24117
+        }
+    )
+
+    url = wavespeed_wait(task)
+
+    download_file(
+        url,
+        output_path
+    )
+
+    return output_path
+
+
+def generate_scene_image(
+    character_url,
+    prompt,
+    output_path,
+    seed
+):
+    """
+    Generate a scene image while using the same
+    character reference.
+    """
+
+    task = wavespeed_submit(
+        IMAGE_EDIT_MODEL,
+        {
+            "prompt": prompt,
+            "image": character_url,
+            "size": "1024*1536",
+            "strength": 0.42,
+            "seed": seed,
             "output_format": "jpeg"
         }
     )
 
-    return wavespeed_result(task_id)
+    url = wavespeed_wait(task)
+
+    download_file(
+        url,
+        output_path
+    )
+
+    return output_path
 
 
-def generate_video(image_url, prompt):
-    log.info("Generating Wan video")
+# =========================================================
+# VIDEO GENERATION
+# =========================================================
 
-    task_id = wavespeed_submit(
+def generate_video(
+    scene_image_url,
+    video_prompt,
+    seed
+):
+    """
+    Image -> cinematic video.
+    """
+
+    task = wavespeed_submit(
         VIDEO_MODEL,
         {
-            "prompt": prompt,
-            "image": image_url,
+            "prompt": video_prompt,
+
+            "image": scene_image_url,
+
             "duration": SHOT_DURATION,
+
+            "seed": seed,
+
             "negative_prompt": (
-                "text, subtitles, watermark, logo, distorted face, "
-                "extra fingers, deformed hands, duplicate person, "
-                "flicker, low quality, blurry"
-            ),
-            "seed": 12345
+                "text, subtitles, watermark, logo, "
+                "bad anatomy, deformed face, "
+                "extra fingers, duplicate people, "
+                "melting face, flicker, jitter, "
+                "low quality, blurry, distorted hands"
+            )
         }
     )
 
-    return wavespeed_result(task_id)
+    return wavespeed_wait(task)
 
 
 # =========================================================
-# GROQ STORY ENGINE
+# DOWNLOAD
+# =========================================================
+
+def download_file(url, path):
+
+    log(f"Downloading: {url}")
+
+    response = requests.get(
+        url,
+        timeout=180
+    )
+
+    response.raise_for_status()
+
+    Path(path).write_bytes(
+        response.content
+    )
+
+    return path
+
+
+# =========================================================
+# GROQ — STORY + DIRECTING
 # =========================================================
 
 def create_story(user_idea):
-    system_prompt = """
-أنت كاتب ومخرج مسلسل عربي قصير جداً.
 
-اكتب قصة Microdrama عربية من 20 ثانية تقريباً.
+    prompt = f"""
+أنت الآن:
+
+كاتب سيناريو +
+مخرج سينمائي +
+مدير تصوير +
+مشرف استمرارية شخصية.
+
+نريد إنتاج حلقة عربية قصيرة جداً
+من مسلسل Microdrama.
+
 النوع:
-Mystery + Suspense + Cinematic.
+Mystery / Suspense / Psychological Thriller.
 
-القصة يجب أن تبدأ بخطاف قوي جداً.
-يجب أن يكون هناك سر أو سؤال يجعل المشاهد يريد معرفة النهاية.
+الفكرة التي أعطاها المستخدم:
 
-لا تستخدم أسلوب قصص الأطفال.
-لا تجعل القصة تعليمية.
-لا تستخدم دماء أو مشاهد جنسية أو عنف شديد.
+{user_idea}
 
-نريد هوية مسلسل عربية سينمائية.
+اكتب الحلقة على شكل 4 لقطات فقط.
 
-المطلوب JSON فقط بهذا الشكل:
+كل لقطة = 5 ثوانٍ.
 
-{
+الهدف ليس عمل slideshow.
+
+كل لقطة يجب أن تبدو كجزء من فيلم حقيقي:
+- حركة شخصية
+- حركة كاميرا
+- حركة بيئة
+- إضاءة سينمائية
+- عمق مجال
+- composition
+- cinematic pacing
+
+يجب الحفاظ على نفس الشخصية في جميع اللقطات.
+
+أريد JSON فقط.
+
+الصيغة:
+
+{{
   "title": "...",
+
   "hook": "...",
-  "character": "...",
-  "visual_identity": "...",
+
+  "character": {{
+    "identity": "...",
+    "age": "...",
+    "face": "...",
+    "hair": "...",
+    "clothes": "...",
+    "colors": "..."
+  }},
+
+  "visual_style": "...",
+
+  "character_image_prompt": "...",
+
   "scenes": [
-    {
+    {{
       "narration_ar": "...",
-      "image_prompt": "...",
-      "video_prompt": "..."
-    },
-    {
+      "scene_image_prompt": "...",
+      "video_prompt": "...",
+      "camera": "...",
+      "sound": "..."
+    }},
+
+    {{
       "narration_ar": "...",
-      "image_prompt": "...",
-      "video_prompt": "..."
-    },
-    {
+      "scene_image_prompt": "...",
+      "video_prompt": "...",
+      "camera": "...",
+      "sound": "..."
+    }},
+
+    {{
       "narration_ar": "...",
-      "image_prompt": "...",
-      "video_prompt": "..."
-    },
-    {
+      "scene_image_prompt": "...",
+      "video_prompt": "...",
+      "camera": "...",
+      "sound": "..."
+    }},
+
+    {{
       "narration_ar": "...",
-      "image_prompt": "...",
-      "video_prompt": "..."
-    }
+      "scene_image_prompt": "...",
+      "video_prompt": "...",
+      "camera": "...",
+      "sound": "..."
+    }}
   ]
-}
+}}
 
-قواعد مهمة:
+قواعد:
 
-- 4 مشاهد فقط.
-- كل مشهد مصمم لفيديو 5 ثوانٍ.
-- narration_ar بالعربية.
-- image_prompt بالإنجليزية.
-- video_prompt بالإنجليزية.
-- نفس الشخصية يجب أن تبقى بنفس العمر والوجه والملابس والألوان.
-- image_prompt يجب أن يحتوي على وصف الشخصية والهوية البصرية.
-- cinematic lighting.
-- realistic human appearance.
-- vertical social-media composition.
-- لا تضع أي كتابة داخل الصور.
-- المشاهد يجب أن تتصل ببعضها.
-- النهاية يجب أن تكشف شيئاً أو تترك سؤالاً قوياً.
+1. narration_ar عربي طبيعي ومثير.
+2. لا تكتب أكثر من جملة أو جملتين في اللقطة.
+3. الصورة والوصف البصري بالإنجليزية.
+4. الفيديو prompt بالإنجليزية.
+5. نفس الشخصية تماماً.
+6. نفس الملابس والألوان إلا إذا القصة تحتاج تغييراً.
+7. لا توجد كتابة داخل الصورة.
+8. لا توجد شعارات.
+9. لا توجد watermarks.
+10. لا تستخدم شخصيات أطفال.
+11. لا تستخدم gore.
+12. لا تستخدم محتوى جنسي.
+13. لا تستخدم لقطات ثابتة فقط.
+14. video_prompt يجب أن يصف الحركة.
+15. camera يجب أن يصف حركة الكاميرا.
+16. sound يصف المؤثر الصوتي المطلوب.
+17. أول لقطة يجب أن تحتوي Hook.
+18. اللقطة الرابعة يجب أن تحتوي كشفاً أو cliffhanger.
+19. الأسلوب:
+realistic cinematic Arabic drama,
+professional film lighting,
+natural human skin,
+shallow depth of field,
+realistic camera movement,
+high production value,
+vertical composition.
 """
 
-    user_prompt = (
-        f"فكرة المستخدم:\n{user_idea}\n\n"
-        "حوّلها إلى حلقة غموض وتشويق سينمائية قصيرة."
-    )
-
     response = groq.chat.completions.create(
+
         model=GROQ_MODEL,
-        temperature=0.8,
-        response_format={"type": "json_object"},
+
+        temperature=0.75,
+
+        response_format={
+            "type": "json_object"
+        },
+
         messages=[
             {
                 "role": "system",
-                "content": system_prompt
+                "content": prompt
             },
             {
                 "role": "user",
-                "content": user_prompt
+                "content": user_idea
             }
         ]
     )
 
-    data = json.loads(response.choices[0].message.content)
-
-    if len(data.get("scenes", [])) != VIDEO_SHOTS:
-        raise RuntimeError("Groq did not return exactly 4 scenes")
-
-    return data
-
-
-# =========================================================
-# TTS
-# =========================================================
-
-async def make_tts(text, output):
-    communicate = edge_tts.Communicate(
-        text,
-        TTS_VOICE
+    result = json.loads(
+        response.choices[0]
+        .message.content
     )
 
-    await communicate.save(output)
+    scenes = result.get("scenes", [])
 
+    if len(scenes) != SHOT_COUNT:
+        raise RuntimeError(
+            "Groq did not return 4 scenes"
+        )
 
-def generate_tts(text, output):
-    asyncio.run(make_tts(text, output))
+    return result
 
 
 # =========================================================
-# VIDEO PROCESSING
+# ARABIC TTS
 # =========================================================
 
-def normalize_video(input_path, output_path):
-    run_cmd([
+async def tts_async(text, output):
+
+    communicator = edge_tts.Communicate(
+        text=text,
+        voice=TTS_VOICE
+    )
+
+    await communicator.save(
+        str(output)
+    )
+
+
+def create_tts(text, output):
+
+    asyncio.run(
+        tts_async(
+            text,
+            output
+        )
+    )
+
+
+# =========================================================
+# FFMPEG
+# =========================================================
+
+def run_ffmpeg(args):
+
+    command = [
         "ffmpeg",
-        "-y",
-        "-i", str(input_path),
+        "-y"
+    ] + args
+
+    log(
+        "FFmpeg: "
+        + " ".join(map(str, command))
+    )
+
+    result = subprocess.run(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True
+    )
+
+    if result.returncode != 0:
+        raise RuntimeError(
+            result.stderr[-5000:]
+        )
+
+
+# =========================================================
+# NORMALIZE VIDEO
+# =========================================================
+
+def normalize_video(
+    source,
+    output
+):
+
+    run_ffmpeg([
+        "-i",
+        str(source),
 
         "-vf",
         (
-            f"scale={FINAL_WIDTH}:-2,"
-            f"crop={FINAL_WIDTH}:{FINAL_HEIGHT}:"
-            f"(in_w-{FINAL_WIDTH})/2:"
-            f"(in_h-{FINAL_HEIGHT})/2"
+            f"scale={VIDEO_WIDTH}:"
+            f"{VIDEO_HEIGHT}:"
+            "force_original_aspect_ratio=increase,"
+            f"crop={VIDEO_WIDTH}:"
+            f"{VIDEO_HEIGHT}"
         ),
 
-        "-r", str(FINAL_FPS),
+        "-r",
+        str(VIDEO_FPS),
 
-        "-c:v", "libx264",
-        "-preset", "veryfast",
-        "-crf", "24",
+        "-c:v",
+        "libx264",
+
+        "-preset",
+        "veryfast",
+
+        "-crf",
+        "23",
+
+        "-pix_fmt",
+        "yuv420p",
 
         "-an",
 
-        str(output_path)
+        str(output)
     ])
 
 
-def concat_videos(videos, output):
-    list_file = output.parent / "videos.txt"
+# =========================================================
+# CONCAT VIDEO
+# =========================================================
 
-    with open(list_file, "w", encoding="utf-8") as f:
+def concat_videos(
+    videos,
+    output
+):
+
+    list_file = (
+        output.parent /
+        "video_list.txt"
+    )
+
+    with list_file.open(
+        "w",
+        encoding="utf-8"
+    ) as f:
+
         for video in videos:
-            f.write(f"file '{video}'\n")
 
-    run_cmd([
-        "ffmpeg",
-        "-y",
-        "-f", "concat",
-        "-safe", "0",
-        "-i", str(list_file),
-        "-c", "copy",
+            safe_path = (
+                str(video)
+                .replace("'", "'\\''")
+            )
+
+            f.write(
+                f"file '{safe_path}'\n"
+            )
+
+    run_ffmpeg([
+        "-f",
+        "concat",
+
+        "-safe",
+        "0",
+
+        "-i",
+        str(list_file),
+
+        "-c",
+        "copy",
+
         str(output)
     ])
 
 
-def concat_audio(audio_files, output):
-    list_file = output.parent / "audio.txt"
+# =========================================================
+# CONCAT AUDIO
+# =========================================================
 
-    with open(list_file, "w", encoding="utf-8") as f:
-        for audio in audio_files:
-            f.write(f"file '{audio}'\n")
+def concat_audio(
+    audios,
+    output
+):
 
-    run_cmd([
-        "ffmpeg",
-        "-y",
-        "-f", "concat",
-        "-safe", "0",
-        "-i", str(list_file),
-        "-c:a", "aac",
-        "-b:a", "128k",
+    list_file = (
+        output.parent /
+        "audio_list.txt"
+    )
+
+    with list_file.open(
+        "w",
+        encoding="utf-8"
+    ) as f:
+
+        for audio in audios:
+
+            safe_path = (
+                str(audio)
+                .replace("'", "'\\''")
+            )
+
+            f.write(
+                f"file '{safe_path}'\n"
+            )
+
+    run_ffmpeg([
+        "-f",
+        "concat",
+
+        "-safe",
+        "0",
+
+        "-i",
+        str(list_file),
+
+        "-c:a",
+        "aac",
+
+        "-b:a",
+        "128k",
+
         str(output)
     ])
 
 
-def add_audio(video, audio, output):
-    run_cmd([
-        "ffmpeg",
-        "-y",
-        "-i", str(video),
-        "-i", str(audio),
+# =========================================================
+# CREATE SIMPLE CINEMATIC AMBIENCE
+# =========================================================
 
-        "-map", "0:v:0",
-        "-map", "1:a:0",
+def create_ambience(
+    output,
+    duration
+):
 
-        "-c:v", "copy",
-        "-c:a", "aac",
+    """
+    Generates a very subtle cinematic ambience
+    locally with FFmpeg.
+
+    No external music API is required.
+    """
+
+    run_ffmpeg([
+        "-f",
+        "lavfi",
+
+        "-i",
+        (
+            "anoisesrc="
+            "color=brown:"
+            "amplitude=0.025:"
+            f"duration={duration}"
+        ),
+
+        "-af",
+        (
+            "lowpass=f=900,"
+            "highpass=f=80,"
+            "volume=0.55"
+        ),
+
+        "-c:a",
+        "aac",
+
+        "-b:a",
+        "96k",
+
+        str(output)
+    ])
+
+
+# =========================================================
+# MIX VOICE + AMBIENCE
+# =========================================================
+
+def mix_audio(
+    voice,
+    ambience,
+    output
+):
+
+    run_ffmpeg([
+        "-i",
+        str(voice),
+
+        "-i",
+        str(ambience),
+
+        "-filter_complex",
+        (
+            "[0:a]volume=1.0[voice];"
+            "[1:a]volume=0.16[amb];"
+            "[voice][amb]"
+            "amix=inputs=2:"
+            "duration=first:"
+            "dropout_transition=2"
+        ),
+
+        "-c:a",
+        "aac",
+
+        "-b:a",
+        "128k",
+
+        str(output)
+    ])
+
+
+# =========================================================
+# SRT
+# =========================================================
+
+def seconds_to_srt(seconds):
+
+    hours = int(
+        seconds // 3600
+    )
+
+    minutes = int(
+        (seconds % 3600) // 60
+    )
+
+    secs = int(
+        seconds % 60
+    )
+
+    milliseconds = int(
+        (seconds - int(seconds)) * 1000
+    )
+
+    return (
+        f"{hours:02}:"
+        f"{minutes:02}:"
+        f"{secs:02},"
+        f"{milliseconds:03}"
+    )
+
+
+def create_srt(
+    scenes,
+    output
+):
+
+    lines = []
+
+    for index, scene in enumerate(
+        scenes,
+        start=1
+    ):
+
+        start = (
+            index - 1
+        ) * SHOT_DURATION
+
+        end = (
+            index
+        ) * SHOT_DURATION
+
+        lines.append(
+            str(index)
+        )
+
+        lines.append(
+            f"{seconds_to_srt(start)} "
+            f"--> "
+            f"{seconds_to_srt(end)}"
+        )
+
+        lines.append(
+            scene["narration_ar"]
+        )
+
+        lines.append("")
+
+    output.write_text(
+        "\n".join(lines),
+        encoding="utf-8"
+    )
+
+
+# =========================================================
+# ADD ARABIC CAPTIONS
+# =========================================================
+
+def add_captions(
+    video,
+    srt,
+    output
+):
+
+    subtitle_path = (
+        str(srt)
+        .replace("\\", "/")
+        .replace(":", "\\:")
+    )
+
+    style = (
+        "FontName=Arial,"
+        "FontSize=22,"
+        "PrimaryColour=&H00FFFFFF,"
+        "OutlineColour=&H00000000,"
+        "BorderStyle=1,"
+        "Outline=2,"
+        "Shadow=1,"
+        "Alignment=2,"
+        "MarginV=70"
+    )
+
+    run_ffmpeg([
+        "-i",
+        str(video),
+
+        "-vf",
+        (
+            f"subtitles='{subtitle_path}':"
+            f"force_style='{style}'"
+        ),
+
+        "-c:v",
+        "libx264",
+
+        "-preset",
+        "veryfast",
+
+        "-crf",
+        "23",
+
+        "-c:a",
+        "aac",
+
+        "-b:a",
+        "128k",
+
+        str(output)
+    ])
+
+
+# =========================================================
+# FINAL AUDIO
+# =========================================================
+
+def add_audio(
+    video,
+    audio,
+    output
+):
+
+    run_ffmpeg([
+        "-i",
+        str(video),
+
+        "-i",
+        str(audio),
+
+        "-map",
+        "0:v:0",
+
+        "-map",
+        "1:a:0",
+
+        "-c:v",
+        "copy",
+
+        "-c:a",
+        "aac",
+
+        "-b:a",
+        "128k",
 
         "-shortest",
 
@@ -408,90 +993,291 @@ def add_audio(video, audio, output):
 
 
 # =========================================================
-# CAPTIONS
+# COMPLETE EPISODE
 # =========================================================
 
-def make_srt(story, srt_path):
-    lines = []
-    current = 0.0
+def create_episode(
+    user_idea,
+    workdir
+):
 
-    for i, scene in enumerate(story["scenes"], 1):
+    log("================================")
+    log("CREATING EPISODE")
+    log("================================")
 
-        start = current
-        end = current + SHOT_DURATION
+    # -----------------------------------------------------
+    # 1. STORY
+    # -----------------------------------------------------
 
-        def ts(seconds):
-            h = int(seconds // 3600)
-            m = int((seconds % 3600) // 60)
-            s = int(seconds % 60)
-            ms = int((seconds - int(seconds)) * 1000)
+    story = create_story(
+        user_idea
+    )
 
-            return f"{h:02}:{m:02}:{s:02},{ms:03}"
+    log(
+        f"TITLE: {story['title']}"
+    )
 
-        lines.append(
-            f"{i}\n"
-            f"{ts(start)} --> {ts(end)}\n"
-            f"{scene['narration_ar']}\n"
+    # -----------------------------------------------------
+    # 2. MASTER CHARACTER
+    # -----------------------------------------------------
+
+    character_image = (
+        workdir /
+        "character.jpg"
+    )
+
+    generate_character_reference(
+        story["character_image_prompt"],
+        character_image
+    )
+
+    # Upload master character reference
+    character_url = upload_to_wavespeed(
+        character_image
+    )
+
+    # -----------------------------------------------------
+    # 3. SCENES
+    # -----------------------------------------------------
+
+    scene_videos = []
+
+    for index, scene in enumerate(
+        story["scenes"],
+        start=1
+    ):
+
+        log(
+            f"========== SCENE {index}/4 =========="
         )
 
-        current = end
+        # ---------------------------------------------
+        # Scene image
+        # ---------------------------------------------
 
-    srt_path.write_text(
-        "\n".join(lines),
-        encoding="utf-8"
+        scene_image = (
+            workdir /
+            f"scene_{index}.jpg"
+        )
+
+        scene_prompt = (
+            story["visual_style"]
+            + "\n"
+            + story["character"]["identity"]
+            + "\n"
+            + scene["scene_image_prompt"]
+            + "\n"
+            + "Maintain the exact same main character "
+              "identity, face, hair, clothing and colors."
+        )
+
+        generate_scene_image(
+            character_url,
+            scene_prompt,
+            scene_image,
+            24117 + index
+        )
+
+        # ---------------------------------------------
+        # Upload scene image
+        # ---------------------------------------------
+
+        scene_url = upload_to_wavespeed(
+            scene_image
+        )
+
+        # ---------------------------------------------
+        # Video
+        # ---------------------------------------------
+
+        video_prompt = (
+            scene["video_prompt"]
+            + "\n"
+            + scene["camera"]
+            + "\n"
+            + "Natural cinematic movement."
+            + "\n"
+            + "Keep the character identity consistent."
+            + "\n"
+            + "No text, no subtitles, no logos."
+        )
+
+        video_url = generate_video(
+            scene_url,
+            video_prompt,
+            50000 + index
+        )
+
+        raw_video = (
+            workdir /
+            f"raw_{index}.mp4"
+        )
+
+        normalized_video = (
+            workdir /
+            f"scene_{index}.mp4"
+        )
+
+        download_file(
+            video_url,
+            raw_video
+        )
+
+        normalize_video(
+            raw_video,
+            normalized_video
+        )
+
+        scene_videos.append(
+            normalized_video
+        )
+
+    # -----------------------------------------------------
+    # 4. JOIN VIDEO
+    # -----------------------------------------------------
+
+    joined_video = (
+        workdir /
+        "joined.mp4"
     )
 
-
-def add_captions(video, srt, output):
-    subtitle_path = str(srt).replace("\\", "/").replace(":", "\\:")
-
-    vf = (
-        f"subtitles='{subtitle_path}':"
-        "force_style="
-        "'FontName=Arial,FontSize=22,"
-        "PrimaryColour=&H00FFFFFF,"
-        "OutlineColour=&H00000000,"
-        "BorderStyle=1,Outline=2,"
-        "Alignment=2,MarginV=70'"
+    concat_videos(
+        scene_videos,
+        joined_video
     )
 
-    try:
-        run_cmd([
-            "ffmpeg",
-            "-y",
-            "-i", str(video),
-            "-vf", vf,
-            "-c:v", "libx264",
-            "-preset", "veryfast",
-            "-crf", "24",
-            "-c:a", "copy",
-            str(output)
-        ])
+    # -----------------------------------------------------
+    # 5. ARABIC VOICE
+    # -----------------------------------------------------
 
-        return True
+    voice_files = []
 
-    except Exception as e:
-        log.warning("Caption rendering failed: %s", e)
-        return False
+    for index, scene in enumerate(
+        story["scenes"],
+        start=1
+    ):
+
+        audio = (
+            workdir /
+            f"voice_{index}.mp3"
+        )
+
+        create_tts(
+            scene["narration_ar"],
+            audio
+        )
+
+        voice_files.append(
+            audio
+        )
+
+    voice_track = (
+        workdir /
+        "voice.mp3"
+    )
+
+    concat_audio(
+        voice_files,
+        voice_track
+    )
+
+    # -----------------------------------------------------
+    # 6. AMBIENCE / EFFECT BED
+    # -----------------------------------------------------
+
+    ambience = (
+        workdir /
+        "ambience.m4a"
+    )
+
+    create_ambience(
+        ambience,
+        SHOT_COUNT * SHOT_DURATION
+    )
+
+    mixed_audio = (
+        workdir /
+        "mixed_audio.m4a"
+    )
+
+    mix_audio(
+        voice_track,
+        ambience,
+        mixed_audio
+    )
+
+    # -----------------------------------------------------
+    # 7. AUDIO + VIDEO
+    # -----------------------------------------------------
+
+    voiced_video = (
+        workdir /
+        "voiced.mp4"
+    )
+
+    add_audio(
+        joined_video,
+        mixed_audio,
+        voiced_video
+    )
+
+    # -----------------------------------------------------
+    # 8. ARABIC CAPTIONS
+    # -----------------------------------------------------
+
+    srt = (
+        workdir /
+        "captions.srt"
+    )
+
+    create_srt(
+        story["scenes"],
+        srt
+    )
+
+    final_video = (
+        workdir /
+        "final.mp4"
+    )
+
+    add_captions(
+        voiced_video,
+        srt,
+        final_video
+    )
+
+    log("================================")
+    log("EPISODE COMPLETE")
+    log("================================")
+
+    return final_video, story
 
 
 # =========================================================
 # TELEGRAM
 # =========================================================
 
-def telegram(method, data=None, files=None):
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/{method}"
+def telegram_api(
+    method,
+    data=None,
+    files=None
+):
 
-    r = requests.post(
+    url = (
+        f"https://api.telegram.org/"
+        f"bot{BOT_TOKEN}/{method}"
+    )
+
+    response = requests.post(
         url,
         data=data,
         files=files,
-        timeout=120
+        timeout=180
     )
 
-    r.raise_for_status()
+    response.raise_for_status()
 
-    body = r.json()
+    body = response.json()
 
     if not body.get("ok"):
         raise RuntimeError(body)
@@ -499,8 +1285,12 @@ def telegram(method, data=None, files=None):
     return body
 
 
-def send_message(chat_id, text):
-    telegram(
+def send_message(
+    chat_id,
+    text
+):
+
+    telegram_api(
         "sendMessage",
         {
             "chat_id": chat_id,
@@ -509,18 +1299,29 @@ def send_message(chat_id, text):
     )
 
 
-def send_video(chat_id, video_path, caption=""):
-    with open(video_path, "rb") as f:
-        telegram(
+def send_video(
+    chat_id,
+    path,
+    caption=""
+):
+
+    with open(
+        path,
+        "rb"
+    ) as video:
+
+        telegram_api(
             "sendVideo",
+
             data={
                 "chat_id": chat_id,
                 "caption": caption[:1024]
             },
+
             files={
                 "video": (
-                    "episode.mp4",
-                    f,
+                    "abosaraj.mp4",
+                    video,
                     "video/mp4"
                 )
             }
@@ -528,125 +1329,13 @@ def send_video(chat_id, video_path, caption=""):
 
 
 # =========================================================
-# COMPLETE VIDEO PIPELINE
+# MESSAGE PROCESSING
 # =========================================================
 
-def create_episode(user_idea, workdir):
-
-    story = create_story(user_idea)
-
-    log.info("TITLE: %s", story["title"])
-
-    raw_videos = []
-    normalized_videos = []
-    audio_files = []
-
-    # -----------------------------------------------------
-    # 1. Generate 4 images
-    # 2. Animate each image with Wan
-    # -----------------------------------------------------
-
-    for index, scene in enumerate(story["scenes"], 1):
-
-        log.info("SCENE %s/4", index)
-
-        image_url = generate_image(
-            scene["image_prompt"]
-        )
-
-        log.info("IMAGE: %s", image_url)
-
-        video_url = generate_video(
-            image_url,
-            scene["video_prompt"]
-        )
-
-        raw_video = workdir / f"raw_{index}.mp4"
-        normalized = workdir / f"scene_{index}.mp4"
-
-        download_file(video_url, raw_video)
-
-        normalize_video(
-            raw_video,
-            normalized
-        )
-
-        raw_videos.append(raw_video)
-        normalized_videos.append(normalized)
-
-    # -----------------------------------------------------
-    # Join video
-    # -----------------------------------------------------
-
-    joined_video = workdir / "joined.mp4"
-
-    concat_videos(
-        normalized_videos,
-        joined_video
-    )
-
-    # -----------------------------------------------------
-    # Arabic TTS
-    # -----------------------------------------------------
-
-    for index, scene in enumerate(story["scenes"], 1):
-
-        audio = workdir / f"audio_{index}.mp3"
-
-        generate_tts(
-            scene["narration_ar"],
-            audio
-        )
-
-        audio_files.append(audio)
-
-    joined_audio = workdir / "audio.mp3"
-
-    concat_audio(
-        audio_files,
-        joined_audio
-    )
-
-    # -----------------------------------------------------
-    # Add audio
-    # -----------------------------------------------------
-
-    voiced_video = workdir / "voiced.mp4"
-
-    add_audio(
-        joined_video,
-        joined_audio,
-        voiced_video
-    )
-
-    # -----------------------------------------------------
-    # Captions
-    # -----------------------------------------------------
-
-    srt = workdir / "captions.srt"
-
-    make_srt(
-        story,
-        srt
-    )
-
-    final_video = workdir / "final.mp4"
-
-    if not add_captions(
-        voiced_video,
-        srt,
-        final_video
-    ):
-        final_video = voiced_video
-
-    return final_video, story
-
-
-# =========================================================
-# TELEGRAM MESSAGE PROCESSOR
-# =========================================================
-
-def process_message(chat_id, text):
+def process_message(
+    chat_id,
+    text
+):
 
     workdir = Path(
         tempfile.mkdtemp(
@@ -658,86 +1347,111 @@ def process_message(chat_id, text):
 
         send_message(
             chat_id,
-            "🎬 بدأت تجهيز الحلقة...\n"
-            "🧠 القصة → 🎨 المشاهد → 🎥 الفيديو → 🎙️ الصوت"
+            "🎬 بدأت صناعة الحلقة...\n\n"
+            "🧠 كتابة القصة\n"
+            "👤 تثبيت الشخصية\n"
+            "🎨 بناء المشاهد\n"
+            "🎥 توليد الحركة السينمائية\n"
+            "🎙️ الصوت العربي\n"
+            "📝 النص العربي\n"
+            "🎧 المؤثرات\n"
+            "✂️ المونتاج"
         )
 
-        final_video, story = create_episode(
-            text,
-            workdir
+        final_video, story = (
+            create_episode(
+                text,
+                workdir
+            )
         )
 
         send_video(
             chat_id,
             final_video,
-            caption=f"🎬 {story['title']}\n\n"
-                    f"{story['hook']}"
+            (
+                f"🎬 {story['title']}\n\n"
+                f"{story['hook']}"
+            )
         )
 
-        log.info(
-            "Episode completed for chat %s",
-            chat_id
+        log(
+            f"Sent episode to {chat_id}"
         )
 
     except Exception as e:
 
-        log.exception("Episode failed")
+        log(
+            f"ERROR: {repr(e)}"
+        )
 
         send_message(
             chat_id,
-            "❌ صار خطأ أثناء إنتاج الفيديو.\n"
-            "شوف Logs في Render لمعرفة السبب."
+            "❌ صار خطأ أثناء صناعة الحلقة.\n\n"
+            "افتح Logs في Render وابعتلي آخر "
+            "الأسطر."
         )
 
     finally:
 
-        try:
-            import shutil
-            shutil.rmtree(workdir, ignore_errors=True)
-        except Exception:
-            pass
+        shutil.rmtree(
+            workdir,
+            ignore_errors=True
+        )
 
 
 # =========================================================
 # WEBHOOK
 # =========================================================
 
-@app.route("/", methods=["GET"])
+@app.route(
+    "/",
+    methods=["GET"]
+)
 def home():
-    return "Abosaraj is running", 200
+
+    return (
+        "Abosaraj cinematic engine OK",
+        200
+    )
 
 
-@app.route("/health", methods=["GET"])
+@app.route(
+    "/health",
+    methods=["GET"]
+)
 def health():
+
     return {
         "status": "ok",
-        "service": "abosaraj",
+        "image_model": IMAGE_MODEL,
         "video_model": VIDEO_MODEL,
-        "image_model": IMAGE_MODEL
-    }, 200
+        "shots": SHOT_COUNT,
+        "duration": SHOT_DURATION
+    }
 
 
-@app.route("/telegram/webhook", methods=["POST"])
+@app.route(
+    "/telegram/webhook",
+    methods=["POST"]
+)
 def telegram_webhook():
 
-    update = request.get_json(
-        silent=True
-    ) or {}
+    update = (
+        request.get_json(
+            silent=True
+        )
+        or {}
+    )
 
-    update_id = update.get("update_id")
+    message = (
+        update.get("message")
+        or {}
+    )
 
-    if update_id in processed_updates:
-        return "ok", 200
-
-    if update_id is not None:
-        processed_updates.add(update_id)
-
-        if len(processed_updates) > 1000:
-            processed_updates.clear()
-
-    message = update.get("message") or {}
-
-    chat = message.get("chat") or {}
+    chat = (
+        message.get("chat")
+        or {}
+    )
 
     chat_id = chat.get("id")
 
@@ -746,21 +1460,24 @@ def telegram_webhook():
     if not chat_id or not text:
         return "ok", 200
 
-    # Ignore commands
     if text.startswith("/start"):
+
         send_message(
             chat_id,
             "🔥 أهلاً بك في Abosaraj.\n\n"
-            "اكتب فكرة القصة، وأنا أحولها لحلقة غموض سينمائية."
+            "اكتب فكرة الحلقة، مثال:\n\n"
+            "رجل يسمع صوت زوجته المتوفاة "
+            "كل ليلة الساعة 3:17."
         )
-        return "ok", 200
 
-    # Run in background so Telegram webhook responds immediately
-    import threading
+        return "ok", 200
 
     threading.Thread(
         target=process_message,
-        args=(chat_id, text),
+        args=(
+            chat_id,
+            text
+        ),
         daemon=True
     ).start()
 
@@ -774,10 +1491,11 @@ def telegram_webhook():
 def setup_webhook():
 
     if not RENDER_EXTERNAL_URL:
-        log.warning(
-            "RENDER_EXTERNAL_URL is missing. "
-            "Webhook was not configured."
+
+        log(
+            "RENDER_EXTERNAL_URL missing"
         )
+
         return
 
     webhook_url = (
@@ -787,21 +1505,21 @@ def setup_webhook():
 
     try:
 
-        telegram(
+        telegram_api(
             "setWebhook",
             {
                 "url": webhook_url
             }
         )
 
-        log.info(
-            "Telegram webhook configured: %s",
-            webhook_url
+        log(
+            f"Webhook: {webhook_url}"
         )
 
-    except Exception:
-        log.exception(
-            "Failed to configure Telegram webhook"
+    except Exception as e:
+
+        log(
+            f"Webhook error: {e}"
         )
 
 
@@ -811,12 +1529,25 @@ def setup_webhook():
 
 if __name__ == "__main__":
 
-    log.info("===================================")
-    log.info("ABOSARAJ STARTING")
-    log.info("Image: %s", IMAGE_MODEL)
-    log.info("Video: %s", VIDEO_MODEL)
-    log.info("Shots: %s x %ss", VIDEO_SHOTS, SHOT_DURATION)
-    log.info("===================================")
+    log("==============================")
+    log("ABOSARAJ CINEMATIC ENGINE")
+    log("==============================")
+
+    log(
+        f"Image: {IMAGE_MODEL}"
+    )
+
+    log(
+        f"Video: {VIDEO_MODEL}"
+    )
+
+    log(
+        f"Shots: {SHOT_COUNT} x {SHOT_DURATION}s"
+    )
+
+    log(
+        f"TTS: {TTS_VOICE}"
+    )
 
     setup_webhook()
 
