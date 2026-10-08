@@ -36,6 +36,11 @@ HF_SPACE = os.getenv(
     "numanajmal0/wan-video-api"
 )
 
+
+# =========================================================
+# VIDEO SETTINGS
+# =========================================================
+
 SHOT_COUNT = 2
 SHOT_DURATION = 5
 
@@ -53,8 +58,7 @@ GEN_SEED = 0
 
 
 # =========================================================
-# WAN LOW-COST TEST SETTINGS
-# USED ONLY BY /hftest5
+# WAN TEST SETTINGS
 # =========================================================
 
 TEST_GEN_WIDTH = 320
@@ -65,10 +69,11 @@ TEST_GEN_GUIDANCE = 5.0
 TEST_GEN_SEED = 0
 
 
-# Parameter 10 has range 0-2
-GEN_PARAM_10 = 1.0
+# =========================================================
+# WAN EXTRA PARAMETERS
+# =========================================================
 
-# Last parameter is string
+GEN_PARAM_10 = 1.0
 GEN_PARAM_11 = ""
 
 GEN_FPS = 16
@@ -102,10 +107,11 @@ app = Flask(__name__)
 
 
 # =========================================================
-# HELPERS
+# ERROR HELPERS
 # =========================================================
 
 def safe_error_text(error):
+
     text = str(error)
 
     for secret in [
@@ -113,22 +119,63 @@ def safe_error_text(error):
         GROQ_API_KEY,
         HF_TOKEN
     ]:
+
         if secret:
-            text = text.replace(secret, "***")
+            text = text.replace(
+                secret,
+                "***"
+            )
 
     return text
 
 
+def is_hf_quota_error(error):
+
+    text = safe_error_text(error).lower()
+
+    quota_words = [
+        "zerogpu quota",
+        "free zerogpu quota",
+        "quota",
+        "exceeded your free",
+        "try again in",
+        "subscribe to hugging face pro"
+    ]
+
+    return any(
+        word in text
+        for word in quota_words
+    )
+
+
 def ensure_dir(path):
-    os.makedirs(path, exist_ok=True)
+
+    os.makedirs(
+        path,
+        exist_ok=True
+    )
+
     return path
 
 
-def run_cmd(cmd, cwd=None, timeout=None):
+# =========================================================
+# COMMAND RUNNER
+# =========================================================
+
+def run_cmd(
+    cmd,
+    cwd=None,
+    timeout=None
+):
 
     log.info(
         "RUN_CMD=%s",
-        " ".join(map(str, cmd))
+        " ".join(
+            map(
+                str,
+                cmd
+            )
+        )
     )
 
     try:
@@ -153,12 +200,14 @@ def run_cmd(cmd, cwd=None, timeout=None):
         raise
 
     if result.stdout:
+
         log.info(
             "COMMAND_STDOUT=%s",
             result.stdout[-4000:]
         )
 
     if result.stderr:
+
         log.info(
             "COMMAND_STDERR=%s",
             result.stderr[-4000:]
@@ -180,7 +229,7 @@ def run_cmd(cmd, cwd=None, timeout=None):
 
 
 # =========================================================
-# TELEGRAM
+# TELEGRAM API
 # =========================================================
 
 def telegram_api(
@@ -190,7 +239,7 @@ def telegram_api(
 ):
 
     url = (
-        f"https://api.telegram.org/"
+        "https://api.telegram.org/"
         f"bot{BOT_TOKEN}/{method}"
     )
 
@@ -206,8 +255,8 @@ def telegram_api(
         if not response.ok:
 
             log.error(
-                "TELEGRAM_API_ERROR method=%s "
-                "status=%s body=%s",
+                "TELEGRAM_API_ERROR "
+                "method=%s status=%s body=%s",
                 method,
                 response.status_code,
                 response.text[:4000]
@@ -216,8 +265,11 @@ def telegram_api(
             return None
 
         try:
+
             return response.json()
+
         except Exception:
+
             return None
 
     except Exception as error:
@@ -261,6 +313,7 @@ def send_video(
     }
 
     if caption:
+
         payload["caption"] = caption
 
     try:
@@ -275,7 +328,9 @@ def send_video(
                 payload=payload,
                 files={
                     "video": (
-                        os.path.basename(video_path),
+                        os.path.basename(
+                            video_path
+                        ),
                         video_file,
                         "video/mp4"
                     )
@@ -294,7 +349,7 @@ def send_video(
 
 
 # =========================================================
-# GROQ
+# GROQ STORYBOARD
 # =========================================================
 
 def create_storyboard(
@@ -306,6 +361,7 @@ def create_storyboard(
     )
 
     if not GROQ_API_KEY:
+
         raise RuntimeError(
             "GROQ_API_KEY is missing"
         )
@@ -393,9 +449,7 @@ def create_storyboard(
             "GROQ_RAW_RESPONSE_START"
         )
 
-        log.info(
-            raw
-        )
+        log.info(raw)
 
         log.info(
             "GROQ_RAW_RESPONSE_END"
@@ -420,6 +474,7 @@ def create_storyboard(
             data,
             dict
         ):
+
             raise ValueError(
                 "Storyboard is not an object"
             )
@@ -432,11 +487,13 @@ def create_storyboard(
             scenes,
             list
         ):
+
             raise ValueError(
                 "scenes is not a list"
             )
 
         if not scenes:
+
             raise ValueError(
                 "No scenes"
             )
@@ -454,18 +511,19 @@ def create_storyboard(
             narration,
             list
         ):
+
             narration = []
 
         while len(narration) < len(
             data["scenes"]
         ):
+
             narration.append("")
 
         data["narration"] = narration
 
-        if not data.get(
-            "cta"
-        ):
+        if not data.get("cta"):
+
             data["cta"] = DEFAULT_CTA
 
         log.info(
@@ -487,7 +545,7 @@ def create_storyboard(
 
 
 # =========================================================
-# HUGGING FACE
+# HUGGING FACE CLIENT
 # =========================================================
 
 def create_hf_client():
@@ -539,6 +597,7 @@ def get_generate_endpoint(
     )
 
     if "/generate" in named:
+
         return named["/generate"]
 
     for name, endpoint in named.items():
@@ -553,6 +612,69 @@ def get_generate_endpoint(
 
 
 # =========================================================
+# HF SAFE CHECK
+# =========================================================
+
+def check_hf_space():
+
+    """
+    هذا الفحص لا يشغل Wan.
+    فقط يتأكد أن Space و /generate
+    موجودين ويمكن قراءة الـ API.
+    """
+
+    log.info(
+        "PHASE=HF_SAFE_CHECK_START"
+    )
+
+    try:
+
+        client = create_hf_client()
+
+        api = get_hf_api_dict(
+            client
+        )
+
+        endpoint = get_generate_endpoint(
+            api
+        )
+
+        params = endpoint.get(
+            "parameters",
+            []
+        )
+
+        if not params:
+
+            raise RuntimeError(
+                "Generate endpoint has no parameters"
+            )
+
+        log.info(
+            "HF_SAFE_CHECK_OK parameters=%s",
+            len(params)
+        )
+
+        return {
+            "ok": True,
+            "parameter_count": len(params)
+        }
+
+    except Exception as error:
+
+        log.error(
+            "HF_SAFE_CHECK_ERROR=%s",
+            safe_error_text(error),
+            exc_info=True
+        )
+
+        return {
+            "ok": False,
+            "error": safe_error_text(error)
+        }
+
+
+# =========================================================
 # WAN ARGUMENTS
 # =========================================================
 
@@ -562,19 +684,19 @@ def build_wan_arguments(
 ):
 
     """
-    /hftest4 showed the actual order:
+    Actual /generate parameter order:
 
     1  model
     2  prompt
     3  negative prompt
-    4  width       320-832
-    5  height      320-832
-    6  frames      21-81
-    7  steps       1-50
-    8  guidance    0-20
-    9  seed        integer
-    10 parameter   0-2
-    11 parameter   string
+    4  width
+    5  height
+    6  frames
+    7  steps
+    8  guidance
+    9  seed
+    10 parameter 0-2
+    11 string
     """
 
     if test_mode:
@@ -605,40 +727,29 @@ def build_wan_arguments(
 
     args = [
 
-        # 1
         "wan-base",
 
-        # 2
         prompt,
 
-        # 3
         (
             "blurry, low quality, distorted, "
             "deformed, watermark, text, logo"
         ),
 
-        # 4
         width,
 
-        # 5
         height,
 
-        # 6
         frames,
 
-        # 7
         steps,
 
-        # 8
         guidance,
 
-        # 9
         seed,
 
-        # 10
         GEN_PARAM_10,
 
-        # 11
         GEN_PARAM_11
     ]
 
@@ -671,7 +782,7 @@ def build_wan_arguments(
 
 
 # =========================================================
-# EXTRACT VIDEO
+# EXTRACT VIDEO SOURCE
 # =========================================================
 
 def extract_video_source(
@@ -717,6 +828,7 @@ def extract_video_source(
                     value,
                     str
                 ):
+
                     return value
 
                 if isinstance(
@@ -729,6 +841,7 @@ def extract_video_source(
                     )
 
                     if nested:
+
                         return nested
 
         for value in result.values():
@@ -739,17 +852,11 @@ def extract_video_source(
             ):
 
                 if (
-                    value.startswith(
-                        "http://"
-                    )
+                    value.startswith("http://")
                     or
-                    value.startswith(
-                        "https://"
-                    )
+                    value.startswith("https://")
                     or
-                    os.path.exists(
-                        value
-                    )
+                    os.path.exists(value)
                 ):
 
                     return value
@@ -764,6 +871,7 @@ def extract_video_source(
                 )
 
                 if nested:
+
                     return nested
 
     if isinstance(
@@ -778,6 +886,7 @@ def extract_video_source(
             )
 
             if source:
+
                 return source
 
     return None
@@ -814,6 +923,7 @@ def download_url(
             ):
 
                 if chunk:
+
                     output.write(
                         chunk
                     )
@@ -866,37 +976,72 @@ def generate_ai_video(
 
     try:
 
+        # -------------------------------------------------
+        # SAFE CHECK FIRST
+        # -------------------------------------------------
+
+        check = check_hf_space()
+
+        if not check["ok"]:
+
+            raise RuntimeError(
+                "HF_SAFE_CHECK_FAILED: "
+                + check["error"]
+            )
+
+        # -------------------------------------------------
+        # CREATE CLIENT
+        # -------------------------------------------------
+
         client = create_hf_client()
 
-        api = get_hf_api_dict(
-            client
-        )
-
-        endpoint = get_generate_endpoint(
-            api
-        )
-
-        log.info(
-            "HF_GENERATE_ENDPOINT_FOUND"
-        )
+        # -------------------------------------------------
+        # BUILD ARGUMENTS
+        # -------------------------------------------------
 
         args = build_wan_arguments(
             prompt,
             test_mode=test_mode
         )
 
+        # -------------------------------------------------
+        # PREDICT
+        # -------------------------------------------------
+
         log.info(
             "HF_PREDICT_START"
         )
 
-        result = client.predict(
-            *args,
-            api_name="/generate"
-        )
+        try:
+
+            result = client.predict(
+                *args,
+                api_name="/generate"
+            )
+
+        except Exception as error:
+
+            if is_hf_quota_error(error):
+
+                log.error(
+                    "HF_QUOTA_ERROR=%s",
+                    safe_error_text(error)
+                )
+
+                raise RuntimeError(
+                    "HF_QUOTA_EXHAUSTED: "
+                    + safe_error_text(error)
+                )
+
+            raise
 
         log.info(
             "HF_PREDICT_SUCCESS"
         )
+
+        # -------------------------------------------------
+        # EXTRACT VIDEO
+        # -------------------------------------------------
 
         source = extract_video_source(
             result
@@ -918,20 +1063,17 @@ def generate_ai_video(
             f"scene_{uuid.uuid4().hex}.mp4"
         )
 
+        # -------------------------------------------------
+        # DOWNLOAD / COPY
+        # -------------------------------------------------
+
         if (
-            isinstance(
-                source,
-                str
-            )
+            isinstance(source, str)
             and
             (
-                source.startswith(
-                    "http://"
-                )
+                source.startswith("http://")
                 or
-                source.startswith(
-                    "https://"
-                )
+                source.startswith("https://")
             )
         ):
 
@@ -941,14 +1083,9 @@ def generate_ai_video(
             )
 
         elif (
-            isinstance(
-                source,
-                str
-            )
+            isinstance(source, str)
             and
-            os.path.exists(
-                source
-            )
+            os.path.exists(source)
         ):
 
             shutil.copy2(
@@ -962,6 +1099,10 @@ def generate_ai_video(
                 "Invalid HF video source: "
                 + str(source)
             )
+
+        # -------------------------------------------------
+        # VALIDATE
+        # -------------------------------------------------
 
         if not os.path.exists(
             destination
@@ -982,8 +1123,7 @@ def generate_ai_video(
             )
 
         log.info(
-            "PHASE=HF_VIDEO_GENERATION_DONE "
-            "size=%s",
+            "PHASE=HF_VIDEO_GENERATION_DONE size=%s",
             size
         )
 
@@ -1131,6 +1271,7 @@ def concat_videos(
         if os.path.exists(
             list_file
         ):
+
             os.remove(
                 list_file
             )
@@ -1295,6 +1436,7 @@ def concat_audio(
         if os.path.exists(
             list_file
         ):
+
             os.remove(
                 list_file
             )
@@ -1475,18 +1617,9 @@ def burn_captions(
 
     subtitle_file = (
         srt_path
-        .replace(
-            "\\",
-            "/"
-        )
-        .replace(
-            ":",
-            "\\:"
-        )
-        .replace(
-            "'",
-            "\\'"
-        )
+        .replace("\\", "/")
+        .replace(":", "\\:")
+        .replace("'", "\\'")
     )
 
     subtitle_filter = (
@@ -1562,6 +1695,10 @@ def create_reel(
 
     try:
 
+        # -------------------------------------------------
+        # STORYBOARD
+        # -------------------------------------------------
+
         storyboard = create_storyboard(
             user_idea
         )
@@ -1580,6 +1717,10 @@ def create_reel(
             DEFAULT_CTA
         )
 
+        # -------------------------------------------------
+        # DIRECTORIES
+        # -------------------------------------------------
+
         raw_dir = ensure_dir(
             os.path.join(
                 work_dir,
@@ -1595,6 +1736,10 @@ def create_reel(
         )
 
         normalized_videos = []
+
+        # -------------------------------------------------
+        # VIDEO SCENES
+        # -------------------------------------------------
 
         for index, scene in enumerate(
             scenes,
@@ -1637,6 +1782,10 @@ def create_reel(
                 normalized
             )
 
+        # -------------------------------------------------
+        # CONCAT VIDEO
+        # -------------------------------------------------
+
         concat_video = os.path.join(
             work_dir,
             "video_concat.mp4"
@@ -1646,6 +1795,10 @@ def create_reel(
             normalized_videos,
             concat_video
         )
+
+        # -------------------------------------------------
+        # AUDIO
+        # -------------------------------------------------
 
         audio_dir = ensure_dir(
             os.path.join(
@@ -1662,15 +1815,12 @@ def create_reel(
             start=1
         ):
 
-            if (
-                index - 1
-                < len(narration)
+            if index - 1 < len(
+                narration
             ):
 
                 narration_text = str(
-                    narration[
-                        index - 1
-                    ]
+                    narration[index - 1]
                 ).strip()
 
             else:
@@ -1708,6 +1858,10 @@ def create_reel(
                 }
             )
 
+        # -------------------------------------------------
+        # CTA
+        # -------------------------------------------------
+
         if cta:
 
             cta = str(
@@ -1741,6 +1895,10 @@ def create_reel(
                     }
                 )
 
+        # -------------------------------------------------
+        # CONCAT AUDIO
+        # -------------------------------------------------
+
         audio_concat = os.path.join(
             work_dir,
             "audio.m4a"
@@ -1750,6 +1908,10 @@ def create_reel(
             audio_files,
             audio_concat
         )
+
+        # -------------------------------------------------
+        # MUX
+        # -------------------------------------------------
 
         muxed = os.path.join(
             work_dir,
@@ -1762,6 +1924,10 @@ def create_reel(
             muxed
         )
 
+        # -------------------------------------------------
+        # SRT
+        # -------------------------------------------------
+
         srt = os.path.join(
             work_dir,
             "captions.srt"
@@ -1771,6 +1937,10 @@ def create_reel(
             subtitle_items,
             srt
         )
+
+        # -------------------------------------------------
+        # FINAL
+        # -------------------------------------------------
 
         final = os.path.join(
             work_dir,
@@ -1834,6 +2004,39 @@ def create_reel(
             work_dir,
             ignore_errors=True
         )
+
+
+# =========================================================
+# HF TEST 3
+# =========================================================
+
+def run_hf_test3():
+
+    return check_hf_space()
+
+
+# =========================================================
+# HF TEST 4
+# =========================================================
+
+def run_hf_test4():
+
+    client = create_hf_client()
+
+    api = get_hf_api_dict(
+        client
+    )
+
+    endpoint = get_generate_endpoint(
+        api
+    )
+
+    params = endpoint.get(
+        "parameters",
+        []
+    )
+
+    return params
 
 
 # =========================================================
@@ -1905,6 +2108,7 @@ def process_message(
 ):
 
     if not update:
+
         return
 
     message = update.get(
@@ -1912,6 +2116,7 @@ def process_message(
     )
 
     if not message:
+
         return
 
     chat = message.get(
@@ -1929,6 +2134,7 @@ def process_message(
     ).strip()
 
     if not chat_id or not text:
+
         return
 
     log.info(
@@ -1937,7 +2143,10 @@ def process_message(
         text
     )
 
+    # =====================================================
     # START
+    # =====================================================
+
     if text == "/start":
 
         send_message(
@@ -1949,36 +2158,39 @@ def process_message(
 
         return
 
-    # TEST 3
+    # =====================================================
+    # HF TEST 3
+    # =====================================================
+
     if text == "/hftest3":
 
         send_message(
             chat_id,
-            "🔎 أفحص Hugging Face..."
+            "🔎 أفحص Hugging Face بدون تشغيل Wan..."
         )
 
         try:
 
-            client = create_hf_client()
+            result = run_hf_test3()
 
-            api = get_hf_api_dict(
-                client
-            )
+            if result["ok"]:
 
-            endpoints = list(
-                api.get(
-                    "named_endpoints",
-                    {}
-                ).keys()
-            )
-
-            send_message(
-                chat_id,
-                "✅ HF API يعمل.\n\n"
-                + "\n".join(
-                    endpoints[:30]
+                send_message(
+                    chat_id,
+                    "✅ Hugging Face يعمل.\n\n"
+                    f"عدد باراميترات /generate: "
+                    f"{result['parameter_count']}\n\n"
+                    "ℹ️ هذا الفحص لا يستهلك "
+                    "ZeroGPU لأنه لم يشغل الفيديو."
                 )
-            )
+
+            else:
+
+                send_message(
+                    chat_id,
+                    "❌ فحص Hugging Face فشل:\n\n"
+                    + result["error"]
+                )
 
         except Exception as error:
 
@@ -1990,7 +2202,10 @@ def process_message(
 
         return
 
-    # TEST 4
+    # =====================================================
+    # HF TEST 4
+    # =====================================================
+
     if text == "/hftest4":
 
         send_message(
@@ -2000,20 +2215,7 @@ def process_message(
 
         try:
 
-            client = create_hf_client()
-
-            api = get_hf_api_dict(
-                client
-            )
-
-            endpoint = get_generate_endpoint(
-                api
-            )
-
-            params = endpoint.get(
-                "parameters",
-                []
-            )
+            params = run_hf_test4()
 
             lines = []
 
@@ -2046,20 +2248,44 @@ def process_message(
 
         return
 
-    # TEST 5
+    # =====================================================
+    # HF TEST 5
+    # =====================================================
+
     if text == "/hftest5":
 
         send_message(
             chat_id,
             "🎥 بدأت اختبار Wan اقتصادي...\n\n"
             "320×320 | 21 frames | 5 steps\n"
-            "الهدف الآن فقط نتأكد أن Wan يعمل.\n\n"
-            "اصبر شوي."
+            "⚠️ هذا الاختبار يشغل GPU فعليًا.\n\n"
+            "إذا كان ZeroGPU quota منتهي "
+            "سأوقفه وأعرض لك الرسالة مباشرة."
         )
 
         video = None
 
         try:
+
+            # ------------------------------------------------
+            # SAFE CHECK BEFORE GPU
+            # ------------------------------------------------
+
+            safe_check = check_hf_space()
+
+            if not safe_check["ok"]:
+
+                send_message(
+                    chat_id,
+                    "❌ Hugging Face غير جاهز.\n\n"
+                    + safe_check["error"]
+                )
+
+                return
+
+            # ------------------------------------------------
+            # ACTUAL GENERATION
+            # ------------------------------------------------
 
             video, duration, size = run_hf_test()
 
@@ -2080,17 +2306,42 @@ def process_message(
 
         except Exception as error:
 
+            error_text = safe_error_text(
+                error
+            )
+
             log.error(
                 "HF_TEST_ERROR=%s",
-                safe_error_text(error),
+                error_text,
                 exc_info=True
             )
 
-            send_message(
-                chat_id,
-                "❌ اختبار Wan فشل.\n\n"
-                + safe_error_text(error)
-            )
+            if (
+                "HF_QUOTA_EXHAUSTED"
+                in error_text
+                or
+                is_hf_quota_error(error)
+            ):
+
+                send_message(
+                    chat_id,
+                    "🛑 ZeroGPU quota غير كافي حاليًا.\n\n"
+                    + error_text
+                    + "\n\n"
+                    "💡 الكود والـ API وصلوا لمرحلة "
+                    "التشغيل، لكن Hugging Face رفض "
+                    "التوليد بسبب الحصة المتبقية.\n\n"
+                    "⏳ لا تعيد /hftest5 الآن حتى "
+                    "تتجدد الحصة."
+                )
+
+            else:
+
+                send_message(
+                    chat_id,
+                    "❌ اختبار Wan فشل.\n\n"
+                    + error_text
+                )
 
         finally:
 
@@ -2105,11 +2356,15 @@ def process_message(
                     )
 
                 except Exception:
+
                     pass
 
         return
 
+    # =====================================================
     # NORMAL VIDEO
+    # =====================================================
+
     send_message(
         chat_id,
         "🎬 وصلت الفكرة.\n"
@@ -2157,21 +2412,43 @@ def process_message(
             )
 
         except Exception:
+
             pass
 
     except Exception as error:
 
+        error_text = safe_error_text(
+            error
+        )
+
         log.error(
             "TELEGRAM_HANDLER_ERROR=%s",
-            safe_error_text(error),
+            error_text,
             exc_info=True
         )
 
-        send_message(
-            chat_id,
-            "❌ صار خطأ أثناء صناعة الفيديو.\n\n"
-            "تم تسجيل الخطأ في Render Logs."
-        )
+        if (
+            "HF_QUOTA_EXHAUSTED"
+            in error_text
+            or
+            is_hf_quota_error(error)
+        ):
+
+            send_message(
+                chat_id,
+                "🛑 Hugging Face ZeroGPU quota "
+                "غير كافي حاليًا.\n\n"
+                "الفيديو لم يبدأ توليده حتى لا "
+                "نضيع وقتك."
+            )
+
+        else:
+
+            send_message(
+                chat_id,
+                "❌ صار خطأ أثناء صناعة الفيديو.\n\n"
+                "تم تسجيل الخطأ في Render Logs."
+            )
 
 
 # =========================================================
