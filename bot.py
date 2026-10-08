@@ -103,6 +103,7 @@ def get_headers():
 # =========================================================
 
 def wavespeed_submit(model,payload):
+
     if TEST_MODE:
         raise RuntimeError(
             "BLOCKED: WaveSpeed while TEST_MODE=true"
@@ -136,9 +137,12 @@ def wavespeed_submit(model,payload):
         )
 
     log(f"WaveSpeed task created: {tid}")
+
     return tid
 
+
 def wavespeed_wait(tid,timeout=900):
+
     if TEST_MODE:
         raise RuntimeError(
             "BLOCKED: WaveSpeed polling while TEST_MODE=true"
@@ -147,6 +151,7 @@ def wavespeed_wait(tid,timeout=900):
     started=time.time()
 
     while True:
+
         if time.time()-started>timeout:
             raise TimeoutError(
                 f"WaveSpeed timeout: {tid}"
@@ -165,13 +170,17 @@ def wavespeed_wait(tid,timeout=900):
             raise RuntimeError(b)
 
         d=b["data"]
+
         status=str(
             d.get("status","")
         ).lower()
 
-        log(f"Task {tid}: {status}")
+        log(
+            f"Task {tid}: {status}"
+        )
 
         if status=="completed":
+
             out=d.get("outputs")
 
             if not out:
@@ -182,12 +191,14 @@ def wavespeed_wait(tid,timeout=900):
             first=out[0]
 
             if isinstance(first,dict):
+
                 for k in (
                     "url",
                     "audio_url",
                     "video_url",
                     "download_url"
                 ):
+
                     if first.get(k):
                         return first[k]
 
@@ -199,13 +210,16 @@ def wavespeed_wait(tid,timeout=900):
             "timeout",
             "deleted"
         ):
+
             raise RuntimeError(
                 f"WaveSpeed failed: {b}"
             )
 
         time.sleep(2)
 
+
 def upload_to_wavespeed(path):
+
     if TEST_MODE:
         raise RuntimeError(
             "BLOCKED: WaveSpeed upload while TEST_MODE=true"
@@ -237,6 +251,7 @@ def upload_to_wavespeed(path):
     d=b["data"]
 
     with path.open("rb") as f:
+
         u=requests.put(
             d["upload"]["url"],
             headers=d["upload"]["headers"],
@@ -248,7 +263,9 @@ def upload_to_wavespeed(path):
 
     return d["download_url"]
 
+
 def download_file(url,path):
+
     r=requests.get(
         url,
         timeout=180
@@ -262,6 +279,7 @@ def download_file(url,path):
 
     return path
 
+
 # =========================================================
 # GROQ STORY
 # =========================================================
@@ -272,7 +290,11 @@ def create_story(user_idea):
 أنت كاتب سيناريو عربي ومخرج ومدير تصوير
 ومشرف استمرارية ومصمم صوت سينمائي.
 
-اصنع Microdrama عربي:
+مهمتك إنتاج Microdrama عربي قصير
+بأسلوب احترافي جداً.
+
+النوع:
+
 Dark Fantasy + Romance + Mystery +
 Suspense + Supernatural Drama.
 
@@ -283,14 +305,58 @@ Suspense + Supernatural Drama.
 ملك يعرف سراً خطيراً عنه.
 ذئبة بيضاء صغيرة لا تتكلم.
 
-الفكرة:
+الفكرة الأصلية:
 
 {user_idea}
 
-اصنع بالضبط {SHOT_COUNT} لقطات.
-كل لقطة مدتها {SHOT_DURATION} ثوانٍ.
+==================================================
+قاعدة عدد المشاهد - مهمة جداً
+==================================================
 
-الأسلوب البصري:
+يجب إنشاء EXACTLY {SHOT_COUNT} scenes.
+
+ليس 2.
+ليس 3.
+ليس 5.
+ليس أي عدد آخر.
+
+يجب أن يكون:
+
+scenes.length = {SHOT_COUNT}
+
+كل scene يمثل لقطة سينمائية مستقلة
+مدتها بالضبط {SHOT_DURATION} ثوانٍ.
+
+إذا كانت الفكرة طويلة، قم بتقسيمها إلى
+{SHOT_COUNT} لحظات سينمائية واضحة.
+
+لا تدمج مشهدين في عنصر واحد.
+
+لا تختصر القصة إلى مشهدين.
+
+لا تحذف أي scene.
+
+==================================================
+البنية الدرامية
+==================================================
+
+Scene 1:
+HOOK
+
+Scene 2:
+ESCALATION
+
+Scene 3:
+REVEAL أو DANGER
+
+Scene 4:
+CLIFFHANGER
+
+لا تحل السر بالكامل.
+
+==================================================
+الأسلوب البصري
+==================================================
 
 realistic cinematic Arabic fantasy drama,
 photorealistic,
@@ -328,25 +394,32 @@ text,
 logo,
 watermark.
 
-قواعد الحوار:
+==================================================
+الحوار
+==================================================
 
 كل لقطة تحتوي متحدثاً بشرياً واحداً فقط.
 
-الحوار قصير جداً ومناسب لمدة 5 ثوانٍ.
+الحوار قصير جداً ومناسب لمدة
+{SHOT_DURATION} ثوانٍ.
 
 الذئبة لا تتكلم.
 
 الذئبة تستخدم فقط:
+
 whimper,
 growl,
 howl,
 breathing.
 
-sound:
+==================================================
+الصوت
+==================================================
 
 اكتب وصفاً تنفيذياً للصوت فقط.
 
 يشمل:
+
 environment,
 Foley,
 footsteps,
@@ -365,37 +438,69 @@ stinger.
 
 لا تضع موسيقى داخل sound.
 
-music:
+==================================================
+الموسيقى
+==================================================
 
 اكتب وصفاً للموسيقى السينمائية الآلية فقط.
 
 ممنوع:
+
 vocals,
 lyrics,
 spoken words.
 
-يجب أن يكون هناك تصعيد درامي.
-
-ابدأ بـ hook.
-
-ثم escalation.
-
-ثم reveal أو danger.
-
-ثم cliffhanger.
-
-لا تحل السر بالكامل.
+==================================================
+الإخراج
+==================================================
 
 أعد JSON فقط.
+
+لا Markdown.
+
+لا شرح.
+
+لا كلام خارج JSON.
+
+ويجب أن يكون المفتاح scenes موجوداً
+ويحتوي بالضبط {SHOT_COUNT} عناصر.
 """
 
     user_prompt=f"""
-حوّل الفكرة التالية إلى {SHOT_COUNT} لقطات
-مدة كل لقطة {SHOT_DURATION} ثوانٍ.
+حوّل الفكرة التالية إلى سيناريو سينمائي مكوّن
+من EXACTLY {SHOT_COUNT} scenes.
+
+كل scene = {SHOT_DURATION} ثوانٍ.
 
 الفكرة:
 
 {user_idea}
+
+==================================================
+MANDATORY OUTPUT
+==================================================
+
+يجب أن يكون:
+
+scenes = [
+  scene 1,
+  scene 2,
+  scene 3,
+  scene 4
+]
+
+بالضبط.
+
+لا يجوز إرجاع عنصرين فقط.
+
+لا يجوز إرجاع ثلاثة.
+
+لا يجوز إرجاع خمسة.
+
+يجب أن يكون العدد النهائي:
+{SHOT_COUNT}
+
+==================================================
 
 أعد JSON فقط بهذا الشكل:
 
@@ -419,6 +524,52 @@ spoken words.
       "camera":"...",
       "sound":"...",
       "music":"..."
+    }},
+    {{
+      "action":"...",
+      "dialogue":[
+        {{
+          "speaker":"princess",
+          "text":"...",
+          "emotion":"..."
+        }}
+      ],
+      "scene_image_prompt":"...",
+      "video_prompt":"...",
+      "camera":"...",
+      "sound":"...",
+      "music":"..."
+    }},
+    {{
+      "action":"...",
+      "dialogue":[
+        {{
+          "speaker":"guard",
+          "text":"...",
+          "emotion":"..."
+        }}
+      ],
+      "scene_image_prompt":"...",
+      "video_prompt":"...",
+      "camera":"...",
+      "sound":"...",
+      "music":"..."
+    }},
+    {{
+      "action":"...",
+      "dialogue":[
+        {{
+          "speaker":"male_lead",
+          "text":"...",
+          "emotion":"...",
+          "..."
+        }}
+      ],
+      "scene_image_prompt":"...",
+      "video_prompt":"...",
+      "camera":"...",
+      "sound":"...",
+      "music":"..."
     }}
   ]
 }}
@@ -431,18 +582,138 @@ king
 guard
 narrator
 
-يجب أن تحتوي scenes على {SHOT_COUNT} عناصر بالضبط.
+مهم جداً:
+
+عدد عناصر scenes يجب أن يكون {SHOT_COUNT} بالضبط.
 """
 
     last_error=None
 
-    for attempt in range(2):
+    # عدد محاولات أعلى حتى لا يتوقف الإنتاج بسبب استجابة ناقصة
+    max_attempts=4
+
+    for attempt in range(max_attempts):
 
         try:
 
+            current_prompt=user_prompt
+
+            if attempt>0:
+
+                current_prompt=f"""
+المحاولة السابقة فشلت لأن النموذج لم يرجع
+{SHOT_COUNT} scenes.
+
+هذه المرة يجب إصلاح ذلك.
+
+أنت ملزم بإرجاع EXACTLY {SHOT_COUNT} scenes.
+
+عدد scenes النهائي يجب أن يكون:
+
+{SHOT_COUNT}
+
+لا ترجع أي عدد آخر.
+
+لا تختصر.
+
+لا تدمج المشاهد.
+
+لا تحذف المشاهد.
+
+قسّم الفكرة إلى:
+
+1. Hook
+2. Escalation
+3. Reveal/Danger
+4. Cliffhanger
+
+الفكرة:
+
+{user_idea}
+
+أعد JSON فقط بنفس البنية التالية:
+
+{{
+  "title":"...",
+  "hook":"...",
+  "visual_style":"...",
+  "cast_reference_prompt":"...",
+  "scenes":[
+    {{
+      "action":"...",
+      "dialogue":[
+        {{
+          "speaker":"male_lead",
+          "text":"...",
+          "emotion":"..."
+        }}
+      ],
+      "scene_image_prompt":"...",
+      "video_prompt":"...",
+      "camera":"...",
+      "sound":"...",
+      "music":"..."
+    }},
+    {{
+      "action":"...",
+      "dialogue":[
+        {{
+          "speaker":"princess",
+          "text":"...",
+          "emotion":"..."
+        }}
+      ],
+      "scene_image_prompt":"...",
+      "video_prompt":"...",
+      "camera":"...",
+      "sound":"...",
+      "music":"..."
+    }},
+    {{
+      "action":"...",
+      "dialogue":[
+        {{
+          "speaker":"guard",
+          "text":"...",
+          "emotion":"..."
+        }}
+      ],
+      "scene_image_prompt":"...",
+      "video_prompt":"...",
+      "camera":"...",
+      "sound":"...",
+      "music":"..."
+    }},
+    {{
+      "action":"...",
+      "dialogue":[
+        {{
+          "speaker":"male_lead",
+          "text":"...",
+          "emotion":"..."
+        }}
+      ],
+      "scene_image_prompt":"...",
+      "video_prompt":"...",
+      "camera":"...",
+      "sound":"...",
+      "music":"..."
+    }}
+  ]
+}}
+
+ممنوع إرجاع أقل من {SHOT_COUNT} scenes.
+ممنوع إرجاع أكثر من {SHOT_COUNT} scenes.
+"""
+
+            log(
+                f"Groq story attempt "
+                f"{attempt+1}/{max_attempts}"
+            )
+
             r=groq.chat.completions.create(
                 model=GROQ_MODEL,
-                temperature=.65,
+                temperature=0.55,
                 response_format={
                     "type":"json_object"
                 },
@@ -453,7 +724,7 @@ narrator
                     },
                     {
                         "role":"user",
-                        "content":user_prompt
+                        "content":current_prompt
                     }
                 ]
             )
@@ -468,39 +739,155 @@ narrator
             content=content.strip()
 
             if content.startswith("```"):
+
                 content=content.replace(
-                    "```json",""
+                    "```json",
+                    ""
                 ).replace(
-                    "```",""
+                    "```",
+                    ""
                 ).strip()
+
+            log(
+                f"Groq raw response length: "
+                f"{len(content)}"
+            )
 
             story=json.loads(content)
 
-            scenes=story.get("scenes",[])
+            if not isinstance(story,dict):
+                raise RuntimeError(
+                    "Groq response is not a JSON object."
+                )
+
+            scenes=story.get(
+                "scenes",
+                []
+            )
+
+            if not isinstance(scenes,list):
+
+                raise RuntimeError(
+                    "Groq scenes is not a list."
+                )
+
+            log(
+                f"Groq returned "
+                f"{len(scenes)} scenes"
+            )
+
+            # =================================================
+            # IMPORTANT:
+            # لا نكمل أبداً إلا إذا كان العدد صحيحاً
+            # =================================================
 
             if len(scenes)!=SHOT_COUNT:
+
                 raise RuntimeError(
-                    f"Wrong scene count: {len(scenes)}"
+                    f"Wrong scene count: "
+                    f"{len(scenes)}"
                 )
+
+            # =================================================
+            # VALIDATE / NORMALIZE SCENES
+            # =================================================
 
             for i,s in enumerate(scenes):
 
                 if not isinstance(s,dict):
+
                     raise RuntimeError(
                         f"Scene {i+1} invalid."
                     )
 
-                ds=s.get("dialogue",[])
+                if not str(
+                    s.get("action","")
+                ).strip():
 
-                if not isinstance(ds,list) or not ds:
+                    s["action"]=(
+                        "Cinematic continuation "
+                        "of the story."
+                    )
+
+                if not str(
+                    s.get("scene_image_prompt","")
+                ).strip():
+
+                    s["scene_image_prompt"]=(
+                        story.get(
+                            "visual_style",
+                            ""
+                        )
+                    )
+
+                if not str(
+                    s.get("video_prompt","")
+                ).strip():
+
+                    s["video_prompt"]=(
+                        "Natural cinematic movement, "
+                        "realistic acting, breathing, "
+                        "eyes, face, body, cloth and hair."
+                    )
+
+                if not str(
+                    s.get("camera","")
+                ).strip():
+
+                    s["camera"]=(
+                        "cinematic medium shot, "
+                        "slow controlled camera movement"
+                    )
+
+                if not str(
+                    s.get("sound","")
+                ).strip():
+
+                    s["sound"]=(
+                        "night environment, wind, "
+                        "leaves and subtle cinematic Foley"
+                    )
+
+                if not str(
+                    s.get("music","")
+                ).strip():
+
+                    s["music"]=(
+                        "dark cinematic Arabic fantasy "
+                        "instrumental tension"
+                    )
+
+                ds=s.get(
+                    "dialogue",
+                    []
+                )
+
+                if not isinstance(ds,list):
+
+                    ds=[]
+
+                if not ds:
+
                     s["dialogue"]=[{
                         "speaker":"narrator",
                         "text":"",
                         "emotion":"neutral"
                     }]
+
                     continue
 
+                # كل مشهد = متحدث بشري واحد
                 d=ds[0]
+
+                if not isinstance(d,dict):
+
+                    s["dialogue"]=[{
+                        "speaker":"narrator",
+                        "text":"",
+                        "emotion":"neutral"
+                    }]
+
+                    continue
 
                 if d.get("speaker") not in (
                     "male_lead",
@@ -509,15 +896,30 @@ narrator
                     "guard",
                     "narrator"
                 ):
+
                     d["speaker"]="narrator"
 
                 d["text"]=str(
-                    d.get("text","")
+                    d.get(
+                        "text",
+                        ""
+                    )
                 ).strip()
 
                 d["emotion"]=str(
-                    d.get("emotion","neutral")
-                )
+                    d.get(
+                        "emotion",
+                        "neutral"
+                    )
+                ).strip()
+
+                # لا نسمح بأكثر من متحدث في اللقطة
+                s["dialogue"]=[d]
+
+            log(
+                f"Groq story accepted: "
+                f"{len(scenes)} scenes"
+            )
 
             return story
 
@@ -526,16 +928,20 @@ narrator
             last_error=e
 
             log(
-                f"Groq attempt {attempt+1} failed: "
+                f"Groq attempt "
+                f"{attempt+1}/{max_attempts} failed: "
                 f"{repr(e)}"
             )
 
-            if attempt==0:
-                time.sleep(1)
+            if attempt<max_attempts-1:
+
+                time.sleep(2)
 
     raise RuntimeError(
-        f"Groq story generation failed: {last_error}"
+        f"Groq story generation failed: "
+        f"{last_error}"
     )
+
 
 # =========================================================
 # FFMPEG HELPERS
@@ -569,6 +975,7 @@ def run_cmd(cmd,timeout=300):
 
     return r
 
+
 def ffprobe_duration(path):
 
     r=subprocess.run(
@@ -587,11 +994,15 @@ def ffprobe_duration(path):
     )
 
     try:
+
         return float(
             r.stdout.strip()
         )
+
     except:
+
         return 0.0
+
 
 def normalize_audio_to_wav(
     inp,
@@ -610,12 +1021,15 @@ def normalize_audio_to_wav(
     ]
 
     if duration:
-        cmd+=[
+
+        cmd += [
             "-t",
             str(duration)
         ]
 
-    cmd+=[str(out)]
+    cmd += [
+        str(out)
+    ]
 
     run_cmd(
         cmd,
@@ -623,6 +1037,7 @@ def normalize_audio_to_wav(
     )
 
     return out
+
 
 def ass_escape(x):
 
@@ -632,6 +1047,7 @@ def ass_escape(x):
         .replace("{","\\{")
         .replace("}","\\}")
     )
+
 
 def ass_time(s):
 
@@ -658,12 +1074,14 @@ def ass_time(s):
     )
 
     if cs>=100:
+
         w+=1
         cs=0
 
     return (
         f"{h}:{m:02d}:{w:02d}.{cs:02d}"
     )
+
 
 def create_ass(meta,out):
 
@@ -698,6 +1116,7 @@ def create_ass(meta,out):
 
     return out
 
+
 # =========================================================
 # TTS
 # =========================================================
@@ -717,6 +1136,7 @@ async def _tts(
     }
 
     if pitch:
+
         kw["pitch"]=pitch
 
     await edge_tts.Communicate(
@@ -724,6 +1144,7 @@ async def _tts(
     ).save(
         str(out)
     )
+
 
 def create_voice_audio(
     text,
@@ -752,6 +1173,7 @@ def create_voice_audio(
 
     return out
 
+
 def fit_audio(
     inp,
     out,
@@ -778,6 +1200,7 @@ def fit_audio(
 
     return out
 
+
 def silent(
     duration,
     out
@@ -802,6 +1225,7 @@ def silent(
     )
 
     return out
+
 
 # =========================================================
 # DIALOGUE TRACK
@@ -881,7 +1305,7 @@ def build_dialogue_track(
 
     for n,(i,p) in enumerate(items):
 
-        cmd+=[
+        cmd += [
             "-i",
             str(p)
         ]
@@ -927,7 +1351,7 @@ def build_dialogue_track(
 
     out=Path(workdir)/"dialogue_track.wav"
 
-    cmd+=[
+    cmd += [
         "-filter_complex",
         ";".join(filters),
         "-map","[d]",
@@ -943,6 +1367,7 @@ def build_dialogue_track(
     )
 
     return out
+
 
 # =========================================================
 # TEST VIDEO
@@ -1003,6 +1428,7 @@ def create_test_scene_video(
 
     return out
 
+
 # =========================================================
 # IMAGE / VIDEO
 # =========================================================
@@ -1027,6 +1453,7 @@ def generate_image(
         wavespeed_wait(tid,600),
         out
     )
+
 
 def generate_cast_reference(
     story,
@@ -1069,6 +1496,7 @@ game art.
         p,
         out
     )
+
 
 def generate_scene_video(
     image_path,
@@ -1135,6 +1563,7 @@ Photorealistic cinematic 9:16.
         out
     )
 
+
 # =========================================================
 # LIPSYNC
 # =========================================================
@@ -1173,6 +1602,7 @@ def generate_lipsync_video(
         wavespeed_wait(tid,900),
         out
     )
+
 
 # =========================================================
 # SCENE SFX
@@ -1278,25 +1708,39 @@ No clipping.
         SHOT_DURATION
     )
 
+
 # =========================================================
 # SFX TRACK
 # =========================================================
 
-def build_sfx_track(files,duration,workdir):
+def build_sfx_track(
+    files,
+    duration,
+    workdir
+):
 
     valid=[]
 
     for i,p in enumerate(files):
+
         if p and Path(p).exists():
-            valid.append((i,p))
+
+            valid.append(
+                (i,p)
+            )
 
     if not valid:
+
         return silent(
             duration,
             Path(workdir)/"sfx_track.wav"
         )
 
-    cmd=["ffmpeg","-y"]
+    cmd=[
+        "ffmpeg",
+        "-y"
+    ]
+
     filters=[]
     labels=[]
 
@@ -1308,6 +1752,7 @@ def build_sfx_track(files,duration,workdir):
         ]
 
         lab=f"s{n}"
+
         delay=i*SHOT_DURATION*1000
 
         filters.append(
@@ -1413,7 +1858,7 @@ def build_music_prompt(
     cues="\n".join(
         f"Scene {i+1}: {s.get('music','')}"
         for i,s in enumerate(scenes)
-        if s.get("music")
+        if s.get('music')
     )
 
     return f"""
@@ -1552,7 +1997,10 @@ def mix_final_audio(
         ambience
     ]
 
-    cmd=["ffmpeg","-y"]
+    cmd=[
+        "ffmpeg",
+        "-y"
+    ]
 
     for p in paths:
 
@@ -1851,6 +2299,7 @@ def produce_episode(
 ):
 
     workdir=Path(workdir)
+
     workdir.mkdir(
         parents=True,
         exist_ok=True
@@ -1862,11 +2311,13 @@ def produce_episode(
     )
 
     if PRODUCTION_SCENE_LIMIT>0:
+
         scenes=scenes[
             :PRODUCTION_SCENE_LIMIT
         ]
 
     if not scenes:
+
         raise RuntimeError(
             "No scenes available."
         )
@@ -2236,6 +2687,7 @@ def produce_episode(
         fd<=0
         or not final.exists()
     ):
+
         raise RuntimeError(
             "Final video invalid or missing."
         )
@@ -2275,11 +2727,13 @@ def telegram_api(
     b=r.json()
 
     if not b.get("ok"):
+
         raise RuntimeError(
             f"Telegram API error: {b}"
         )
 
     return b
+
 
 def send_message(
     chat_id,
@@ -2293,6 +2747,7 @@ def send_message(
             "text":text
         }
     )
+
 
 def send_video(
     chat_id,
@@ -2469,6 +2924,7 @@ def process_story_for_chat(
             LIPSYNC_ENABLED
             and not TEST_MODE
         ):
+
             caption+="\n👄 Lip Sync: ON"
 
         send_video(
@@ -2804,6 +3260,10 @@ def print_startup():
 
     log(
         "GROQ_MODE=json_object"
+    )
+
+    log(
+        "GROQ_SCENE_RETRY=4"
     )
 
     log(
