@@ -24,22 +24,26 @@ GROQ_API_KEY = os.environ["GROQ_API_KEY"]
 WAVESPEED_API_KEY = os.environ["WAVESPEED_API_KEY"]
 
 PORT = int(os.getenv("PORT", "10000"))
-RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL", "").rstrip("/")
+RENDER_EXTERNAL_URL = os.getenv(
+    "RENDER_EXTERNAL_URL",
+    ""
+).rstrip("/")
 
-# Current Groq production model
 GROQ_MODEL = os.getenv(
     "GROQ_MODEL",
     "openai/gpt-oss-120b"
 )
 
-# ---- Episode format ----
+# =========================================================
+# EPISODE FORMAT
+# =========================================================
 #
 # CURRENT TEST:
 # 4 shots x 5 seconds = 20 seconds
 #
-# After the complete pipeline works,
-# we can change this to:
+# After the complete pipeline works:
 # 12 shots x 5 seconds = 60 seconds
+#
 
 SHOT_COUNT = 4
 SHOT_DURATION = 5
@@ -50,11 +54,18 @@ VIDEO_FPS = 24
 
 TTS_VOICE = "ar-SA-HamedNeural"
 
-# ---- WaveSpeed ----
 
-WAVESPEED_BASE = "https://api.wavespeed.ai/api/v3"
+# =========================================================
+# WAVESPEED
+# =========================================================
 
-IMAGE_MODEL = "wavespeed-ai/z-image/turbo"
+WAVESPEED_BASE = (
+    "https://api.wavespeed.ai/api/v3"
+)
+
+IMAGE_MODEL = (
+    "wavespeed-ai/z-image/turbo"
+)
 
 IMAGE_EDIT_MODEL = (
     "wavespeed-ai/z-image-turbo/image-to-image"
@@ -91,7 +102,7 @@ def log(message):
 
 
 # =========================================================
-# HTTP
+# HTTP HEADERS
 # =========================================================
 
 def auth_headers():
@@ -99,6 +110,7 @@ def auth_headers():
     return {
         "Authorization":
             f"Bearer {WAVESPEED_API_KEY}",
+
         "Content-Type":
             "application/json"
     }
@@ -113,7 +125,7 @@ def get_headers():
 
 
 # =========================================================
-# WAVESPEED
+# WAVESPEED SUBMIT
 # =========================================================
 
 def wavespeed_submit(
@@ -156,7 +168,8 @@ def wavespeed_submit(
     if not task_id:
 
         raise RuntimeError(
-            f"WaveSpeed returned no task id: {body}"
+            "WaveSpeed returned no task id: "
+            f"{body}"
         )
 
     log(
@@ -165,6 +178,10 @@ def wavespeed_submit(
 
     return task_id
 
+
+# =========================================================
+# WAVESPEED WAIT
+# =========================================================
 
 def wavespeed_wait(
     task_id,
@@ -239,7 +256,8 @@ def wavespeed_wait(
 
             raise RuntimeError(
                 f"WaveSpeed task "
-                f"{task_id} failed: {body}"
+                f"{task_id} failed: "
+                f"{body}"
             )
 
         time.sleep(2)
@@ -303,6 +321,33 @@ def upload_to_wavespeed(path):
     upload_response.raise_for_status()
 
     return data["download_url"]
+
+
+# =========================================================
+# DOWNLOAD
+# =========================================================
+
+def download_file(
+    url,
+    path
+):
+
+    log(
+        f"Downloading: {url}"
+    )
+
+    response = requests.get(
+        url,
+        timeout=180
+    )
+
+    response.raise_for_status()
+
+    Path(path).write_bytes(
+        response.content
+    )
+
+    return path
 
 
 # =========================================================
@@ -438,33 +483,6 @@ def generate_video(
 
 
 # =========================================================
-# DOWNLOAD
-# =========================================================
-
-def download_file(
-    url,
-    path
-):
-
-    log(
-        f"Downloading: {url}"
-    )
-
-    response = requests.get(
-        url,
-        timeout=180
-    )
-
-    response.raise_for_status()
-
-    Path(path).write_bytes(
-        response.content
-    )
-
-    return path
-
-
-# =========================================================
 # GROQ JSON SCHEMA
 # =========================================================
 
@@ -540,6 +558,7 @@ STORY_SCHEMA = {
             "type": "array",
 
             "minItems": 4,
+
             "maxItems": 4,
 
             "items": {
@@ -594,7 +613,7 @@ STORY_SCHEMA = {
 
 
 # =========================================================
-# GROQ — STORY + DIRECTING
+# GROQ STORY
 # =========================================================
 
 def create_story(
@@ -630,9 +649,10 @@ Psychological Thriller.
 
 الهدف ليس slideshow.
 
-كل لقطة يجب أن تبدو كجزء من فيلم حقيقي.
+كل لقطة يجب أن تبدو كجزء
+من فيلم حقيقي.
 
-يجب أن تحتوي على:
+كل لقطة يجب أن تحتوي على:
 
 - حركة شخصية
 - حركة كاميرا
@@ -659,8 +679,8 @@ Psychological Thriller.
 
 لا توجد كتابة داخل الصور.
 
-narration_ar يجب أن يكون عربياً
-طبيعياً ومثيراً.
+narration_ar يجب أن يكون
+عربياً طبيعياً ومثيراً.
 
 كل لقطة:
 جملة أو جملتان فقط.
@@ -706,8 +726,8 @@ vertical composition.
 """
 
     user_prompt = f"""
-حوّل الفكرة التالية إلى حلقة Microdrama
-سينمائية:
+حوّل الفكرة التالية إلى حلقة
+Microdrama سينمائية:
 
 {user_idea}
 
@@ -790,7 +810,8 @@ vertical composition.
         )
 
         log(
-            f"Raw Groq output: {content[:5000]}"
+            f"Raw Groq output: "
+            f"{content[:5000]}"
         )
 
         raise
@@ -983,7 +1004,7 @@ def concat_videos(
 
 
 # =========================================================
-# CONCAT AUDIO
+# CONCAT AUDIO — FIXED
 # =========================================================
 
 def concat_audio(
@@ -991,9 +1012,88 @@ def concat_audio(
     output
 ):
 
+    """
+    Edge-TTS produces MP3 files.
+
+    We do NOT concatenate the MP3 files directly.
+
+    Every MP3 is first normalized to:
+        WAV
+        PCM s16le
+        24 kHz
+        mono
+
+    Then all WAV files are concatenated.
+
+    Finally the result is encoded to AAC.
+    """
+
+    normalized_files = []
+
+    total = len(audios)
+
+    log(
+        f"Preparing {total} audio files..."
+    )
+
+    for index, audio in enumerate(
+        audios,
+        start=1
+    ):
+
+        audio = Path(audio)
+
+        normalized = (
+            output.parent /
+            f"normalized_audio_{index}.wav"
+        )
+
+        log(
+            f"Normalizing audio "
+            f"{index}/{total}: "
+            f"{audio.name}"
+        )
+
+        run_ffmpeg([
+
+            "-i",
+            str(audio),
+
+            "-vn",
+
+            "-ac",
+            "1",
+
+            "-ar",
+            "24000",
+
+            "-c:a",
+            "pcm_s16le",
+
+            str(normalized)
+        ])
+
+        if not normalized.exists():
+
+            raise RuntimeError(
+                f"Audio normalization "
+                f"failed: {normalized}"
+            )
+
+        if normalized.stat().st_size <= 44:
+
+            raise RuntimeError(
+                f"Normalized audio is empty: "
+                f"{normalized}"
+            )
+
+        normalized_files.append(
+            normalized
+        )
+
     list_file = (
         output.parent /
-        "audio_list.txt"
+        "audio_wav_list.txt"
     )
 
     with list_file.open(
@@ -1001,7 +1101,7 @@ def concat_audio(
         encoding="utf-8"
     ) as f:
 
-        for audio in audios:
+        for audio in normalized_files:
 
             safe_path = (
                 str(audio)
@@ -1014,6 +1114,10 @@ def concat_audio(
             f.write(
                 f"file '{safe_path}'\n"
             )
+
+    log(
+        "Concatenating normalized WAV files..."
+    )
 
     run_ffmpeg([
 
@@ -1034,6 +1138,27 @@ def concat_audio(
 
         str(output)
     ])
+
+    if not output.exists():
+
+        raise RuntimeError(
+            "Audio concatenation produced "
+            "no output file."
+        )
+
+    if output.stat().st_size == 0:
+
+        raise RuntimeError(
+            "Audio concatenation produced "
+            "an empty file."
+        )
+
+    log(
+        f"Audio concatenation complete: "
+        f"{output.name}"
+    )
+
+    return output
 
 
 # =========================================================
@@ -1078,7 +1203,7 @@ def create_ambience(
 
 
 # =========================================================
-# MIX AUDIO
+# MIX VOICE + AMBIENCE
 # =========================================================
 
 def mix_audio(
@@ -1542,6 +1667,11 @@ def create_episode(
             f"voice_{index}.mp3"
         )
 
+        log(
+            f"Creating Arabic voice "
+            f"{index}/{SHOT_COUNT}..."
+        )
+
         create_tts(
 
             scene[
@@ -1551,13 +1681,27 @@ def create_episode(
             audio
         )
 
+        if not audio.exists():
+
+            raise RuntimeError(
+                f"TTS did not create "
+                f"file: {audio}"
+            )
+
+        if audio.stat().st_size == 0:
+
+            raise RuntimeError(
+                f"TTS created empty file: "
+                f"{audio}"
+            )
+
         voice_files.append(
             audio
         )
 
     voice_track = (
         workdir /
-        "voice.mp3"
+        "voice.m4a"
     )
 
     concat_audio(
@@ -1658,7 +1802,7 @@ def create_episode(
 
 
 # =========================================================
-# TELEGRAM
+# TELEGRAM API
 # =========================================================
 
 def telegram_api(
