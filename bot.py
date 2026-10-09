@@ -2,7 +2,6 @@ import os, json, time, shutil, tempfile, threading, subprocess, re, urllib.parse
 from pathlib import Path
 import requests
 from flask import Flask, request
-from PIL import Image, ImageDraw
 
 def envbool(k,d): return os.getenv(k, str(d)).lower() in ("1","true","yes","on")
 BOT_TOKEN = os.environ.get("BOT_TOKEN","")
@@ -42,7 +41,7 @@ STORY_MEMORY = {}
 GLOBAL_BANK = CHARACTER_BANK.copy()
 
 def log(m):
-    with lock: print("[GOLD FIXED] " + time.strftime("%H:%M:%S") + " " + m, flush=True)
+    with lock: print("[GOLD NO PIL] " + time.strftime("%H:%M:%S") + " " + m, flush=True)
 
 def get_arabic_font():
     font_dir = Path("/tmp/fonts")
@@ -59,7 +58,7 @@ def get_arabic_font():
 
 ARABIC_FONT = get_arabic_font()
 
-# ========== صور مجانية - 4 سيرفرات - ما بيفشل ==========
+# ========== صور مجانية بدون PIL ==========
 def generate_image_free(prompt, out):
     safe = urllib.parse.quote(prompt[:450] + " cinematic lighting 8K vertical movie poster")
     base = "https://image.pollinations.ai/prompt"
@@ -73,30 +72,26 @@ def generate_image_free(prompt, out):
     for url in urls:
         for attempt in range(3):
             try:
-                log(f"Free try {attempt+1} {url.split('model=')[1][:15]}")
-                r = requests.get(url, timeout=70)
+                log(f"Free try {url.split('model=')[1][:10]} attempt {attempt+1}")
+                r = requests.get(url, timeout=80)
                 if r.status_code==200 and len(r.content)>12000:
                     Path(out).write_bytes(r.content)
-                    log(f"Free OK {len(r.content)} bytes")
+                    log(f"Free OK {len(r.content)}")
                     return Path(out)
                 time.sleep(1.5)
             except Exception as e:
-                log(f"Free fail {e}")
+                log(f"Fail {e}")
                 time.sleep(2)
 
-    # لو كل المجاني فشل - صورة سوداء مؤقتة عشان البوت ما يعلق + نعيد المحاولة
+    # Fallback: صورة سوداء بـ ffmpeg بدون PIL
     try:
-        log("All free failed, creating placeholder and retrying")
-        img = Image.new('RGB', (720,1280), color=(25,20,40))
-        d = ImageDraw.Draw(img)
-        d.text((30,600), prompt[:120], fill=(255,255,255))
-        img.save(out)
-        time.sleep(3)
-        # محاولة أخيرة
+        log("All free failed, creating ffmpeg placeholder")
+        subprocess.run(["ffmpeg","-y","-f","lavfi","-i","color=c=0x1a1428:s=720x1280:d=1","-frames:v","1",str(out)], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=20)
+        # حاول مرة أخيرة بعد 4 ثواني
+        time.sleep(4)
         r = requests.get(urls[0], timeout=80)
         if r.status_code==200 and len(r.content)>10000:
             Path(out).write_bytes(r.content)
-            log("Last retry OK")
         return Path(out)
     except Exception as e:
         log(f"Placeholder fail {e}")
@@ -116,15 +111,14 @@ def generate_voice_for_character(text_ar, character_key, out_path):
             subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
             shutil.move(filtered, out_path)
         except: pass
-        log(f"Voice {character_key} OK pitch={pitch} speed={speed}")
+        log(f"Voice {character_key} OK")
         return out_path
     except Exception as e:
         log(f"Voice fail {e}")
         return None
 
 def generate_video_with_voice(image_path, scene, voice_path, out_path, is_first=False, story=None):
-    def clean(t):
-        return (t or "").replace(":", " ").replace("'", "").replace('"',"").replace("%","").replace("\n"," ")[:80]
+    def clean(t): return (t or "").replace(":", " ").replace("'", "").replace('"',"").replace("%","").replace("\n"," ")[:80]
     dialogue_ar = clean(scene.get("dialogue_ar",""))
     dialogue_en = clean(scene.get("dialogue_en",""))
     caption_big = clean(scene.get("caption_big",""))
@@ -132,12 +126,10 @@ def generate_video_with_voice(image_path, scene, voice_path, out_path, is_first=
     ep = story.get("episode",1) if story else 1
     char_key = scene.get("character_key","hero")
     font = ARABIC_FONT
-
     if is_first:
         vf = f"zoompan=z='min(zoom+0.0008,1.25)':d=1:fps=24:s=720x1280,scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,eq=contrast=1.15:saturation=1.3,drawtext=fontfile={font}:text='EP {ep} - {char_key}':fontcolor=white:fontsize=18:borderw=2:bordercolor=black:x=15:y=15,drawtext=fontfile={font}:text='{hook}':fontcolor=yellow:fontsize=28:borderw=3:bordercolor=black:x=(w-text_w)/2:y=55,drawtext=fontfile={font}:text='{caption_big}':fontcolor=white:fontsize=40:borderw=5:bordercolor=black:x=(w-text_w)/2:y=(h-text_h)/2-40,drawtext=fontfile={font}:text='{dialogue_ar}':fontcolor=white:fontsize=26:borderw=3:bordercolor=black:box=1:boxcolor=black@0.65:boxborderw=10:x=(w-text_w)/2:y=h-135,drawtext=fontfile={font}:text='{dialogue_en}':fontcolor=#CCCCCC:fontsize=15:borderw=1:bordercolor=black:x=(w-text_w)/2:y=h-65"
     else:
         vf = f"zoompan=z='if(lte(zoom,1.0),1.0,min(zoom+0.0006,1.22))':d=1:fps=24:s=720x1280,scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,eq=contrast=1.12:saturation=1.25,drawtext=fontfile={font}:text='{char_key}':fontcolor=#AAAAAA:fontsize=16:borderw=1:bordercolor=black:x=15:y=15,drawtext=fontfile={font}:text='{caption_big}':fontcolor=white:fontsize=38:borderw=4:bordercolor=black:x=(w-text_w)/2:y=(h-text_h)/2-50,drawtext=fontfile={font}:text='{dialogue_ar}':fontcolor=white:fontsize=26:borderw=3:bordercolor=black:box=1:boxcolor=black@0.65:boxborderw=10:x=(w-text_w)/2:y=h-135,drawtext=fontfile={font}:text='{dialogue_en}':fontcolor=#CCCCCC:fontsize=15:borderw=1:bordercolor=black:x=(w-text_w)/2:y=h-65"
-
     if voice_path and Path(voice_path).exists():
         try:
             probe = subprocess.run(["ffprobe","-v","error","-show_entries","format=duration","-of","default=noprint_wrappers=1:nokey=1",str(voice_path)], stdout=subprocess.PIPE, text=True, timeout=10)
@@ -147,7 +139,6 @@ def generate_video_with_voice(image_path, scene, voice_path, out_path, is_first=
         cmd = ["ffmpeg","-y","-loop","1","-i",str(image_path),"-i",str(voice_path),"-vf",vf,"-t",str(dur),"-r","24","-map","0:v","-map","1:a","-c:v","libx264","-preset","veryfast","-crf","23","-c:a","aac","-pix_fmt","yuv420p","-shortest","-movflags","+faststart",str(out_path)]
     else:
         cmd = ["ffmpeg","-y","-loop","1","-i",str(image_path),"-vf",vf,"-t","6","-r","24","-c:v","libx264","-preset","veryfast","-crf","23","-pix_fmt","yuv420p","-movflags","+faststart",str(out_path)]
-
     subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=90)
     return out_path
 
@@ -159,26 +150,10 @@ def generate_free_music(out_path, duration=65):
 
 def create_story_from_user_text(user_story_text, episode=1, chat_id=0):
     current_chars = ", ".join(GLOBAL_BANK.keys())
-    voice_desc = "\n".join([f"{k}: {v['desc']}" for k,v in CHARACTER_VOICE.items()])
-    system_prompt = f"""
-You are director for 60 sec video with voice per character. User story: "{user_story_text}"
-Characters: {current_chars}
-Voices: {voice_desc}
-Split into exactly 10 scenes (6 sec each).
-Return JSON:
-{{
- "title": "عنوان",
- "hook_text": "Hook",
- "hashtags": "#قصة #الحلقة{episode}",
- "summary": "ملخص",
- "new_characters": [],
- "scenes": [10 scenes each {{"character_key":"hero","scene_image_prompt":"hero action cinematic","dialogue_ar":"جملة بطيئة جذابة","dialogue_en":"English","caption_big":"كلمتين"}}]
-}}
-User story: {user_story_text}
-"""
+    system_prompt = f"""You are director for 60 sec video. User story: "{user_story_text}" Characters: {current_chars} Split into exactly 10 scenes. Return JSON: {{"title":"عنوان","hook_text":"Hook","hashtags":"#قصة","summary":"ملخص","new_characters":[],"scenes":[10 scenes each {{"character_key":"hero","scene_image_prompt":"hero action cinematic","dialogue_ar":"جملة بطيئة","dialogue_en":"English","caption_big":"كلمتين"}}]}} User story: {user_story_text}"""
     for _ in range(3):
         try:
-            res=groq.chat.completions.create(model=GROQ_MODEL, temperature=0.6, max_completion_tokens=7000, response_format={"type":"json_object"}, messages=[{"role":"system","content":system_prompt},{"role":"user","content":f"قصة المستخدم: {user_story_text} قسمها 10 مشاهد"}])
+            res=groq.chat.completions.create(model=GROQ_MODEL, temperature=0.6, max_completion_tokens=7000, response_format={"type":"json_object"}, messages=[{"role":"system","content":system_prompt},{"role":"user","content":f"قصة: {user_story_text} قسمها 10 مشاهد"}])
             story=json.loads(res.choices[0].message.content.strip())
             if len(story.get("scenes",[]))>=8:
                 while len(story["scenes"])<10: story["scenes"].append(story["scenes"][-1])
@@ -228,18 +203,14 @@ def process_story(chat_id, user_story_text):
         if chat_id not in EPISODE_COUNTER: EPISODE_COUNTER[chat_id]=1
         else: EPISODE_COUNTER[chat_id]+=1
         ep = EPISODE_COUNTER[chat_id]
-
-        send_text(chat_id, f"🎬 دقيقة بأصوات - الحلقة {ep}\n📝 {user_story_text[:90]}...\n🎙️ كل شخصية صوتها بمكانها\n⏳ بياخد 3-4 دقايق (صور مجانية)")
-
+        send_text(chat_id, f"🎬 دقيقة بأصوات - الحلقة {ep}\n📝 {user_story_text[:90]}...\n🎙️ كل شخصية صوتها بمكانها\n⏳ 3-4 دقايق")
         story=create_story_from_user_text(user_story_text, episode=ep, chat_id=chat_id)
-
         for nc in story.get("new_characters", []):
             k=nc.get("key"); d=nc.get("description")
             if k and d and k not in GLOBAL_BANK:
                 GLOBAL_BANK[k]=d
                 if k not in CHARACTER_VOICE:
                     CHARACTER_VOICE[k] = {"pitch": 1.0, "speed": 0.88, "desc": "صوت جديد"}
-
         videos=[]
         for index, scene in enumerate(story["scenes"][:10]):
             no=index+1
@@ -248,7 +219,6 @@ def process_story(chat_id, user_story_text):
             img=work / f"ep{ep}_scene_{no}.jpg"
             voice=work / f"ep{ep}_scene_{no}_voice.mp3"
             vid=work / f"ep{ep}_scene_{no}.mp4"
-
             img_prompt = f"{char_desc}, {scene.get('scene_image_prompt','')}, consistent face"
             generate_image_free(img_prompt, img)
             generate_voice_for_character(scene.get("dialogue_ar",""), char_key, voice)
@@ -256,33 +226,18 @@ def process_story(chat_id, user_story_text):
             videos.append(vid)
             if no%2==0:
                 send_text(chat_id, f"✅ {no}/10 - {char_key} 🎙️ {CHARACTER_VOICE.get(char_key,{}).get('desc','')}")
-
         music_path = work / "music.mp3"
         generate_free_music(music_path, duration=65)
         final_raw=work / "final_raw.mp4"
         concat_videos(videos, final_raw)
         final=work / "final.mp4"
         final_mix_with_music(final_raw, music_path if music_path.exists() else None, final)
-
-        caption = f"""🎬 {story.get('title','')} - {ep}
-
-{story.get('hook_text','')}
-
-🎙️ الأصوات:
-{chr(10).join([f"• {k}" for k in set([s.get('character_key') for s in story['scenes']])])}
-
-{story.get('hashtags','')}
-⏱️ 60 ثانية - كل صوت بمكانه بطيء جذاب
-💰 $0 مجاني - 4 سيرفرات مجانية
-📝 قصتك: {user_story_text[:100]}
-"""
+        caption = f"🎬 {story.get('title','')} - {ep}\n\n{story.get('hook_text','')}\n\n{story.get('hashtags','')}\n⏱️ 60 ثانية بأصوات\n💰 $0 مجاني\n📝 {user_story_text[:100]}"
         send_text(chat_id, caption)
         send_video(chat_id, final, f"الحلقة {ep} - دقيقة بأصوات")
         send_text(chat_id, f"✅ جاهز! 🎙️ كل صوت بمكانه\n🔄 ابعت قصة جديدة")
-
         if chat_id not in STORY_MEMORY: STORY_MEMORY[chat_id]=[]
         STORY_MEMORY[chat_id].append(f"EP{ep}: {story.get('summary','')}")
-
     except Exception as e:
         log("ERROR " + repr(e))
         try: send_text(chat_id, "❌ " + str(e)[:2000])
@@ -297,7 +252,7 @@ def handle_update(update):
     text=(msg.get("text") or "").strip()
     if not chat: return
     if text=="/start":
-        send_text(chat, "🎬 بوت دقيقة بأصوات $0\n\n📝 ابعت قصتك كتابة:\nالبطل يدخل القصر الملك يطرده الأميرة تدافع عنه...\n\n🎙️ كل شخصية صوتها بمكانها بطيء\n📍 ترجمة تحت + خط عربي\n\n/test = مثال\n/clear = مسح"); return
+        send_text(chat, "🎬 بوت دقيقة بأصوات $0\n\n📝 ابعت قصتك كتابة:\nالبطل يدخل القصر الملك يطرده...\n\n🎙️ كل شخصية صوتها بمكانها\n📍 ترجمة تحت + خط عربي\n\n/test = مثال\n/clear = مسح"); return
     if text=="/clear":
         with plock: processing_chats.clear()
         send_text(chat, "✅"); return
@@ -305,14 +260,12 @@ def handle_update(update):
         txt = "🧑 الشخصيات:\n" + "\n".join([f"- {k}: {v['desc']}" for k,v in CHARACTER_VOICE.items()])
         send_text(chat, txt); return
     if text=="/ping":
-        send_text(chat, f"🟢 Fixed 4 servers Font={ARABIC_FONT}"); return
-
+        send_text(chat, f"🟢 No PIL Fixed Font={ARABIC_FONT}"); return
     user_story = text
     if text=="/test":
         user_story = "شاب فقير يتظاهر بالضعف يدخل قصر الملك الملك يهينه ويطرده الأميرة تحبه وتدافع عنه يخرج حزين للغابة يلتقي ذئبة بيضاء صغيرة تنقذه من البرد نمر عملاق يهجم على الذئبة الشاب يكشف قوته الحقيقية ويهزم النمر بضربة واحدة الأميرة ترى قوته وتفرح"
     elif text=="/next":
         user_story = "تكملة الحلقة السابقة نفس الشخصيات يواجهون تهديد جديد أكبر في الغابة الملك يحاول الانتقام"
-
     with plock:
         if chat in processing_chats:
             send_text(chat, "⏳ في انتاج - انتظر"); return
@@ -320,7 +273,7 @@ def handle_update(update):
     threading.Thread(target=process_story, args=(chat, user_story), daemon=True).start()
 
 @app.get("/")
-def home(): return f"Gold Fixed 4 servers Alive Font={ARABIC_FONT}", 200
+def home(): return f"No PIL Gold Alive Font={ARABIC_FONT}", 200
 @app.post("/telegram/webhook")
 def webhook():
     upd=request.get_json(silent=True) or {}
