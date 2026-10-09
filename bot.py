@@ -166,7 +166,7 @@ def fallback_scene(number, metadata):
 
 def generate_one_scene(number, story_text, metadata, previous_note):
     fallback = fallback_scene(number, metadata)
-    prompt = f'''Write scene {number} of 4. Title: {metadata['title']}. Genre: {metadata['genre']}. Style: {metadata['visual_style']}. Summary: {metadata['summary'][:180]}. User idea: {story_text[:250]}. Previous scene: {previous_note[:100] or 'first scene'}. Allowed speaker_id: male_lead, princess, king, guard, wolf (wolf never speaks). Return JSON: {"visual_description":"detailed visual prompt","camera":"camera motion in English","lighting":"lighting in English","mood":"mood in English","speaker_id":"one allowed id","dialogue":"short Arabic dialogue","continuity_note":"short note"}'''
+    prompt = f'''Write scene {number} of 4. Title: {metadata['title']}. Genre: {metadata['genre']}. Style: {metadata['visual_style']}. Summary: {metadata['summary'][:180]}. User idea: {story_text[:250]}. Previous scene: {previous_note[:100] or 'first scene'}. Allowed speaker_id: male_lead, princess, king, guard, wolf (wolf never speaks). Return JSON: {{"visual_description":"detailed visual prompt","camera":"camera motion in English","lighting":"lighting in English","mood":"mood in English","speaker_id":"one allowed id","dialogue":"short Arabic dialogue","continuity_note":"short note"}}'''
     try:
         data = groq_json_request("You are a cinematic screenwriter. Return valid JSON only. No narrator. Wolf does not speak.", prompt, 380, 0.5)
         speaker = normalize_text(data.get("speaker_id"), 30)
