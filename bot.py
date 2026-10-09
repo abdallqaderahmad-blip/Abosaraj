@@ -9,7 +9,7 @@ def envbool(k,d):
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN","")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY","")
-PIAPI_API_KEY = os.getenv("PIAPI_API_KEY","") or os.getenv("KLING_API_KEY","") or os.getenv("WAVESPEED_API_KEY","")
+PIAPI_API_KEY = os.getenv("PIAPI_API_KEY","") or os.getenv("KLING_API_KEY","")
 PORT = int(os.getenv("PORT","10000"))
 RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL","").rstrip("/")
 GROQ_MODEL = os.getenv("GROQ_MODEL","openai/gpt-oss-120b")
@@ -52,11 +52,9 @@ def http_get(url, **k):
 def extract_url(j):
     s = json.dumps(j)
     m = re.search(r'https?://[^\s"\']+\.mp4[^\s"\']*', s)
-    if m:
-        return m.group(0)
+    if m: return m.group(0)
     m2 = re.search(r'https?://[^\s"\']+\.(?:jpg|jpeg|png|webp)[^\s"\']*', s)
-    if m2:
-        return m2.group(0)
+    if m2: return m2.group(0)
     data = j.get("data",{})
     out = data.get("output",{})
     if isinstance(out, dict):
@@ -73,8 +71,7 @@ def download_file(url, path):
         r.raise_for_status()
         with path.open("wb") as f:
             for c in r.iter_content(1024*1024):
-                if c:
-                    f.write(c)
+                if c: f.write(c)
     return path
 
 def piapi_wait(tid, timeout=900, kind="video"):
@@ -96,26 +93,23 @@ def piapi_wait(tid, timeout=900, kind="video"):
                 raise RuntimeError("no output "+json.dumps(body)[:1000])
             return out
         if status in ("failed","cancelled","timeout","deleted"):
-            raise RuntimeError(str(data.get("error") or body)[:3000])
+            raise RuntimeError(str(data.get("error") or body)[:2000])
         time.sleep(5)
 
 def upload_to_catbox(path):
-    try:
-        with open(path, "rb") as f:
-            r = requests.post("https://catbox.moe/user/api.php", data={"reqtype":"fileupload"}, files={"fileToUpload": f}, timeout=60)
-        if r.status_code==200 and "http" in r.text:
-            return r.text.strip()
-    except Exception as e:
-        log(f"Catbox fail {e}")
-    # fallback base64
-    return f"data:image/jpeg;base64,{base64.b64encode(Path(path).read_bytes()).decode()}"
+    with open(path, "rb") as f:
+        r = requests.post("https://catbox.moe/user/api.php", data={"reqtype":"fileupload"}, files={"fileToUpload": f}, timeout=60)
+    if r.status_code==200 and "http" in r.text:
+        return r.text.strip()
+    raise RuntimeError("Catbox fail "+r.text[:500])
 
+# ========== توفير رصيد: محاولة واحدة فقط بدون لوب ==========
 def generate_image(prompt, out):
     payload = {
         "model": "Qubico/flux1-schnell",
         "task_type": "txt2img",
         "input": {
-            "prompt": prompt[:400] + " REAL HUMAN PHOTOREALISTIC 8K vertical portrait 9:16, real skin, not cartoon",
+            "prompt": prompt[:450] + " REAL HUMAN PHOTOREALISTIC 8K, cinematic drama lighting, vertical 9:16, real skin texture, not cartoon, not anime, highly detailed",
             "width": 720,
             "height": 1280,
             "num_images": 1
@@ -124,48 +118,75 @@ def generate_image(prompt, out):
     headers = {"x-api-key": PIAPI_API_KEY, "Content-Type":"application/json"}
     r = requests.post(PIAPI_BASE, headers=headers, json=payload, timeout=60)
     log(f"Flux submit {r.status_code}")
-    if r.status_code>=400:
-        log(f"Flux ERROR {r.text[:2000]}")
-        r.raise_for_status()
+    r.raise_for_status()
     tid = r.json().get("data",{}).get("task_id")
     img_url = piapi_wait(tid, 300, "image")
     return download_file(img_url, out)
 
 def generate_video(image_path, prompt, out):
     img_url = upload_to_catbox(image_path)
-    log(f"Upload {img_url[:120]}")
+    log(f"Upload done {img_url[:80]}")
+
+    # محاولة واحدة فقط - ما بيعيد لحاله عشان الرصيد
     payload = {
         "model": "kling",
         "task_type": "video_generation",
         "input": {
-            "prompt": (prompt[:300] + " REAL HUMAN LIVE ACTION cinematic natural movement").strip(),
-            "negative_prompt": "cartoon, anime, blurry, 3d",
+            "prompt": prompt[:400],
             "image_url": img_url,
-            "duration": 5,
-            "aspect_ratio": "9:16",
-            "cfg_scale": 0.5
+            "duration": "5",
+            "aspect_ratio": "9:16"
         }
     }
     headers = {"x-api-key": PIAPI_API_KEY, "Content-Type":"application/json"}
     r = requests.post(PIAPI_BASE, headers=headers, json=payload, timeout=90)
-    log(f"Kling submit {r.status_code} {r.text[:800]}")
+    log(f"Kling submit {r.status_code}")
     if r.status_code>=400:
+        log(f"Kling fail {r.text[:2000]}")
         r.raise_for_status()
     tid = r.json().get("data",{}).get("task_id")
     vurl = piapi_wait(tid, 900, "video")
     return download_file(vurl, out)
 
 def create_story(user_idea):
-    system_prompt = "REAL HUMAN director 4 scenes S1 King rejects hero S2 Princess meets hero forest with small white wolf pup S3 GIANT TIGER enormous two elephants attacks palace hero blue power S4 Hero vs giant tiger wins Return JSON title scenes action scene_image_prompt video_prompt"
-    user_prompt = "USER IDEA: " + user_idea
-    for _ in range(4):
+    # قصة سينمائية دراما - نفس اللي حكيناها
+    system_prompt = """
+You are CINEMATIC DRAMA director for REAL HUMAN 9:16 story.
+
+STORY WE MUST TELL:
+A handsome real man with hidden blue magical power pretends to be weak.
+The King humiliates and rejects him.
+The Princess (beautiful real woman) is the only one who sees his true heart and loves him.
+They meet in forest with small white wolf pup cute companion.
+GIANT TIGER - enormous like two elephants, 4 meters tall, attacks the royal palace.
+Hero must reveal his blue power to save everyone.
+
+Create 4 scenes with high drama, cinematic, emotional:
+
+Return JSON: {"title": "string", "scenes": [
+ {"action":"", "scene_image_prompt":"", "video_prompt":""}
+]}
+
+Rules for prompts:
+- scene_image_prompt: REAL HUMAN, cinematic drama, emotional lighting, 8K, vertical portrait, detailed description of characters and mood
+- video_prompt: REAL HUMAN LIVE ACTION, slow cinematic movement, emotional, dramatic camera
+
+Make scenes:
+S1: King rejects hero in throne room - hero humiliated, pretends weak, dramatic sad
+S2: Forest night - princess meets hero secretly, small white wolf pup between them, romantic drama, moonlight
+S3: GIANT TIGER enormous 4 meter like two elephants smashes palace gates, people screaming, cinematic disaster
+S4: Hero reveals blue power, fights giant tiger, saves palace, king bows, princess hugs, epic heroic drama
+
+REAL HUMAN ONLY - no cartoon.
+"""
+    for _ in range(3):
         try:
-            res=groq.chat.completions.create(model=GROQ_MODEL, temperature=0.35, max_completion_tokens=5000, response_format={"type":"json_object"}, messages=[{"role":"system","content":system_prompt},{"role":"user","content":user_prompt}])
+            res=groq.chat.completions.create(model=GROQ_MODEL, temperature=0.4, max_completion_tokens=5000, response_format={"type":"json_object"}, messages=[{"role":"system","content":system_prompt},{"role":"user","content":"USER IDEA: "+user_idea}])
             story=json.loads(res.choices[0].message.content.strip())
             if len(story.get("scenes",[]))==4:
                 return story
         except Exception as e:
-            log("Groq fail " + str(e))
+            log("Groq fail "+str(e))
             time.sleep(1)
     raise RuntimeError("Story fail")
 
@@ -200,14 +221,14 @@ def send_video(chat_id, path, caption):
         return telegram("sendVideo", {"chat_id": chat_id, "caption": caption, "supports_streaming": "true"}, {"video": ("episode.mp4", f, "video/mp4")}, 300)
 
 def process_story(chat_id, user_idea):
-    work=Path(tempfile.mkdtemp(prefix="abosaraj_"))
+    work=Path(tempfile.mkdtemp(prefix="drama_"))
     try:
-        send_text(chat_id, "🎬 REAL HUMAN بدأ... 8K Kling")
+        send_text(chat_id, "🎬 بدأنا الفيلم الدرامي السينمائي\n4 مشاهد - بياخد 8 دقايق\nما رح يعيد محاولات عشان نوفر الرصيد")
         story=create_story(user_idea)
         videos=[]
         for index, scene in enumerate(story["scenes"]):
             no=index+1
-            log(f"SCENE {no}/4")
+            log(f"SCENE {no}/4 {scene.get('action','')[:80]}")
             img=work / f"scene_{no}.jpg"
             raw=work / f"scene_{no}_raw.mp4"
             norm=work / f"scene_{no}.mp4"
@@ -215,17 +236,17 @@ def process_story(chat_id, user_idea):
             generate_video(img, scene.get("video_prompt","") or scene.get("action",""), raw)
             normalize_video(raw, norm, 5)
             videos.append(norm)
-            send_text(chat_id, f"✅ مشهد {no}/4 جاهز")
+            send_text(chat_id, f"✅ مشهد {no}/4 جاهز: {scene.get('action','')[:80]}")
         silent=work / "silent.mp4"
         concat_videos(videos, silent)
         final=work / "final.mp4"
         run_cmd(["ffmpeg","-y","-i",str(silent),"-c:v","libx264","-pix_fmt","yuv420p","-movflags","+faststart",str(final)],120)
-        send_text(chat_id, "✅ اكتمل " + story.get("title",""))
-        send_video(chat_id, final, story.get("title","REAL HUMAN 8K Kling"))
+        send_text(chat_id, "✅ اكتمل الفيلم: " + story.get("title",""))
+        send_video(chat_id, final, story.get("title","دراما سينمائية - البطل والقوة الزرقاء"))
     except Exception as e:
         log("ERROR " + repr(e))
         try:
-            send_text(chat_id, "❌ خطأ:\n" + str(e)[:3000])
+            send_text(chat_id, "❌ خطأ (ما عاد محاولات عشان الرصيد):\n" + str(e)[:2000] + "\nابعت /clear وجرب تاني")
         except:
             pass
     finally:
@@ -237,35 +258,31 @@ def handle_update(update):
     msg=update.get("message") or {}
     chat=(msg.get("chat") or {}).get("id")
     text=(msg.get("text") or "").strip()
-    if not chat:
-        return
+    if not chat: return
     if text=="/start":
-        send_text(chat, "🎬 REAL HUMAN جاهز 8K Kling\nابعت فكرة")
+        send_text(chat, "🎬 بوت دراما سينمائي جاهز\nالقصة: بطل بقوة زرقاء يتظاهر بالضعف، ملك يرفضه، أميرة تحبه، ذئبة بيضاء صغيرة، نمر عملاق بحجم فيلين يهجم\nابعت فكرتك أو /test")
         return
     if text=="/ping":
-        send_text(chat, f"🟢 شغال PIAPI={bool(PIAPI_API_KEY)}")
+        send_text(chat, f"🟢 شغال PIAPI={bool(PIAPI_API_KEY)} موفر رصيد")
         return
     if text=="/clear":
-        with plock:
-            processing_chats.clear()
+        with plock: processing_chats.clear()
         send_text(chat, "✅ تم مسح busy")
         return
     idea=text
     if text=="/test":
-        idea="رجل حقيقي وسيم بقوة زرقاء يتظاهر بالضعف الملك يرفضه الاميرة تحبه ذئبة بيضاء صغيرة نمر عملاق بحجم فيلين 4 متر يهجم القصر البطل يكشف قوته ويهزمه"
+        idea="رجل حقيقي وسيم بقوة زرقاء مخفية يتظاهر بالضعف الملك يهينه ويرفضه الأميرة الجميلة تحبه سرا في الغابة مع ذئبة بيضاء صغيرة لطيفة نمر عملاق ضخم بحجم فيلين 4 متر يهجم على القصر البطل يكشف قوته الزرقاء ويهزمه وينقذ الجميع دراما سينمائية حزينة ثم بطولية"
     with plock:
         if chat in processing_chats:
-            send_text(chat, "⏳ في انتاج - ابعت /clear")
+            send_text(chat, "⏳ في انتاج - انتظر أو ابعت /clear")
             return
         processing_chats.add(chat)
     threading.Thread(target=process_story, args=(chat, idea), daemon=True).start()
 
 @app.get("/")
-def home():
-    return "REAL HUMAN Alive Kling", 200
+def home(): return "Drama Cinematic Bot Alive", 200
 @app.get("/health")
-def health():
-    return {"ok": True}, 200
+def health(): return {"ok": True}, 200
 @app.post("/telegram/webhook")
 def webhook():
     upd=request.get_json(silent=True) or {}
@@ -273,10 +290,8 @@ def webhook():
     return "OK", 200
 
 def setup_webhook():
-    if TEST_MODE:
-        return
-    if not RENDER_EXTERNAL_URL or not BOT_TOKEN:
-        return
+    if TEST_MODE: return
+    if not RENDER_EXTERNAL_URL or not BOT_TOKEN: return
     url=RENDER_EXTERNAL_URL + "/telegram/webhook"
     try:
         telegram("setWebhook", {"url": url, "drop_pending_updates": "true"})
