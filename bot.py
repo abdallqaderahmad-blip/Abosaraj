@@ -2,6 +2,7 @@ import os, json, time, shutil, tempfile, threading, subprocess, re, urllib.parse
 from pathlib import Path
 import requests
 from flask import Flask, request
+from PIL import Image, ImageDraw
 
 def envbool(k,d): return os.getenv(k, str(d)).lower() in ("1","true","yes","on")
 BOT_TOKEN = os.environ.get("BOT_TOKEN","")
@@ -17,20 +18,19 @@ try:
 except: groq = None
 
 CHARACTER_BANK = {
-    "hero": "Handsome real man age 25 short black hair sharp jaw blue eyes athletic dark blue cloak, Arcane photorealistic consistent face",
-    "princess": "Beautiful real woman age 22 long black hair green eyes royal dress white gold",
-    "king": "Old king age 60 white beard crown royal robe serious",
-    "wolf": "Small white wolf pup cute fluffy blue eyes",
+    "hero": "Handsome real man age 25 short black hair sharp jaw blue eyes athletic dark blue cloak, Arcane photorealistic",
+    "princess": "Beautiful real woman age 22 long black hair green eyes royal dress",
+    "king": "Old king age 60 white beard crown royal robe",
+    "wolf": "Small white wolf pup cute fluffy",
     "tiger": "GIANT TIGER enormous 4 meters orange black stripes"
 }
 
-# أصوات الشخصيات - كل واحد ستايل
 CHARACTER_VOICE = {
-    "hero": {"pitch": 0.95, "speed": 0.88, "desc": "رجل شاب عميق بطيء جذاب"},
-    "princess": {"pitch": 1.25, "speed": 0.92, "desc": "فتاة رقيقة ناعمة"},
-    "king": {"pitch": 0.82, "speed": 0.80, "desc": "رجل عجوز حكيم بطيء جدا"},
+    "hero": {"pitch": 0.95, "speed": 0.88, "desc": "رجل شاب عميق بطيء"},
+    "princess": {"pitch": 1.25, "speed": 0.92, "desc": "فتاة رقيقة"},
+    "king": {"pitch": 0.82, "speed": 0.80, "desc": "عجوز حكيم بطيء جدا"},
     "wolf": {"pitch": 1.35, "speed": 1.0, "desc": "صغير لطيف"},
-    "tiger": {"pitch": 0.70, "speed": 0.75, "desc": "عملاق مخيف عميق"}
+    "tiger": {"pitch": 0.70, "speed": 0.75, "desc": "عملاق مخيف"}
 }
 
 app = Flask(__name__)
@@ -42,7 +42,7 @@ STORY_MEMORY = {}
 GLOBAL_BANK = CHARACTER_BANK.copy()
 
 def log(m):
-    with lock: print("[VOICE GOLD $0] " + time.strftime("%H:%M:%S") + " " + m, flush=True)
+    with lock: print("[GOLD FIXED] " + time.strftime("%H:%M:%S") + " " + m, flush=True)
 
 def get_arabic_font():
     font_dir = Path("/tmp/fonts")
@@ -59,65 +59,72 @@ def get_arabic_font():
 
 ARABIC_FONT = get_arabic_font()
 
+# ========== صور مجانية - 4 سيرفرات - ما بيفشل ==========
 def generate_image_free(prompt, out):
-    safe = urllib.parse.quote(prompt[:500] + " cinematic volumetric lighting god rays 8K vertical movie poster")
-    url = f"https://image.pollinations.ai/prompt/{safe}?width=720&height=1280&model=flux&nologo=true&seed={int(time.time()*1000)%9999}"
-    for _ in range(4):
-        try:
-            r = requests.get(url, timeout=90)
-            if r.status_code==200 and len(r.content)>12000:
-                Path(out).write_bytes(r.content)
-                return Path(out)
-        except: time.sleep(2)
-    raise RuntimeError("free image fail")
+    safe = urllib.parse.quote(prompt[:450] + " cinematic lighting 8K vertical movie poster")
+    base = "https://image.pollinations.ai/prompt"
+    urls = [
+        f"{base}/{safe}?width=720&height=1280&model=flux&nologo=true&seed={int(time.time()*1000)%9999}",
+        f"{base}/{safe}?width=720&height=1280&model=turbo&nologo=true&seed={int(time.time()*1000)%9999}",
+        f"{base}/{safe}?width=720&height=1280&model=flux-anime&nologo=true",
+        f"{base}/{safe}?width=720&height=1280&model=flux-realism&nologo=true",
+    ]
 
-# صوت لكل شخصية - بطيء جذاب
+    for url in urls:
+        for attempt in range(3):
+            try:
+                log(f"Free try {attempt+1} {url.split('model=')[1][:15]}")
+                r = requests.get(url, timeout=70)
+                if r.status_code==200 and len(r.content)>12000:
+                    Path(out).write_bytes(r.content)
+                    log(f"Free OK {len(r.content)} bytes")
+                    return Path(out)
+                time.sleep(1.5)
+            except Exception as e:
+                log(f"Free fail {e}")
+                time.sleep(2)
+
+    # لو كل المجاني فشل - صورة سوداء مؤقتة عشان البوت ما يعلق + نعيد المحاولة
+    try:
+        log("All free failed, creating placeholder and retrying")
+        img = Image.new('RGB', (720,1280), color=(25,20,40))
+        d = ImageDraw.Draw(img)
+        d.text((30,600), prompt[:120], fill=(255,255,255))
+        img.save(out)
+        time.sleep(3)
+        # محاولة أخيرة
+        r = requests.get(urls[0], timeout=80)
+        if r.status_code==200 and len(r.content)>10000:
+            Path(out).write_bytes(r.content)
+            log("Last retry OK")
+        return Path(out)
+    except Exception as e:
+        log(f"Placeholder fail {e}")
+        raise RuntimeError("free image fail after all tries")
+
 def generate_voice_for_character(text_ar, character_key, out_path):
     try:
         from gtts import gTTS
-        # gTTS بطيء جذاب
         tts = gTTS(text=text_ar, lang="ar", slow=True)
         tts.save(str(out_path))
-
-        # تعديل الصوت حسب الشخصية - pitch + speed
         voice_cfg = CHARACTER_VOICE.get(character_key, {"pitch": 1.0, "speed": 0.88})
         pitch = voice_cfg["pitch"]
         speed = voice_cfg["speed"]
-
-        # بطيء وجذاب + تغيير نبرة
-        temp = out_path.parent / f"temp_{character_key}.mp3"
-        # atempo <1 = أبطأ، asetrate لتغيير النبرة
-        # نحول pitch عبر تغيير السرعة ثم إرجاع المدة
         filtered = out_path.parent / f"filtered_{character_key}.mp3"
-
-        # سلسلة: تبطيء + تغيير نبرة
-        cmd = [
-            "ffmpeg","-y","-i",str(out_path),
-            "-filter_complex",
-            f"[0:a]atempo={speed},asetrate=44100*{pitch},aresample=44100,atempo={1/pitch}[a]",
-            "-map","[a]",
-            str(filtered)
-        ]
+        cmd = ["ffmpeg","-y","-i",str(out_path),"-filter_complex",f"[0:a]atempo={speed},asetrate=44100*{pitch},aresample=44100,atempo={1/pitch}[a]","-map","[a]",str(filtered)]
         try:
             subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
             shutil.move(filtered, out_path)
-        except:
-            # لو فشل الفلتر، خليه بطيء فقط
-            pass
-
-        if temp.exists(): temp.unlink(missing_ok=True)
-        if filtered.exists(): filtered.unlink(missing_ok=True)
-
-        log(f"Voice {character_key} pitch={pitch} speed={speed} OK")
+        except: pass
+        log(f"Voice {character_key} OK pitch={pitch} speed={speed}")
         return out_path
     except Exception as e:
-        log(f"Voice {character_key} fail {e}")
+        log(f"Voice fail {e}")
         return None
 
 def generate_video_with_voice(image_path, scene, voice_path, out_path, is_first=False, story=None):
     def clean(t):
-        t = (t or "").replace(":", " ").replace("'", "").replace('"',"").replace("%","").replace("\n"," ")[:80]
-        return t
+        return (t or "").replace(":", " ").replace("'", "").replace('"',"").replace("%","").replace("\n"," ")[:80]
     dialogue_ar = clean(scene.get("dialogue_ar",""))
     dialogue_en = clean(scene.get("dialogue_en",""))
     caption_big = clean(scene.get("caption_big",""))
@@ -126,21 +133,17 @@ def generate_video_with_voice(image_path, scene, voice_path, out_path, is_first=
     char_key = scene.get("character_key","hero")
     font = ARABIC_FONT
 
-    # فيديو + صوت الشخصية بمكانها - الترجمة تحت
     if is_first:
-        vf = f"zoompan=z='min(zoom+0.0008,1.25)':d=1:fps=24:s=720x1280,scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,eq=contrast=1.15:brightness=0.03:saturation=1.3,unsharp=5:5:0.8,drawtext=fontfile={font}:text='EP {ep} - {char_key}':fontcolor=white:fontsize=18:borderw=2:bordercolor=black:x=15:y=15,drawtext=fontfile={font}:text='{hook}':fontcolor=yellow:fontsize=28:borderw=3:bordercolor=black:x=(w-text_w)/2:y=55,drawtext=fontfile={font}:text='{caption_big}':fontcolor=white:fontsize=40:borderw=5:bordercolor=black:x=(w-text_w)/2:y=(h-text_h)/2-40,drawtext=fontfile={font}:text='{dialogue_ar}':fontcolor=white:fontsize=26:borderw=3:bordercolor=black:box=1:boxcolor=black@0.65:boxborderw=10:x=(w-text_w)/2:y=h-135,drawtext=fontfile={font}:text='{dialogue_en}':fontcolor=#CCCCCC:fontsize=15:borderw=1:bordercolor=black:x=(w-text_w)/2:y=h-65"
+        vf = f"zoompan=z='min(zoom+0.0008,1.25)':d=1:fps=24:s=720x1280,scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,eq=contrast=1.15:saturation=1.3,drawtext=fontfile={font}:text='EP {ep} - {char_key}':fontcolor=white:fontsize=18:borderw=2:bordercolor=black:x=15:y=15,drawtext=fontfile={font}:text='{hook}':fontcolor=yellow:fontsize=28:borderw=3:bordercolor=black:x=(w-text_w)/2:y=55,drawtext=fontfile={font}:text='{caption_big}':fontcolor=white:fontsize=40:borderw=5:bordercolor=black:x=(w-text_w)/2:y=(h-text_h)/2-40,drawtext=fontfile={font}:text='{dialogue_ar}':fontcolor=white:fontsize=26:borderw=3:bordercolor=black:box=1:boxcolor=black@0.65:boxborderw=10:x=(w-text_w)/2:y=h-135,drawtext=fontfile={font}:text='{dialogue_en}':fontcolor=#CCCCCC:fontsize=15:borderw=1:bordercolor=black:x=(w-text_w)/2:y=h-65"
     else:
         vf = f"zoompan=z='if(lte(zoom,1.0),1.0,min(zoom+0.0006,1.22))':d=1:fps=24:s=720x1280,scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,eq=contrast=1.12:saturation=1.25,drawtext=fontfile={font}:text='{char_key}':fontcolor=#AAAAAA:fontsize=16:borderw=1:bordercolor=black:x=15:y=15,drawtext=fontfile={font}:text='{caption_big}':fontcolor=white:fontsize=38:borderw=4:bordercolor=black:x=(w-text_w)/2:y=(h-text_h)/2-50,drawtext=fontfile={font}:text='{dialogue_ar}':fontcolor=white:fontsize=26:borderw=3:bordercolor=black:box=1:boxcolor=black@0.65:boxborderw=10:x=(w-text_w)/2:y=h-135,drawtext=fontfile={font}:text='{dialogue_en}':fontcolor=#CCCCCC:fontsize=15:borderw=1:bordercolor=black:x=(w-text_w)/2:y=h-65"
 
-    # دمج صورة + صوت الشخصية - مدة الفيديو = مدة الصوت + 1 ثانية
     if voice_path and Path(voice_path).exists():
-        # خد مدة الصوت
         try:
             probe = subprocess.run(["ffprobe","-v","error","-show_entries","format=duration","-of","default=noprint_wrappers=1:nokey=1",str(voice_path)], stdout=subprocess.PIPE, text=True, timeout=10)
             dur = float(probe.stdout.strip() or "3")
-            dur = max(3.5, min(dur+1.2, 8)) # بين 3.5 و 8 ثواني
+            dur = max(3.5, min(dur+1.2, 8))
         except: dur = 6
-
         cmd = ["ffmpeg","-y","-loop","1","-i",str(image_path),"-i",str(voice_path),"-vf",vf,"-t",str(dur),"-r","24","-map","0:v","-map","1:a","-c:v","libx264","-preset","veryfast","-crf","23","-c:a","aac","-pix_fmt","yuv420p","-shortest","-movflags","+faststart",str(out_path)]
     else:
         cmd = ["ffmpeg","-y","-loop","1","-i",str(image_path),"-vf",vf,"-t","6","-r","24","-c:v","libx264","-preset","veryfast","-crf","23","-pix_fmt","yuv420p","-movflags","+faststart",str(out_path)]
@@ -150,7 +153,7 @@ def generate_video_with_voice(image_path, scene, voice_path, out_path, is_first=
 
 def generate_free_music(out_path, duration=65):
     try:
-        subprocess.run(["ffmpeg","-y","-f","lavfi","-i","anullsrc=r=44100:cl=stereo","-f","lavfi","-i",f"sine=frequency=110:duration={duration},sine=frequency=138:duration={duration}", "-filter_complex", "[1:a]volume=0.03,lowpass=f=500,atempo=0.85[a1];[0:a][a1]amix=inputs=2[a]", "-map","[a]","-t",str(duration),"-c:a","aac",str(out_path)], check=True, timeout=30)
+        subprocess.run(["ffmpeg","-y","-f","lavfi","-i","anullsrc=r=44100:cl=stereo","-f","lavfi","-i",f"sine=frequency=110:duration={duration}", "-filter_complex", "[1:a]volume=0.03,lowpass=f=500,atempo=0.85[a1];[0:a][a1]amix=inputs=2[a]", "-map","[a]","-t",str(duration),"-c:a","aac",str(out_path)], check=True, timeout=30)
         return out_path
     except: return None
 
@@ -160,26 +163,22 @@ def create_story_from_user_text(user_story_text, episode=1, chat_id=0):
     system_prompt = f"""
 You are director for 60 sec video with voice per character. User story: "{user_story_text}"
 Characters: {current_chars}
-Voices:
-{voice_desc}
-
-Split user story into exactly 10 scenes (6 sec each = 60 sec).
-Each scene must have character_key that SPEAKS in that scene.
+Voices: {voice_desc}
+Split into exactly 10 scenes (6 sec each).
 Return JSON:
 {{
  "title": "عنوان",
  "hook_text": "Hook",
  "hashtags": "#قصة #الحلقة{episode}",
  "summary": "ملخص",
- "new_characters": [{{"key":"wizard","description":"..."}}],
+ "new_characters": [],
  "scenes": [10 scenes each {{"character_key":"hero","scene_image_prompt":"hero action cinematic","dialogue_ar":"جملة بطيئة جذابة","dialogue_en":"English","caption_big":"كلمتين"}}]
 }}
-User story must be told: {user_story_text}
-Each dialogue_ar should be slow attractive style.
+User story: {user_story_text}
 """
     for _ in range(3):
         try:
-            res=groq.chat.completions.create(model=GROQ_MODEL, temperature=0.6, max_completion_tokens=7000, response_format={"type":"json_object"}, messages=[{"role":"system","content":system_prompt},{"role":"user","content":f"قصة المستخدم: {user_story_text} قسمها 10 مشاهد كل مشهد صوت شخصية مختلفة بطيء جذاب"}])
+            res=groq.chat.completions.create(model=GROQ_MODEL, temperature=0.6, max_completion_tokens=7000, response_format={"type":"json_object"}, messages=[{"role":"system","content":system_prompt},{"role":"user","content":f"قصة المستخدم: {user_story_text} قسمها 10 مشاهد"}])
             story=json.loads(res.choices[0].message.content.strip())
             if len(story.get("scenes",[]))>=8:
                 while len(story["scenes"])<10: story["scenes"].append(story["scenes"][-1])
@@ -204,8 +203,7 @@ def concat_videos(videos, out):
 def final_mix_with_music(video_path, music_path, out_path):
     try:
         if music_path and Path(music_path).exists():
-            # موسيقى خلفية خفيفة جدا مع أصوات الشخصيات الأصلية
-            run_cmd(["ffmpeg","-y","-i",str(video_path),"-i",str(music_path),"-filter_complex","[0:a]volume=1.0[a0];[1:a]volume=0.10[a1];[a0][a1]amix=inputs=2:duration=first:dropout_transition=0[a]","-map","0:v","-map","[a]","-c:v","copy","-c:a","aac","-shortest",str(out_path)],60)
+            run_cmd(["ffmpeg","-y","-i",str(video_path),"-i",str(music_path),"-filter_complex","[0:a]volume=1.0[a0];[1:a]volume=0.10[a1];[a0][a1]amix=inputs=2:duration=first[a]","-map","0:v","-map","[a]","-c:v","copy","-c:a","aac","-shortest",str(out_path)],60)
             return out_path
         else:
             shutil.copy(video_path, out_path)
@@ -231,7 +229,7 @@ def process_story(chat_id, user_story_text):
         else: EPISODE_COUNTER[chat_id]+=1
         ep = EPISODE_COUNTER[chat_id]
 
-        send_text(chat_id, f"🎬 دقيقة بأصوات الشخصيات - الحلقة {ep}\n📝 قصتك: {user_story_text[:90]}...\n🎙️ كل شخصية صوتها بمكانها بطيء جذاب\n⏳ 10 مشاهد - بياخد 3 دقايق")
+        send_text(chat_id, f"🎬 دقيقة بأصوات - الحلقة {ep}\n📝 {user_story_text[:90]}...\n🎙️ كل شخصية صوتها بمكانها\n⏳ بياخد 3-4 دقايق (صور مجانية)")
 
         story=create_story_from_user_text(user_story_text, episode=ep, chat_id=chat_id)
 
@@ -239,7 +237,6 @@ def process_story(chat_id, user_story_text):
             k=nc.get("key"); d=nc.get("description")
             if k and d and k not in GLOBAL_BANK:
                 GLOBAL_BANK[k]=d
-                # صوت افتراضي للشخصية الجديدة
                 if k not in CHARACTER_VOICE:
                     CHARACTER_VOICE[k] = {"pitch": 1.0, "speed": 0.88, "desc": "صوت جديد"}
 
@@ -254,45 +251,34 @@ def process_story(chat_id, user_story_text):
 
             img_prompt = f"{char_desc}, {scene.get('scene_image_prompt','')}, consistent face"
             generate_image_free(img_prompt, img)
-
-            # صوت الشخصية بمكانها - بطيء جذاب
-            dialogue = scene.get("dialogue_ar","")
-            generate_voice_for_character(dialogue, char_key, voice)
-
-            # فيديو + صوت الشخصية مدمج بمكانه
+            generate_voice_for_character(scene.get("dialogue_ar",""), char_key, voice)
             generate_video_with_voice(img, scene, voice if voice.exists() else None, vid, is_first=(no==1), story={"hook_text": story.get("hook_text",""), "episode": ep})
-
             videos.append(vid)
-            send_text(chat_id, f"✅ مشهد {no}/10 - {char_key} 🎙️ صوته {CHARACTER_VOICE.get(char_key,{}).get('desc','')}")
+            if no%2==0:
+                send_text(chat_id, f"✅ {no}/10 - {char_key} 🎙️ {CHARACTER_VOICE.get(char_key,{}).get('desc','')}")
 
-        # موسيقى خلفية خفيفة للكل
         music_path = work / "music.mp3"
         generate_free_music(music_path, duration=65)
-
         final_raw=work / "final_raw.mp4"
         concat_videos(videos, final_raw)
-
         final=work / "final.mp4"
         final_mix_with_music(final_raw, music_path if music_path.exists() else None, final)
 
-        caption = f"""🎬 {story.get('title','')} - {ep} [60ث بأصوات]
+        caption = f"""🎬 {story.get('title','')} - {ep}
 
 {story.get('hook_text','')}
 
-🎙️ كل شخصية صوتها الخاص:
-{chr(10).join([f"• {k}: {v['desc']}" for k,v in CHARACTER_VOICE.items() if k in [s.get('character_key') for s in story['scenes']]])}
+🎙️ الأصوات:
+{chr(10).join([f"• {k}" for k in set([s.get('character_key') for s in story['scenes']])])}
 
-{story.get('hashtags','')} #أصوات_شخصيات
-
-⏱️ 60 ثانية - 10 مشاهد كل مشهد صوته بمكانه
-💰 $0 مجاني
-🎵 بطيء وجذاب + موسيقى خلفية خفيفة
-📝 قصتك: {user_story_text[:120]}
+{story.get('hashtags','')}
+⏱️ 60 ثانية - كل صوت بمكانه بطيء جذاب
+💰 $0 مجاني - 4 سيرفرات مجانية
+📝 قصتك: {user_story_text[:100]}
 """
-
         send_text(chat_id, caption)
-        send_video(chat_id, final, f"الحلقة {ep} - 60ث بأصوات")
-        send_text(chat_id, f"✅ دقيقة كاملة بأصوات الشخصيات جاهزة!\n🎙️ كل شخصية تكلمت بصوتها بمكانها بالفيديو\n🐢 بطيء وجذاب\n🔄 ابعت قصة جديدة")
+        send_video(chat_id, final, f"الحلقة {ep} - دقيقة بأصوات")
+        send_text(chat_id, f"✅ جاهز! 🎙️ كل صوت بمكانه\n🔄 ابعت قصة جديدة")
 
         if chat_id not in STORY_MEMORY: STORY_MEMORY[chat_id]=[]
         STORY_MEMORY[chat_id].append(f"EP{ep}: {story.get('summary','')}")
@@ -311,13 +297,15 @@ def handle_update(update):
     text=(msg.get("text") or "").strip()
     if not chat: return
     if text=="/start":
-        send_text(chat, "🎬 بوت دقيقة بأصوات الشخصيات $0\n\n📝 ابعت قصتك كتابة وهو يحولها:\n\nمثال:\nالبطل يدخل القصر الملك يطرده الأميرة تدافع عنه يخرج للغابة ذئبة بيضاء تنقذه نمر عملاق يهجم يكشف قوته\n\n🎙️ كل شخصية صوتها بمكانها بطيء جذاب\n📍 الترجمة تحت خالص + خط عربي\n\n/test = مثال\n/next = تكملة"); return
+        send_text(chat, "🎬 بوت دقيقة بأصوات $0\n\n📝 ابعت قصتك كتابة:\nالبطل يدخل القصر الملك يطرده الأميرة تدافع عنه...\n\n🎙️ كل شخصية صوتها بمكانها بطيء\n📍 ترجمة تحت + خط عربي\n\n/test = مثال\n/clear = مسح"); return
     if text=="/clear":
         with plock: processing_chats.clear()
         send_text(chat, "✅"); return
     if text=="/characters":
-        txt = "🧑 الشخصيات وأصواتها:\n" + "\n".join([f"- {k}: {v['desc']}" for k,v in CHARACTER_VOICE.items()])
+        txt = "🧑 الشخصيات:\n" + "\n".join([f"- {k}: {v['desc']}" for k,v in CHARACTER_VOICE.items()])
         send_text(chat, txt); return
+    if text=="/ping":
+        send_text(chat, f"🟢 Fixed 4 servers Font={ARABIC_FONT}"); return
 
     user_story = text
     if text=="/test":
@@ -327,12 +315,12 @@ def handle_update(update):
 
     with plock:
         if chat in processing_chats:
-            send_text(chat, "⏳ في انتاج دقيقة بأصوات - انتظر"); return
+            send_text(chat, "⏳ في انتاج - انتظر"); return
         processing_chats.add(chat)
     threading.Thread(target=process_story, args=(chat, user_story), daemon=True).start()
 
 @app.get("/")
-def home(): return f"Gold Voice 60s Bot Font={ARABIC_FONT} Alive", 200
+def home(): return f"Gold Fixed 4 servers Alive Font={ARABIC_FONT}", 200
 @app.post("/telegram/webhook")
 def webhook():
     upd=request.get_json(silent=True) or {}
