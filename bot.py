@@ -15,9 +15,6 @@ RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL","").rstrip("/")
 GROQ_MODEL = os.getenv("GROQ_MODEL","openai/gpt-oss-120b")
 
 TEST_MODE = envbool("TEST_MODE", False)
-LIPSYNC_ENABLED = envbool("LIPSYNC_ENABLED", False)
-LIPSYNC_MODE = os.getenv("LIPSYNC_MODE","face").lower()
-MAX_LIPSYNC_SCENES = int(os.getenv("MAX_LIPSYNC_SCENES","1"))
 
 print("BOOT TOKEN=" + str(bool(BOT_TOKEN)) + " GROQ=" + str(bool(GROQ_API_KEY)) + " WAVE=" + str(bool(WAVESPEED_API_KEY)), flush=True)
 
@@ -37,16 +34,14 @@ VIDEO_HEIGHT = 832
 VIDEO_FPS = 24
 IMAGE_SIZE = "480*832"
 
-VOICE_CONFIG = {
-    "male_lead": {"voice": "ar-SY-LaithNeural", "rate": "-10%", "pitch": "-3Hz"},
-    "princess": {"voice": "ar-SA-ZariyahNeural", "rate": "-6%", "pitch": "+0Hz"},
-    "king": {"voice": "ar-EG-ShakirNeural", "rate": "-8%", "pitch": "-4Hz"},
-}
-
 WAVESPEED_BASE = "https://api.wavespeed.ai/api/v3"
 IMAGE_MODEL = "wavespeed-ai/z-image/turbo"
-VIDEO_MODEL = "wavespeed-ai/wan-2.2/i2v-480p-ultra-fast"
-LIPSYNC_MODEL = "sync/react-1"
+# 3 models fallback to avoid 400
+VIDEO_MODELS = [
+    "wavespeed-ai/wan-2.2/i2v-480p-ultra-fast",
+    "wavespeed-ai/wan-2.2/i2v-480p",
+    "bytedance/seedance-v1-pro-i2v-480p"
+]
 
 app = Flask(__name__)
 lock = threading.Lock()
@@ -93,7 +88,7 @@ def extract_output(v):
 
 def wavespeed_submit(model, payload):
     url=WAVESPEED_BASE + "/" + model
-    log("Submit " + model + " payload=" + json.dumps(payload)[:500])
+    log("Submit " + model)
     r=requests.post(url, headers=auth_headers(), json=payload, timeout=90)
     if r.status_code>=400:
         log("WAVESPEED ERROR " + str(r.status_code) + " " + r.text[:2000])
@@ -102,8 +97,8 @@ def wavespeed_submit(model, payload):
     data=body.get("data") or body
     tid=data.get("id")
     if not tid:
-        raise RuntimeError(json.dumps(body, ensure_ascii=False)[:2000])
-    log("Task " + tid)
+        raise RuntimeError("no id " + json.dumps(body)[:1000])
+    log("Task " + tid + " -> " + model)
     return tid
 
 def wavespeed_wait(tid, timeout=900):
@@ -121,7 +116,7 @@ def wavespeed_wait(tid, timeout=900):
         if status=="completed":
             out=extract_output(data.get("outputs") or data.get("output"))
             if not out:
-                raise RuntimeError(json.dumps(body, ensure_ascii=False)[:2000])
+                raise RuntimeError("no output")
             return out
         if status in ("failed","cancelled","timeout","deleted"):
             raise RuntimeError(str(data.get("error") or body)[:3000])
@@ -151,13 +146,14 @@ def download_file(url, path):
                     f.write(c)
     return path
 
-CAST_BIBLE = "REAL HUMAN ACTORS PHOTOREALISTIC ULTRA REALISTIC 8K LIVE-ACTION CINEMATIC NOT CARTOON NOT ANIME NOT 3D REAL SKIN TEXTURE SKIN PORES NATURAL EYES REALISTIC HANDS FIVE FINGERS HERO Real 29 year old Levantine handsome man tall athletic olive skin dark wavy hair short light beard brown eyes black coat leather armor blue-white superpower PRINCESS Real 24 year old Arab beautiful woman olive skin long brown hair burgundy royal gown KING Real 58 year old Arab man gray beard royal robe WOLF Small realistic white-gray wolf pup GIANT TIGER ENORMOUS TIGER size of TWO ELEPHANTS 4 meters tall 6 meters long hyper realistic orange black stripes massive terrifying real fur STYLE Vertical 9:16 fill full frame no black borders no text cinematic lighting Netflix drama"
+# قصير جدا عشان ما يعطي 400
+CAST_BIBLE = "REAL HUMAN PHOTOREALISTIC 8K LIVE-ACTION NOT CARTOON NOT ANIME real skin pores realistic hands five fingers"
 
 def create_story(user_idea):
     if not groq:
         raise RuntimeError("GROQ missing")
-    system_prompt = "You are Netflix REAL HUMAN director. STYLE: " + CAST_BIBLE + " Create 4 scenes x5s total 20s REAL HUMAN ONLY. S1 King rejects hero throne. S2 Princess meets hero forest night with small white wolf pup love. S3 GIANT TIGER enormous two elephants attacks palace hero blue power protects princess wolf. S4 Epic fight hero vs giant tiger wins king shocked. Return JSON title scenes with action, scene_image_prompt, video_prompt, dialogue max 7 words, one speaker per scene."
-    user_prompt = "USER IDEA: " + user_idea + " REAL HUMAN ONLY"
+    system_prompt = "You are REAL HUMAN director. 4 scenes x5s. S1 King rejects hero weak throne room. S2 Princess meets hero forest night with small white wolf pup love. S3 GIANT TIGER enormous size two elephants attacks palace hero blue power protects princess wolf. S4 Hero vs giant tiger fight wins king shocked. Return JSON title scenes with action, scene_image_prompt, video_prompt."
+    user_prompt = "USER IDEA: " + user_idea
     for _ in range(4):
         try:
             res=groq.chat.completions.create(model=GROQ_MODEL, temperature=0.35, max_completion_tokens=5000, response_format={"type":"json_object"}, messages=[{"role":"system","content":system_prompt},{"role":"user","content":user_prompt}])
@@ -170,24 +166,11 @@ def create_story(user_idea):
             time.sleep(1)
     raise RuntimeError("Story fail")
 
-async def tts_async(text, config, output):
-    com=edge_tts.Communicate(text=text, voice=config["voice"], rate=config["rate"], pitch=config["pitch"])
-    await com.save(str(output))
-
-def make_tts(text, speaker, output):
-    asyncio.run(tts_async(text, VOICE_CONFIG[speaker], output))
-    return output
-
 def run_cmd(cmd, timeout=300):
     p=subprocess.run([str(x) for x in cmd], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=timeout)
     if p.returncode!=0:
         raise RuntimeError(p.stderr[-3000:])
     return p
-
-def fit_audio(src, out, dur):
-    af="apad,atrim=0:" + str(dur) + ",asetpts=N/SR/TB"
-    run_cmd(["ffmpeg","-y","-i",str(src),"-af",af,"-ar","48000","-ac","2","-c:a","pcm_s16le",str(out)],120)
-    return out
 
 def normalize_video(src, out, dur=5):
     vf="scale=" + str(VIDEO_WIDTH) + ":" + str(VIDEO_HEIGHT) + ":force_original_aspect_ratio=increase,crop=" + str(VIDEO_WIDTH) + ":" + str(VIDEO_HEIGHT) + ",fps=" + str(VIDEO_FPS) + ",setsar=1"
@@ -205,7 +188,7 @@ def concat_videos(videos, out):
 
 def generate_image(prompt, out):
     payload={
-        "prompt": CAST_BIBLE + " IMAGE: " + prompt,
+        "prompt": prompt[:400] + " " + CAST_BIBLE + " vertical 9:16 fill frame",
         "size": IMAGE_SIZE,
         "output_format": "jpeg"
     }
@@ -214,14 +197,23 @@ def generate_image(prompt, out):
     return download_file(url, out)
 
 def generate_video(image_url, prompt, out):
-    payload={
-        "image": image_url,
-        "prompt": prompt + " REAL HUMAN ACTORS PHOTOREALISTIC 8K LIVE-ACTION vertical video 9:16 fill full frame no black borders natural movement realistic skin pores realistic hands",
-        "duration": 5
-    }
-    tid=wavespeed_submit(VIDEO_MODEL, payload)
-    url=wavespeed_wait(tid, 900)
-    return download_file(url, out)
+    short_prompt = (prompt[:200] + " REAL HUMAN LIVE ACTION vertical 9:16 natural movement cinematic").strip()[:500]
+    last_err=None
+    for model in VIDEO_MODELS:
+        try:
+            payload={
+                "image": image_url,
+                "prompt": short_prompt,
+                "duration": 5
+            }
+            tid=wavespeed_submit(model, payload)
+            url=wavespeed_wait(tid, 900)
+            return download_file(url, out)
+        except Exception as e:
+            log("Model " + model + " FAILED: " + str(e)[:800])
+            last_err=e
+            continue
+    raise last_err
 
 TELEGRAM_API="https://api.telegram.org/bot" + BOT_TOKEN
 
@@ -240,7 +232,7 @@ def send_video(chat_id, path, caption):
 def process_story(chat_id, user_idea):
     work=Path(tempfile.mkdtemp(prefix="abosaraj_"))
     try:
-        send_text(chat_id, "🎬 REAL HUMAN بدأ...\n👤 8K ممثلين حقيقيين\n🐯 نمر عملاق بحجم فيلين")
+        send_text(chat_id, "🎬 REAL HUMAN بدأ... 8K")
         story=create_story(user_idea)
         videos=[]
         for index, scene in enumerate(story["scenes"]):
@@ -259,7 +251,7 @@ def process_story(chat_id, user_idea):
         concat_videos(videos, silent)
         final=work / "final.mp4"
         run_cmd(["ffmpeg","-y","-i",str(silent),"-c:v","libx264","-pix_fmt","yuv420p","-movflags","+faststart",str(final)],120)
-        send_text(chat_id, "✅ اكتمل REAL HUMAN\n🎬 " + story.get("title",""))
+        send_text(chat_id, "✅ اكتمل " + story.get("title",""))
         send_video(chat_id, final, story.get("title","REAL HUMAN 8K"))
     except Exception as e:
         log("ERROR " + repr(e))
@@ -279,10 +271,10 @@ def handle_update(update):
     if not chat:
         return
     if text=="/start":
-        send_text(chat, "🎬 REAL HUMAN جاهز\n👤 ممثلين حقيقيين 8K\n🐯 نمر عملاق\nابعت فكرة")
+        send_text(chat, "🎬 REAL HUMAN جاهز 8K")
         return
     if text=="/ping":
-        send_text(chat, "🟢 شغال REAL HUMAN")
+        send_text(chat, "🟢 شغال")
         return
     if text=="/clear":
         with plock:
@@ -291,10 +283,10 @@ def handle_update(update):
         return
     idea=text
     if text=="/test":
-        idea="رجل حقيقي غامض وسيم بقوة خارقة زرقاء يتظاهر بالضعف امام الملك الحقيقي الذي يرفضه لحب ابنته الاميرة الحقيقية الجميلة لديه ذئبة بيضاء صغيرة موالفة واقعية فجأة يهجم نمر ضخم جدا بحجم فيلين 4 متر على القصر في اللحظة الحاسمة يكشف البطل عن قوته الحقيقية المخفية ويواجه النمر العملاق ويهزمه ليحمي الاميرة دراما نتفلكس واقعية جدا ممثلين حقيقيين"
+        idea="رجل حقيقي وسيم بقوة زرقاء يتظاهر بالضعف الملك يرفضه الاميرة تحبه ذئبة بيضاء صغيرة نمر عملاق بحجم فيلين 4 متر يهجم القصر البطل يكشف قوته ويهزمه"
     with plock:
         if chat in processing_chats:
-            send_text(chat, "⏳ في انتاج شغال - ابعت /clear لو علق")
+            send_text(chat, "⏳ في انتاج - ابعت /clear")
             return
         processing_chats.add(chat)
     threading.Thread(target=process_story, args=(chat, idea), daemon=True).start()
@@ -315,7 +307,6 @@ def webhook():
 
 def setup_webhook():
     if TEST_MODE:
-        log("TEST_MODE true")
         return
     if not RENDER_EXTERNAL_URL or not BOT_TOKEN:
         return
