@@ -60,11 +60,11 @@ def extract_url(j):
     data = j.get("data",{})
     out = data.get("output",{})
     if isinstance(out, dict):
-        for kk in ("video_url","url","video","download_url","image_url"):
+        for kk in ("video_url","url","video","download_url","image_url","image"):
             if out.get(kk): return out.get(kk)
     if isinstance(out, list) and out:
         if isinstance(out[0], str): return out[0]
-        if isinstance(out[0], dict): return out[0].get("url") or out[0].get("video_url") or out[0].get("image_url")
+        if isinstance(out[0], dict): return out[0].get("url") or out[0].get("video_url")
     return None
 
 def download_file(url, path):
@@ -99,12 +99,23 @@ def piapi_wait(tid, timeout=900, kind="video"):
             raise RuntimeError(str(data.get("error") or body)[:3000])
         time.sleep(5)
 
+def upload_to_catbox(path):
+    try:
+        with open(path, "rb") as f:
+            r = requests.post("https://catbox.moe/user/api.php", data={"reqtype":"fileupload"}, files={"fileToUpload": f}, timeout=60)
+        if r.status_code==200 and "http" in r.text:
+            return r.text.strip()
+    except Exception as e:
+        log(f"Catbox fail {e}")
+    # fallback base64
+    return f"data:image/jpeg;base64,{base64.b64encode(Path(path).read_bytes()).decode()}"
+
 def generate_image(prompt, out):
     payload = {
         "model": "Qubico/flux1-schnell",
         "task_type": "txt2img",
         "input": {
-            "prompt": prompt[:400] + " REAL HUMAN PHOTOREALISTIC 8K vertical portrait 9:16, handsome real man, beautiful real woman, ultra detailed skin, not cartoon",
+            "prompt": prompt[:400] + " REAL HUMAN PHOTOREALISTIC 8K vertical portrait 9:16, real skin, not cartoon",
             "width": 720,
             "height": 1280,
             "num_images": 1
@@ -116,34 +127,31 @@ def generate_image(prompt, out):
     if r.status_code>=400:
         log(f"Flux ERROR {r.text[:2000]}")
         r.raise_for_status()
-    tid = r.json().get("data",{}).get("task_id") or r.json().get("task_id")
-    if not tid:
-        raise RuntimeError("no flux id "+r.text[:1000])
+    tid = r.json().get("data",{}).get("task_id")
     img_url = piapi_wait(tid, 300, "image")
     return download_file(img_url, out)
 
 def generate_video(image_path, prompt, out):
-    b64 = base64.b64encode(Path(image_path).read_bytes()).decode()
+    img_url = upload_to_catbox(image_path)
+    log(f"Upload {img_url[:120]}")
     payload = {
         "model": "kling",
-        "task_type": "kling-v2-1-i2v",
+        "task_type": "video_generation",
         "input": {
-            "image": f"data:image/jpeg;base64,{b64}",
-            "prompt": (prompt[:300] + " REAL HUMAN LIVE ACTION cinematic natural movement, real people").strip(),
-            "duration": "5",
+            "prompt": (prompt[:300] + " REAL HUMAN LIVE ACTION cinematic natural movement").strip(),
+            "negative_prompt": "cartoon, anime, blurry, 3d",
+            "image_url": img_url,
+            "duration": 5,
             "aspect_ratio": "9:16",
             "cfg_scale": 0.5
         }
     }
     headers = {"x-api-key": PIAPI_API_KEY, "Content-Type":"application/json"}
     r = requests.post(PIAPI_BASE, headers=headers, json=payload, timeout=90)
-    log(f"Kling submit {r.status_code}")
+    log(f"Kling submit {r.status_code} {r.text[:800]}")
     if r.status_code>=400:
-        log(f"Kling ERROR {r.text[:3000]}")
         r.raise_for_status()
-    tid = r.json().get("data",{}).get("task_id") or r.json().get("task_id")
-    if not tid:
-        raise RuntimeError("no kling id "+r.text[:1000])
+    tid = r.json().get("data",{}).get("task_id")
     vurl = piapi_wait(tid, 900, "video")
     return download_file(vurl, out)
 
