@@ -1,21 +1,7 @@
 FROM python:3.11-slim
-
+RUN apt-get update && apt-get install -y ffmpeg fonts-noto-core fonts-noto-ui-core && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
-
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-        ffmpeg \
-        fonts-noto-core \
-        fonts-noto-extra \
-        fonts-noto-cjk \
-    && rm -rf /var/lib/apt/lists/*
-
 COPY requirements.txt .
-
 RUN pip install --no-cache-dir -r requirements.txt
-
 COPY . .
-
-ENV PYTHONUNBUFFERED=1
-
 CMD ["python", "bot.py"]
