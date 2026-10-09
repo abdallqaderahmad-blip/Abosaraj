@@ -37,7 +37,7 @@ plock = threading.Lock()
 EPISODE_COUNTER = {}
 
 def log(m):
-    with lock: print("[FINAL V5 ANTI-BORING] " + time.strftime("%H:%M:%S") + " " + m, flush=True)
+    with lock: print("[V6 SMART AMBIENT] " + time.strftime("%H:%M:%S") + " " + m, flush=True)
 
 def get_font():
     font_dir = Path("/tmp/fonts")
@@ -56,13 +56,12 @@ FONT = get_font()
 
 def gen_image(prompt, out, scene_no):
     clean = prompt[:380].replace("cross","").replace("church","").replace("\n"," ").strip()
-    safe = urllib.parse.quote(clean + f" cinematic movie still scene {scene_no}, ultra detailed 8k dramatic lighting no text no watermark")
+    safe = urllib.parse.quote(clean + f" cinematic movie still scene {scene_no}, ultra detailed 8k dramatic lighting no text")
     seed = int(time.time()*1000) + scene_no*133
     for attempt in range(4):
         urls = [
             f"https://image.pollinations.ai/prompt/{safe}?width=720&height=1280&model=flux&nologo=true&seed={seed+attempt}",
             f"https://image.pollinations.ai/prompt/{safe}?width=720&height=1280&model=turbo&nologo=true&seed={seed+attempt+11}",
-            f"https://image.pollinations.ai/prompt/{safe}?width=720&height=1280&model=flux-realism&nologo=true&seed={seed+attempt+22}",
         ]
         for url in urls:
             try:
@@ -93,67 +92,90 @@ def gen_voice(text, char_key, out, scene_no):
         log(f"Voice fail {e}")
         return None
 
-def gen_video_clip(img_path, scene, voice_path, out_path, scene_no):
+def gen_ambient_for_scene(scene_text, scene_no, out_path, duration=6):
+    txt = scene_text.lower()
+    if "قصر" in txt or "ملك" in txt or "عرش" in txt:
+        filt = "anoisesrc=d=6:c=brown:r=44100:a=0.025,lowpass=f=350,volume=0.22"
+        desc = "palace echo"
+    elif "غابة" in txt or "شجر" in txt or "يمشي" in txt:
+        filt = "anoisesrc=d=6:c=brown:r=44100:a=0.05,highpass=f=700,lowpass=f=2500,volume=0.26"
+        desc = "forest wind leaves"
+    elif "ذئبة" in txt or "ذئب" in txt:
+        filt = "anoisesrc=d=6:c=white:r=44100:a=0.018,sine=f=320:d=6:beep_factor=1.5,lowpass=f=1100,volume=0.22"
+        desc = "wolf whimper wind"
+    elif "نمر" in txt:
+        filt = "anoisesrc=d=6:c=brown:r=44100:a=0.10,sine=f=55:d=6,lowpass=f=180,volume=0.38"
+        desc = "tiger roar rumble"
+    elif "ضرب" in txt or "يهجم" in txt or "يطير" in txt:
+        filt = "anoisesrc=d=6:c=brown:r=44100:a=0.12,sine=f=75:d=0.6,lowpass=f=280,volume=0.42"
+        desc = "impact boom"
+    elif "يبكي" in txt or "سامحني" in txt or "حزينا" in txt:
+        filt = "anoisesrc=d=6:c=pink:r=44100:a=0.03,lowpass=f=600,volume=0.18"
+        desc = "sad silence"
+    elif "فجأة" in txt or "سماء" in txt:
+        filt = "anoisesrc=d=6:c=white:r=44100:a=0.04,sine=f=150:d=6,lowpass=f=900,volume=0.28"
+        desc = "suspense"
+    else:
+        filt = "anoisesrc=d=6:c=pink:r=44100:a=0.03,lowpass=f=700,volume=0.16"
+        desc = "quiet wind"
+
+    try:
+        cmd = ["ffmpeg","-y","-f","lavfi","-i",filt,"-t",str(duration),"-c:a","aac","-b:a","64k",str(out_path)]
+        subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=15)
+        log(f"AMBIENT {scene_no} {desc}")
+        return out_path if Path(out_path).exists() else None
+    except Exception as e:
+        log(f"Ambient fail {e}")
+        return None
+
+def gen_video_clip_smart(img_path, scene, voice_path, out_path, scene_no, work_dir):
     def esc(t):
         t = str(t or "").replace("\\"," ").replace(":"," ").replace("'","").replace('"',"").replace("%","").replace("\n"," ").strip()[:68]
         return t
-
     raw = esc(scene.get("dialogue_ar",""))
 
-    # زوم متنوع ضد الملل - كل مزاج زوم مختلف
-    if scene_no==1: # Hook صادم سريع
-        zoom="min(zoom+0.006,1.60)"
-        eq="eq=contrast=1.32:saturation=1.55:brightness=0.01"
-    elif scene_no in [2,6]: # غضب وخطر متوسط + غامق
-        zoom="min(zoom+0.0035,1.35)"
-        eq="eq=contrast=1.38:saturation=1.25:brightness=-0.04"
-    elif scene_no in [4,5]: # حزن ترثي بطيء جدا + باهت
-        zoom="min(zoom+0.0007,1.18)"
-        eq="eq=contrast=1.08:saturation=0.85:brightness=0.03"
-    elif scene_no==7: # كشف قوة - زوم سريع
-        zoom="min(zoom+0.005,1.50)"
-        eq="eq=contrast=1.40:saturation=1.6:brightness=0.04"
-    elif scene_no==10: # نهاية تشويق سريع جدا
-        zoom="min(zoom+0.007,1.68)"
-        eq="eq=contrast=1.35:saturation=1.50"
-    else:
-        zoom="min(zoom+0.0022,1.38)"
-        eq="eq=contrast=1.22:saturation=1.40"
+    if scene_no==1: zoom="min(zoom+0.006,1.60)"; eq="eq=contrast=1.32:saturation=1.55:brightness=0.01"
+    elif scene_no in [2,6]: zoom="min(zoom+0.0035,1.35)"; eq="eq=contrast=1.38:saturation=1.25:brightness=-0.04"
+    elif scene_no in [4,5]: zoom="min(zoom+0.0007,1.18)"; eq="eq=contrast=1.08:saturation=0.85:brightness=0.03"
+    elif scene_no==7: zoom="min(zoom+0.005,1.50)"; eq="eq=contrast=1.40:saturation=1.6:brightness=0.04"
+    elif scene_no==10: zoom="min(zoom+0.007,1.68)"; eq="eq=contrast=1.35:saturation=1.50"
+    else: zoom="min(zoom+0.0022,1.38)"; eq="eq=contrast=1.22:saturation=1.40"
 
-    vf_text = f"scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,zoompan=z='{zoom}':d=1:fps=24:s=720x1280,{eq}:brightness=0.02,unsharp=5:5:0.85:5:5:0.0,vignette=angle=PI/4:mode=forward,drawtext=fontfile={FONT}:text='{raw}':fontcolor=white:fontsize=28:box=1:boxcolor=black@0.88:boxborderw=12:borderw=2:bordercolor=black:x=(w-text_w)/2:y=h-88"
-    vf_no_text = f"scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,zoompan=z='{zoom}':d=1:fps=24:s=720x1280,{eq},unsharp=5:5:0.85:5:5:0.0,vignette=angle=PI/4:mode=forward"
+    vf_text = f"scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,zoompan=z='{zoom}':d=1:fps=24:s=720x1280,{eq},unsharp=5:5:0.85:5:5:0.0,vignette=angle=PI/4:mode=forward,drawtext=fontfile={FONT}:text='{raw}':fontcolor=white:fontsize=28:box=1:boxcolor=black@0.88:boxborderw=12:borderw=2:bordercolor=black:x=(w-text_w)/2:y=h-88"
+    vf_no = f"scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,zoompan=z='{zoom}':d=1:fps=24:s=720x1280,{eq},unsharp=5:5:0.85:5:5:0.0,vignette=angle=PI/4:mode=forward"
 
     try:
         if voice_path and Path(voice_path).exists():
-            p = subprocess.run(["ffprobe","-v","error","-show_entries","format=duration","-of","default=noprint_wrappers=1:nokey=1",str(voice_path)], stdout=subprocess.PIPE, text=True, timeout=10)
-            dur = float(p.stdout.strip() or "6")
-            dur = max(5.5, min(dur+0.45, 6.2))
+            p=subprocess.run(["ffprobe","-v","error","-show_entries","format=duration","-of","default=noprint_wrappers=1:nokey=1",str(voice_path)], stdout=subprocess.PIPE, text=True, timeout=10)
+            dur=float(p.stdout.strip() or "6")
+            dur=max(5.5, min(dur+0.45, 6.2))
         else: dur=6.0
     except: dur=6.0
 
+    ambient_path = work_dir / f"ambient_{scene_no}.mp3"
+    gen_ambient_for_scene(scene.get("dialogue_ar",""), scene_no, ambient_path, dur)
+
     try:
-        if voice_path and Path(voice_path).exists():
-            cmd = ["ffmpeg","-y","-loop","1","-i",str(img_path),"-i",str(voice_path),"-vf",vf_text,"-t",str(dur),"-r","24","-map","0:v","-map","1:a","-c:v","libx264","-preset","veryfast","-crf","22","-c:a","aac","-b:a","128k","-pix_fmt","yuv420p","-shortest","-movflags","+faststart",str(out_path)]
+        if voice_path and Path(voice_path).exists() and Path(ambient_path).exists():
+            cmd = ["ffmpeg","-y","-loop","1","-i",str(img_path),"-i",str(voice_path),"-i",str(ambient_path),
+                   "-filter_complex","[1:a]volume=1.0[vox];[2:a]volume=0.24[amb];[vox][amb]amix=inputs=2:duration=first:dropout_transition=0:weights=1 0.3[mix]",
+                   "-vf",vf_text,"-t",str(dur),"-r","24","-map","0:v","-map","[mix]","-c:v","libx264","-preset","veryfast","-crf","22","-c:a","aac","-b:a","128k","-pix_fmt","yuv420p","-shortest","-movflags","+faststart",str(out_path)]
+        elif voice_path and Path(voice_path).exists():
+            cmd = ["ffmpeg","-y","-loop","1","-i",str(img_path),"-i",str(voice_path),"-vf",vf_text,"-t",str(dur),"-r","24","-map","0:v","-map","1:a","-c:v","libx264","-preset","veryfast","-crf","22","-c:a","aac","-pix_fmt","yuv420p","-shortest","-movflags","+faststart",str(out_path)]
         else:
             cmd = ["ffmpeg","-y","-loop","1","-i",str(img_path),"-vf",vf_text,"-t","6","-r","24","-c:v","libx264","-preset","veryfast","-crf","22","-pix_fmt","yuv420p","-movflags","+faststart",str(out_path)]
         subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=120)
-    except:
-        if voice_path and Path(voice_path).exists():
-            cmd = ["ffmpeg","-y","-loop","1","-i",str(img_path),"-i",str(voice_path),"-vf",vf_no_text,"-t",str(dur),"-r","24","-map","0:v","-map","1:a","-c:v","libx264","-preset","veryfast","-crf","22","-c:a","aac","-pix_fmt","yuv420p","-shortest","-movflags","+faststart",str(out_path)]
-        else:
-            cmd = ["ffmpeg","-y","-loop","1","-i",str(img_path),"-vf",vf_no_text,"-t","6","-r","24","-c:v","libx264","-preset","veryfast","-crf","22","-pix_fmt","yuv420p","-movflags","+faststart",str(out_path)]
-        subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=120)
+    except Exception as e:
+        log(f"Scene {scene_no} fallback {e}")
+        subprocess.run(["ffmpeg","-y","-loop","1","-i",str(img_path),"-vf",vf_no,"-t","6","-r","24","-c:v","libx264","-preset","veryfast","-crf","22","-pix_fmt","yuv420p","-movflags","+faststart",str(out_path)], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
     return out_path
 
-def gen_music(out, dur=63):
+def gen_background_music(out, dur=63):
     try:
-        cmd = ["ffmpeg","-y","-f","lavfi","-i","anullsrc=r=44100:cl=stereo","-f","lavfi","-i",f"sine=frequency=110:duration={dur},sine=frequency=220:duration={dur}","-filter_complex","[1:a]volume=0.26,lowpass=f=750,atempo=0.82,acompressor=threshold=-20dB:ratio=4,lowpass=f=600[a1];[0:a][a1]amix=inputs=2:duration=first:dropout_transition=0[a]","-map","[a]","-t",str(dur),"-c:a","aac","-b:a","96k",str(out)]
+        cmd = ["ffmpeg","-y","-f","lavfi","-i","anullsrc=r=44100:cl=stereo","-f","lavfi","-i",f"sine=frequency=110:duration={dur},sine=frequency=220:duration={dur}","-filter_complex","[1:a]volume=0.12,lowpass=f=700,atempo=0.82,lowpass=f=550[a1];[0:a][a1]amix=inputs=2:duration=first:dropout_transition=0[a]","-map","[a]","-t",str(dur),"-c:a","aac","-b:a","64k",str(out)]
         subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
-        log("Music OK 26% audible")
         return out
-    except Exception as e:
-        log(f"Music fail {e}")
-        return None
+    except: return None
 
 def create_story(user_text, episode):
     lines = [l.strip() for l in user_text.split("\n") if l.strip()]
@@ -172,11 +194,10 @@ def create_story(user_text, episode):
             elif "نمر" in txt: key="tiger"
             scenes.append({"scene_no": i+1, "character_key": key, "scene_image_prompt": txt + " cinematic movie still photorealistic", "dialogue_ar": txt[:120], "dialogue_en": txt[:30], "caption_big": ""})
         return {"title": "قصة المستخدم", "hashtags":"#قصص", "scenes": scenes}
-
-    prompt = f"""You are viral director tragic story. User: "{user_text}" 10 scenes each character talks different, tragic style, not boring. Short sentences. Return JSON: {{"title":"عنوان صادم","hashtags":"#قصص","scenes":[{{"character_key":"hero","scene_image_prompt":"detailed different location","dialogue_ar":"جملة قصيرة مختلفة"}}]}} Need 10 UNIQUE short."""
+    prompt = f"""You are viral director tragic story. User: "{user_text}" 10 scenes each character talks different tragic style not boring short sentences Return JSON: {{"title":"عنوان صادم","hashtags":"#قصص","scenes":[{{"character_key":"hero","scene_image_prompt":"detailed different location","dialogue_ar":"جملة قصيرة مختلفة"}}]}}"""
     for _ in range(3):
         try:
-            res=groq.chat.completions.create(model=GROQ_MODEL, temperature=0.95, max_completion_tokens=8000, response_format={"type":"json_object"}, messages=[{"role":"system","content":prompt},{"role":"user","content":f"قصة: {user_text} 10 مشاهد ترثي"}])
+            res=groq.chat.completions.create(model=GROQ_MODEL, temperature=0.95, max_completion_tokens=8000, response_format={"type":"json_object"}, messages=[{"role":"system","content":prompt},{"role":"user","content":f"قصة: {user_text}"}])
             story=json.loads(res.choices[0].message.content.strip())
             scenes=story.get("scenes",[])
             while len(scenes)<10: scenes.append(scenes[-1].copy())
@@ -191,47 +212,23 @@ def create_story(user_text, episode):
             time.sleep(1)
     raise RuntimeError("Story fail")
 
-def run_cmd(cmd, timeout=120):
+def run_cmd(cmd, timeout=60):
     p=subprocess.run([str(x) for x in cmd], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=timeout)
     if p.returncode!=0: raise RuntimeError(p.stderr[-2000:])
     return p
 
 def concat_videos(videos, out):
-    if len(videos)==1:
-        shutil.copy(videos[0], out)
-        return out
-    try:
-        inputs=[]
-        for v in videos: inputs.extend(["-i", str(v)])
-        filters=[]
-        for i in range(len(videos)):
-            filters.append(f"[{i}:v]scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,setpts=PTS-STARTPTS[v{i}];[{i}:a]aformat=sample_fmts=fltp:channel_layouts=stereo,asetpts=PTS-STARTPTS[a{i}]")
-        last_v="v0"
-        last_a="a0"
-        for i in range(1, len(videos)):
-            offset = i*6 - i*0.4
-            new_v=f"vx{i}"
-            new_a=f"ax{i}"
-            filters.append(f"[{last_v}][v{i}]xfade=transition=fade:duration=0.4:offset={offset}[{new_v}];[{last_a}][a{i}]acrossfade=d=0.4[{new_a}]")
-            last_v=new_v
-            last_a=new_a
-        fc=";".join(filters)
-        cmd=["ffmpeg","-y"]+inputs+["-filter_complex",fc,"-map",f"[{last_v}]","-map",f"[{last_a}]","-c:v","libx264","-preset","veryfast","-crf","22","-pix_fmt","yuv420p","-movflags","+faststart",str(out)]
-        run_cmd(cmd, 120)
-        log(f"Concat xfade OK")
-        return out
-    except Exception as e:
-        log(f"xfade fail {e} fallback")
-        lf=out.parent / "concat.txt"
-        with lf.open("w", encoding="utf-8") as f:
-            for v in videos: f.write(f"file '{str(v).replace(chr(39),'_')}'\n")
-        run_cmd(["ffmpeg","-y","-f","concat","-safe","0","-i",str(lf),"-c:v","libx264","-preset","veryfast","-crf","22","-pix_fmt","yuv420p","-movflags","+faststart",str(out)],90)
-        return out
+    lf=out.parent / "concat.txt"
+    with lf.open("w", encoding="utf-8") as f:
+        for v in videos: f.write(f"file '{str(v).replace(chr(39),'_')}'\n")
+    run_cmd(["ffmpeg","-y","-f","concat","-safe","0","-i",str(lf),"-c:v","libx264","-preset","veryfast","-crf","22","-pix_fmt","yuv420p","-movflags","+faststart",str(out)],60)
+    log(f"Concat OK FAST")
+    return out
 
 def final_mix(v_path, m_path, out_path):
     try:
         if m_path and Path(m_path).exists():
-            run_cmd(["ffmpeg","-y","-i",str(v_path),"-i",str(m_path),"-filter_complex","[0:a]volume=1.0[a0];[1:a]volume=0.18[a1];[a0][a1]amix=inputs=2:duration=first:dropout_transition=2[a]","-map","0:v","-map","[a]","-c:v","copy","-c:a","aac","-b:a","128k","-shortest",str(out_path)],60)
+            run_cmd(["ffmpeg","-y","-i",str(v_path),"-i",str(m_path),"-filter_complex","[0:a]volume=1.0[a0];[1:a]volume=0.10[a1];[a0][a1]amix=inputs=2:duration=first:dropout_transition=2[a]","-map","0:v","-map","[a]","-c:v","copy","-c:a","aac","-b:a","128k","-shortest",str(out_path)],60)
             return out_path
         else:
             shutil.copy(v_path, out_path)
@@ -252,14 +249,14 @@ def send_video(chat_id, path, caption):
         return telegram("sendVideo", {"chat_id": chat_id, "caption": caption, "supports_streaming": "true"}, {"video": ("episode.mp4", f, "video/mp4")}, 600)
 
 def process_story(chat_id, user_story_text):
-    work=Path(tempfile.mkdtemp(prefix="finalv5_"))
+    work=Path(tempfile.mkdtemp(prefix="v6ambient_"))
     try:
         if chat_id not in EPISODE_COUNTER: EPISODE_COUNTER[chat_id]=1
         else: EPISODE_COUNTER[chat_id]+=1
         ep=EPISODE_COUNTER[chat_id]
         is_user = len([l for l in user_story_text.split("\n") if l.strip()]) >=8
         mode = "✍️ قصتك 100%" if is_user else "🤖 تأليف"
-        send_text(chat_id, f"🎬 EP {ep} - {mode}\n🎭 ترثي + شخصيات تتحدث - ضد الملل\n🎥 زوم متنوع حزين/غضب/تشويق\n🎞️ دمج fade 0.4s متناسق\n🎵 موسيقى 18% مسموعة\n⏳ 4 دقايق")
+        send_text(chat_id, f"🎬 EP {ep} - {mode} V6\n🎧 صوت بيئة ذكي حسب المشهد\n🌲 قصر=صدى غابة=ريح نمر=زئير\n🎭 شخصيات تتحدث + ترثي\n🎥 زوم متنوع ضد الملل\n⏳ 3-4 دقايق")
 
         story=create_story(user_story_text, ep)
         videos=[]
@@ -272,12 +269,12 @@ def process_story(chat_id, user_story_text):
             vid=work / f"scene_{no}.mp4"
             gen_image(f"{char_desc}, {scene.get('scene_image_prompt','')}, consistent face no cross", img, no)
             gen_voice(scene.get("dialogue_ar",""), char_key, voice, no)
-            gen_video_clip(img, scene, voice if voice.exists() else None, vid, no)
+            gen_video_clip_smart(img, scene, voice if voice.exists() else None, vid, no, work)
             videos.append(vid)
             send_text(chat_id, f"✅ {no}/10 [{char_key}] {scene.get('dialogue_ar','')[:32]}")
 
         music=work / "music.mp3"
-        gen_music(music, 63)
+        gen_background_music(music, 63)
         raw=work / "raw.mp4"
         concat_videos(videos, raw)
         final=work / "final.mp4"
@@ -287,9 +284,8 @@ def process_story(chat_id, user_story_text):
         try: dur=float(p.stdout.strip() or "0")
         except: dur=0
 
-        send_text(chat_id, f"🎬 {story.get('title','')} - {int(dur)}ث\n✅ ترثي + شخصيات تتحدث\n✅ زوم متنوع ضد الملل\n✅ دمج fade متناسق\n✅ بس ترجمة تحت")
-        send_video(chat_id, final, f"EP {ep} {int(dur)}ث - ضد الملل")
-        send_text(chat_id, "✅ جاهز!\nابعت 10 أسطر قصتك:\n1:...\n2:...\nاو سطر واحد وهو يألف")
+        send_text(chat_id, f"🎬 {int(dur)}ث - V6 ذكي\n✅ كل مشهد صوت بيئة مختلف\n✅ صوت شخصية واضح 100%\n✅ موسيقى خلفية 10% هادئة")
+        send_video(chat_id, final, f"EP {ep} V6 SMART AMBIENT {int(dur)}ث")
     except Exception as e:
         log("ERROR "+repr(e))
         try: send_text(chat_id, "❌ "+str(e)[:2000])
@@ -304,12 +300,12 @@ def handle_update(update):
     text=(msg.get("text") or "").strip()
     if not chat: return
     if text=="/start":
-        send_text(chat, "🎬 بوت 60ث - ضد الملل V5\n\n✍️ ابعت 10 أسطر:\n1: شاب يدخل القصر\n2: الملك يهينه (غضب)\n3: يطردوه (حزن)\n4: يمشي بالغابة (ترثي)\n5: يجد ذئبة (حنان)\n6: نمر يهجم (خطر)\n7: يكشف قوته (صدمة)\n8: يهزم النمر (قوة)\n9: الأميرة ترى (حب)\n10: يصبح ملك ولكن فجأة...\n\n✅ كل مشهد شخصية تتحدث\n✅ زوم بطيء للحزن سريع للغضب\n✅ دمج fade متناسق\n✅ موسيقى ترثي\n\n/test = جرب"); return
+        send_text(chat, "🎬 بوت V6 - أصوات ذكية\n\n✍️ ابعت 10 أسطر:\n1: شاب يدخل قصر (صدى)\n2: الملك يهينه\n3: يطردوه (باب يتسكر)\n4: يمشي بالغابة (ريح)\n5: يجد ذئبة تبكي\n6: نمر يزأر (زئير)\n7: يكشف قوته\n8: يضرب النمر (BOOM)\n9: الأميرة مصدومة\n10: ولكن فجأة...\n\n✅ كل مشهد صوت بيئة من القصة + صوت شخصية + موسيقى 10%\n/test = جرب"); return
     if text=="/clear":
         with plock: processing_chats.clear()
-        send_text(chat, "✅"); return
+        send_text(chat, "✅ تم المسح - ابعت /test"); return
     if text=="/ping":
-        send_text(chat, f"🟢 V5 Anti-Boring Font={FONT}"); return
+        send_text(chat, f"🟢 V6 SMART AMBIENT Font={FONT}"); return
     user_story=text
     if text=="/test":
         user_story="1: شاب فقير يدخل قصر الملك الذهبي يبحث عن عمل\n2: الملك يصرخ اطردوا هذا القذر من قصري\n3: الحراس يطردون الشاب حزينا خارج القصر\n4: الشاب يمشي وحيدا في الغابة المظلمة يقول الغابة أحن علي من البشر\n5: يجد ذئبة بيضاء صغيرة تبكي من البرد فيحضنها لا تخافي صغيرتي\n6: نمر عملاق يزأر ويهجم على الذئبة\n7: عيون الشاب تلمع حان وقت الحقيقة\n8: الشاب يضرب النمر بضربة أسطورية يطير بعيدا\n9: الأميرة تقول يا إلهي ما هذه القوة العظيمة\n10: الملك يبكي سامحني يا بني وتصبح انت الملك ولكن فجأة سمعنا صوتا من السماء"
@@ -320,7 +316,7 @@ def handle_update(update):
     threading.Thread(target=process_story, args=(chat, user_story), daemon=True).start()
 
 @app.get("/")
-def home(): return f"V5 Anti-Boring Bot Font={FONT}", 200
+def home(): return f"V6 SMART AMBIENT", 200
 @app.post("/telegram/webhook")
 def webhook():
     upd=request.get_json(silent=True) or {}
