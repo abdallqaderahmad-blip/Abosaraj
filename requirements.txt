@@ -1,4 +1,4 @@
 Flask
 requests
 groq
-gtts
+edge-tts
