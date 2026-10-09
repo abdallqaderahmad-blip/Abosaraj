@@ -50,7 +50,7 @@ def gen_img(prompt_en, out, scene_no):
             r=requests.get(url, timeout=50)
             if r.status_code==200 and len(r.content)>18000:
                 Path(out).write_bytes(r.content)
-                log(f"IMG {scene_no} OK {len(r.content)}")
+                log(f"IMG {scene_no} OK")
                 return Path(out)
             time.sleep(1.5)
         except Exception as e:
@@ -62,7 +62,6 @@ def gen_img(prompt_en, out, scene_no):
 
 async def _edge(text, out):
     import edge_tts
-    # راوي غامض - أبطأ بالمشهد الأخير لشد انتباه
     rate = "-12%" if len(text) > 25 else "-8%"
     pitch = "-6Hz" if "الوريث" in text else "-3Hz"
     comm = edge_tts.Communicate(text[:85], "ar-SA-HamedNeural", rate=rate, pitch=pitch)
@@ -72,15 +71,11 @@ def gen_voice(text, out):
     try:
         asyncio.run(_edge(text, out))
         return out if Path(out).exists() and Path(out).stat().st_size>800 else None
-    except Exception as e:
-        log(f"VOICE err {e}")
-        return None
+    except: return None
 
 def gen_video_thill(img, text, voice, out, no, work):
     def esc(t): return str(t).replace("'","").replace('"',"").replace(":"," ").replace("\n"," ")[:70]
     cap = esc(text)
-
-    # تمديد حركة - المشهد الأخير يبطئ أكثر
     if no==4:
         zoom="if(lte(zoom,1.0),1.0,min(zoom+0.020,2.1))"; dur_target=5.0
         eq="eq=contrast=1.5:saturation=1.8:brightness=0.12,unsharp=5:5:1.2"
@@ -90,19 +85,12 @@ def gen_video_thill(img, text, voice, out, no, work):
     else:
         zoom="if(lte(zoom,1.0),1.0,min(zoom+0.010,1.75))"; dur_target=5.0
         eq="eq=contrast=1.4:saturation=1.5:brightness=0.05"
-
     vf = f"scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,zoompan=z='{zoom}':d=1:fps=30:s=720:1280:fps=30,{eq},vignette=angle=PI/4"
-
-    # اهتزاز خفيف للمشهد 4 (انفجار قوة)
     if no==4:
         vf += ",crop=in_w-8:in_h-8:(in_w-out_w)/2+sin(n*0.7)*8:(in_h-out_h)/2+cos(n*0.8)*8"
-
     vf += f",drawtext=fontfile={FONT}:text='{cap}':fontcolor=white:fontsize=42:box=1:boxcolor=black@0.85:boxborderw=14:x=(w-text_w)/2:y=(h-text_h)/2+180:line_spacing=10"
-
-    # هوك أول ثانيتين للمشهد 1
     if no==1:
-        vf += f",drawtext=fontfile={FONT}:text='طردوه... سيعود ملكاً 🔥':fontcolor=yellow:fontsize=30:box=1:boxcolor=red@0.85:boxborderw=10:x=(w-text_w)/2:y=h-200"
-
+        vf += f",drawtext=fontfile={FONT}:text='طردوه... سيعود ملكاً':fontcolor=yellow:fontsize=30:box=1:boxcolor=red@0.85:boxborderw=10:x=(w-text_w)/2:y=h-200"
     try:
         if voice and Path(voice).exists():
             p=subprocess.run(["ffprobe","-v","error","-show_entries","format=duration","-of","default=noprint_wrappers=1:nokey=1",str(voice)], stdout=subprocess.PIPE, text=True, timeout=5)
@@ -111,7 +99,6 @@ def gen_video_thill(img, text, voice, out, no, work):
             dur=max(4.2, min(vdur+1.2, dur_target))
         else: dur=dur_target
     except: dur=dur_target
-
     try:
         if voice and Path(voice).exists():
             cmd=["ffmpeg","-y","-loop","1","-i",str(img),"-i",str(voice),"-vf",vf,"-t",str(dur),"-r","30","-map","0:v","-map","1:a","-c:v","libx264","-preset","veryfast","-crf","22","-c:a","aac","-pix_fmt","yuv420p","-shortest","-movflags","+faststart",str(out)]
@@ -119,8 +106,7 @@ def gen_video_thill(img, text, voice, out, no, work):
             cmd=["ffmpeg","-y","-loop","1","-i",str(img),"-vf",vf,"-t",str(dur),"-r","30","-c:v","libx264","-preset","veryfast","-crf","22","-pix_fmt","yuv420p","-movflags","+faststart",str(out)]
         subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
         return out
-    except Exception as e:
-        log(f"VIDEO {no} fail {e}")
+    except:
         cmd2=["ffmpeg","-y","-loop","1","-i",str(img),"-t","5","-r","30","-c:v","libx264","-preset","ultrafast","-crf","26","-pix_fmt","yuv420p","-movflags","+faststart",str(out)]
         subprocess.run(cmd2, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=25)
         return out
@@ -131,17 +117,11 @@ def concat_and_ending(videos, out_final, work):
         for v in videos: f.write(f"file '{v}'\n")
     raw=work / "raw_4.mp4"
     subprocess.run(["ffmpeg","-y","-f","concat","-safe","0","-i",str(lf),"-c","copy","-movflags","+faststart",str(raw)], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=20)
-
-    # نهاية: الجزء 2 - غداً 8 مساءً
     ending_img = work / "ending.jpg"
     Image.new('RGB',(720,1280),(5,10,25)).save(str(ending_img))
-
-    # فيديو نهاية 2.5 ثانية
     ending_vid = work / "ending.mp4"
-    vf_end = f"scale=720:1280,drawtext=fontfile={FONT}:text='عاد الوريث...':fontcolor=white:fontsize=48:box=1:boxcolor=black@0.7:boxborderw=12:x=(w-text_w)/2:y=(h-text_h)/2-80,drawtext=fontfile={FONT}:text='الجزء 2 - غداً 8 مساءً 👑':fontcolor=#00D4FF:fontsize=42:box=1:boxcolor=black@0.85:boxborderw=12:x=(w-text_w)/2:y=(h-text_h)/2+60"
+    vf_end = f"scale=720:1280,drawtext=fontfile={FONT}:text='عاد الوريث...':fontcolor=white:fontsize=48:box=1:boxcolor=black@0.7:boxborderw=12:x=(w-text_w)/2:y=(h-text_h)/2-80,drawtext=fontfile={FONT}:text='الجزء 2 - غداً 8 مساءً':fontcolor=#00D4FF:fontsize=42:box=1:boxcolor=black@0.85:boxborderw=12:x=(w-text_w)/2:y=(h-text_h)/2+60"
     subprocess.run(["ffmpeg","-y","-loop","1","-i",str(ending_img),"-vf",vf_end,"-t","2.5","-r","30","-c:v","libx264","-preset","veryfast","-crf","22","-pix_fmt","yuv420p","-movflags","+faststart",str(ending_vid)], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=20)
-
-    # دمج الكل
     lf2=work / "concat2.txt"
     with lf2.open("w", encoding="utf-8") as f:
         f.write(f"file '{raw}'\n")
@@ -159,10 +139,8 @@ def send_video(c,p,cap):
 def process(chat_id):
     work=Path(tempfile.mkdtemp(prefix="v9_thill_"))
     try:
-        send_text(chat_id,"🎬 V9 مصنع مونتاج ظل\n📦 4 مشاهد - 20 ثانية\n🎙️ راوي غامض حسب ترتيبك\n⏳ تمديد حركة + نهاية الجزء 2")
-
+        send_text(chat_id,"🎬 V9 مصنع مونتاج ظل\n📦 4 مشاهد - 20 ثانية\n⏳ تمديد حركة + نهاية الجزء 2")
         results={}
-        # نولد الصور + الأصوات مع بعض
         def job(item):
             gi, (txt, key, en) = item
             no=gi+1
@@ -171,16 +149,13 @@ def process(chat_id):
             gen_img(en, img, no)
             gen_voice(txt, voice)
             return no, img, voice, txt
-
         with ThreadPoolExecutor(max_workers=3) as ex:
             futures=[ex.submit(job,(i, data)) for i, data in enumerate(THILL_20S)]
             for f in as_completed(futures):
                 no,img,voice,txt=f.result()
                 results[no]=(img,voice,txt)
                 send_text(chat_id,f"✅ مشهد {no}/4: {txt[:20]}...")
-
         send_text(chat_id,"🎬 بعمل مونتاج 20ث مع تمديد حركة")
-
         vids={}
         with ThreadPoolExecutor(max_workers=2) as ex:
             futures=[]
@@ -190,22 +165,17 @@ def process(chat_id):
                 futures.append(ex.submit(gen_video_thill, img, txt, voice, out_vid, no, work))
             for f in as_completed(futures):
                 vid=f.result()
-                # نستخرج الرقم من اسم الملف
                 num=int(vid.stem.split("_")[1])
                 vids[num]=vid
                 send_text(chat_id,f"🎥 مونتاج {len(vids)}/4")
-
         videos=[vids[i] for i in range(1,5)]
         final=work / "final_20s.mp4"
         concat_and_ending(videos, final, work)
-
         p=subprocess.run(["ffprobe","-v","error","-show_entries","format=duration","-of","default=noprint_wrappers=1:nokey=1",str(final)], stdout=subprocess.PIPE, text=True, timeout=5)
         try: dur=float(p.stdout.strip() or "22.5")
         except: dur=22.5
-
         send_text(chat_id,f"🔥 مصنع مونتاج ظل جاهز {int(dur)}ث")
         send_video(chat_id, final, f"🔥 ظل - الحلقة 1 (20ث)\n\n{THILL_20S[0][0]}\nالجزء 2 - غداً 8 مساءً 👑\n\n#ظل #ThillLegacy")
-
     except Exception as e:
         log("ERR "+repr(e))
         try: send_text(chat_id,"❌ "+str(e)[:800])
