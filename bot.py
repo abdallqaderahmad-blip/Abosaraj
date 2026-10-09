@@ -30,9 +30,7 @@ def get_font():
 FONT=get_font()
 
 HERO = "same handsome Arab man 25 short black hair blue eyes dark cloak consistent face"
-KING = "same old Arab king 60 white beard crown red robe consistent face"
 
-# 7 مشاهد فقط - هوك 20 ثانية
 HOOK_STORY = [
     ("طردوه من القصر لأنه فقير... لكنهم ما بيعرفوا من هو!", "hero", "Arab man kicked out palace sad dramatic hook"),
     ("الحراس رموه بالشارع كالقمامة", "hero", "guards pushing Arab man out dramatic"),
@@ -58,13 +56,18 @@ def gen_img(prompt_en, out, scene_no):
                 log(f"IMG {scene_no} OK")
                 return Path(out)
             time.sleep(1.2)
-        except: time.sleep(1.2)
-    Image.new('RGB',(720,1280),(30+scene_no*8,40,60)).save(str(out),"JPEG",90)
+        except Exception as e:
+            log(f"IMG {scene_no} err {e}")
+            time.sleep(1.2)
+    try:
+        img = Image.new('RGB',(720,1280),(30+scene_no*8,40,60))
+        img.save(str(out), "JPEG", quality=90)
+    except:
+        Path(out).write_bytes(b'\xff\xd8\xff\xe0')
     return Path(out)
 
 async def _edge(text, out):
     import edge_tts
-    # راوي هوك - سريع ومشوق
     rate = "-5%" if "طردوه" in text else "-10%"
     comm = edge_tts.Communicate(text[:90], "ar-SA-HamedNeural", rate=rate, pitch="-2Hz")
     await comm.save(str(out))
@@ -79,30 +82,24 @@ def gen_video_hook(img, text, voice, out, no, work):
     def esc(t): return str(t).replace("'","").replace('"',"").replace(":"," ")[:65]
     cap = esc(text)
 
-    # هوك سينمائي - كل مشهد حركة مختلفة
-    if no==1: # هوك - زوم سريع جدا
+    if no==1:
         zoom="if(lte(zoom,1.0),1.0,min(zoom+0.012,1.80))"; eq="eq=contrast=1.4:saturation=1.6:brightness=0.05"
-    elif no==5: # نمر - اهتزاز قوي
+    elif no==5:
         zoom="if(lte(zoom,1.0),1.0,min(zoom+0.015,1.90))"; eq="eq=contrast=1.5:saturation=1.4"
-    elif no==6: # قوة - يلمع
+    elif no==6:
         zoom="if(lte(zoom,1.0),1.0,min(zoom+0.010,1.75))"; eq="eq=contrast=1.45:saturation=1.8:brightness=0.10"
-    elif no==7: # ضربة - اسرع شي + slowmo وهمي
+    elif no==7:
         zoom="if(lte(zoom,1.0),1.0,min(zoom+0.018,2.0))"; eq="eq=contrast=1.5:saturation=1.7"
     else:
         zoom="if(lte(zoom,1.0),1.0,min(zoom+0.007,1.60))"; eq="eq=contrast=1.3:saturation=1.3"
 
-    # ترجمة كبيرة بالنص - ستايل ريلز
     vf = f"scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,zoompan=z='{zoom}':d=1:fps=30:s=720:1280:fps=30,{eq},unsharp=5:5:1.0,vignette=angle=PI/4"
 
-    # اهتزاز لمشهد 5 و 7
     if no in [5,7]:
         vf += ",crop=in_w-6:in_h-6:(in_w-out_w)/2+sin(n*0.5)*6:(in_h-out_h)/2+cos(n*0.6)*6"
 
-    # نص كبير بالنص - هوك ستايل
-    # سطرين - فوق وتحت
     vf += f",drawtext=fontfile={FONT}:text='{cap}':fontcolor=white:fontsize=38:box=1:boxcolor=black@0.90:boxborderw=12:x=(w-text_w)/2:y=(h-text_h)/2-100:line_spacing=8"
 
-    # لو مشهد 1 - نضيف "شاهد للنهاية" صغير
     if no==1:
         vf += f",drawtext=fontfile={FONT}:text='شاهد للنهاية 🔥':fontcolor=yellow:fontsize=28:box=1:boxcolor=red@0.85:boxborderw=8:x=(w-text_w)/2:y=h-180"
 
@@ -111,11 +108,10 @@ def gen_video_hook(img, text, voice, out, no, work):
             p=subprocess.run(["ffprobe","-v","error","-show_entries","format=duration","-of","default=noprint_wrappers=1:nokey=1",str(voice)], stdout=subprocess.PIPE, text=True, timeout=5)
             try: dur=float(p.stdout.strip() or "3")
             except: dur=3
-            dur=max(2.8, min(dur+0.2, 3.5)) # 3 ثواني بس لكل مشهد
+            dur=max(2.8, min(dur+0.2, 3.5))
         else: dur=3.0
     except: dur=3.0
 
-    # SFX بسيط مجاني
     sfx_filter = "anoisesrc=d=0.3:c=brown:r=22050:a=0.08,volume=0.4" if no in [5,7] else "anullsrc=d=0.1:r=22050"
     sfx = work / f"sfx_{no}.mp3"
     try:
@@ -154,10 +150,9 @@ def send_video(c,p,cap):
 def process(chat_id):
     work=Path(tempfile.mkdtemp(prefix="v8hook_"))
     try:
-        send_text(chat_id,"🎬 V8 HOOK 20S\n🔥 7 مشاهد بس - 20 ثانية\n⚡ هوك أول ثانيتين\n📱 نص كبير بالنص - ريلز\n🎥 زوم سريع + اهتزاز")
+        send_text(chat_id,"🎬 V8 HOOK 20S\n🔥 7 مشاهد - 20 ثانية\n⚡ هوك أول ثانيتين\n📱 نص كبير - ريلز")
 
         results={}
-        # batch 3 ب 3 - عشان الصور ما تفشل
         batches=[HOOK_STORY[i:i+3] for i in range(0,len(HOOK_STORY),3)]
         done=0
         for b_idx, batch in enumerate(batches):
@@ -183,11 +178,15 @@ def process(chat_id):
 
         vids={}
         with ThreadPoolExecutor(max_workers=2) as ex:
-            futures=[ex.submit(lambda item: (item[0], gen_video_hook(item[1][0], item[1][2], item[1][1], work / f"vid_{item[0]}.mp4", item[0], work)), kv) for kv in results.items()]
-            for f in as_completed(futures):
-                no,vid=f.result()
-                vids[no]=vid
-                send_text(chat_id,f"🎥 {no}/7")
+            futures=[]
+            for kv in results.items():
+                no,(img,voice,txt)=kv
+                out_vid=work / f"vid_{no}.mp4"
+                futures.append(ex.submit(gen_video_hook, img, txt, voice, out_vid, no, work))
+            for idx, f in enumerate(as_completed(futures),1):
+                vid=f.result()
+                vids[idx]=vid
+                send_text(chat_id,f"🎥 {idx}/7")
 
         videos=[vids[i] for i in range(1,8)]
         raw=work / "raw.mp4"
@@ -197,8 +196,8 @@ def process(chat_id):
         try: dur=float(p.stdout.strip() or "20")
         except: dur=20
 
-        send_text(chat_id,f"🔥 HOOK 20S جاهز {int(dur)}ث\n✅ هوك أول ثانيتين\n✅ نص كبير بالنص\n✅ 7 مشاهد سريعة\n✅ cliffhanger للجزء 2")
-        send_video(chat_id, raw, f"🔥 HOOK 20S - {int(dur)}ث - ريلز احترافي\n\nطردوه لأنه فقير... لكنه سيصدمهم!\nالجزء 2؟ 👇")
+        send_text(chat_id,f"🔥 HOOK 20S جاهز {int(dur)}ث")
+        send_video(chat_id, raw, f"🔥 HOOK 20S - {int(dur)}ث\n\nطردوه لأنه فقير... لكنه سيصدمهم!\nالجزء 2؟ 👇")
 
     except Exception as e:
         log("ERR "+repr(e))
@@ -221,7 +220,7 @@ def handle_update(update):
     threading.Thread(target=process, args=(chat,), daemon=True).start()
 
 @app.get("/")
-def home(): return "V8 HOOK 20S",200
+def home(): return "V8 HOOK 20S FIXED",200
 @app.post("/telegram/webhook")
 def webhook():
     upd=request.get_json(silent=True) or {}
