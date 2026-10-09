@@ -1,19 +1,37 @@
-import os, json, time, shutil, tempfile, threading, subprocess, urllib.parse, asyncio
+import os, time, shutil, tempfile, threading, subprocess, urllib.parse, asyncio
 from pathlib import Path
 import requests
 from flask import Flask, request
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from PIL import Image
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN","")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY","")
 PORT = int(os.getenv("PORT","10000"))
 RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL","").rstrip("/")
-GROQ_MODEL = os.getenv("GROQ_MODEL","openai/gpt-oss-120b")
 
-try:
-    from groq import Groq
-    groq = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
-except: groq = None
+app = Flask(__name__)
+lock = threading.Lock()
+processing_chats = set()
+plock = threading.Lock()
+
+def log(m):
+    with lock: print("[V6.5.1 FIXED] " + time.strftime("%H:%M:%S") + " " + m, flush=True)
+
+def get_font():
+    font_dir = Path("/tmp/fonts")
+    font_dir.mkdir(exist_ok=True)
+    fp = font_dir / "Amiri-Regular.ttf"
+    if not fp.exists():
+        try:
+            r = requests.get("https://github.com/google/fonts/raw/main/ofl/amiri/Amiri-Regular.ttf", timeout=15)
+            if r.status_code==200: fp.write_bytes(r.content)
+        except: pass
+    for f in [str(fp), "/usr/share/fonts/truetype/noto/NotoNaskhArabic-Regular.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"]:
+        if Path(f).exists(): return f
+    return "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+
+FONT = get_font()
 
 CHARACTER_BANK = {
     "hero": "Handsome real Arab man age 25 short black hair sharp jaw blue eyes athletic dark blue cloak, photorealistic consistent face cinematic",
@@ -31,35 +49,11 @@ VOICE_MAP = {
     "tiger": {"voice": "ar-SA-HamedNeural", "rate": "-30%", "pitch": "-13Hz"}
 }
 
-app = Flask(__name__)
-lock = threading.Lock()
-processing_chats = set()
-plock = threading.Lock()
-
-def log(m):
-    with lock: print("[V6.5 FULL] " + time.strftime("%H:%M:%S") + " " + m, flush=True)
-
-def get_font():
-    font_dir = Path("/tmp/fonts")
-    font_dir.mkdir(exist_ok=True)
-    fp = font_dir / "Amiri-Regular.ttf"
-    if not fp.exists():
-        try:
-            r = requests.get("https://github.com/google/fonts/raw/main/ofl/amiri/Amiri-Regular.ttf", timeout=15)
-            if r.status_code==200: fp.write_bytes(r.content)
-        except: pass
-    for f in [str(fp), "/usr/share/fonts/truetype/noto/NotoNaskhArabic-Regular.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"]:
-        if Path(f).exists(): return f
-    return "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
-
-FONT = get_font()
-
-def run_cmd(cmd, timeout=300):
+def run_cmd(cmd, timeout=120):
     p=subprocess.run([str(x) for x in cmd], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=timeout)
     if p.returncode!=0: raise RuntimeError(p.stderr[-2000:])
     return p
 
-# === صور مطابقة 100% للقصة + متوازية ===
 def gen_image_full(prompt_ar, out, scene_no, char_key):
     char_desc = CHARACTER_BANK.get(char_key, CHARACTER_BANK["hero"])
     t=prompt_ar
@@ -75,24 +69,37 @@ def gen_image_full(prompt_ar, out, scene_no, char_key):
     elif "سامحني" in t: en="old Arab king crying kneeling sorry forgive son you king"
     else: en="Arab cinematic story"
 
-    full = f"{char_desc}, {en}, photorealistic consistent face cinematic 8k dramatic"
+    full = f"{char_desc}, {en}, photorealistic consistent face cinematic 8k dramatic vertical"
     safe = urllib.parse.quote(full[:350])
     seed = int(time.time()) + scene_no*19
 
     for _ in range(4):
         try:
-            url = f"https://image.pollinations.ai/prompt/{safe}?width=720&height=1280&model=turbo&seed={seed}&nologo=true"
+            url = f"https://image.pollinations.ai/prompt/{safe}?width=720&height=1280&model=turbo&seed={seed}&nologo=true&enhance=false"
             r = requests.get(url, timeout=35)
             if r.status_code==200 and len(r.content)>12000:
                 Path(out).write_bytes(r.content)
-                log(f"IMG {scene_no} OK"); return Path(out)
-            seed+=7
-        except: time.sleep(0.5)
-    # fallback تدرج مو عشوائي
-    subprocess.run(["ffmpeg","-y","-f","lavfi","-i",f"color=c=0x2a3a4a:s=720x1280:d=1","-frames:v","1",str(out)], stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5)
-    return Path(out)
+                log(f"IMG {scene_no} OK {len(r.content)}")
+                return Path(out)
+            seed+=11
+            time.sleep(0.5)
+        except Exception as e:
+            log(f"IMG {scene_no} try fail {e}")
+            time.sleep(0.5)
 
-# === صوت شخصيات ===
+    # FALLBACK PIL - بدون ffmpeg - ما يعلق
+    try:
+        colors = [(42,58,74),(58,42),(32,55,45),(55,45,65),(40,65,75),(70,50,40),(45,55,70),(60,60,50),(50,40,60),(35,60,65)]
+        c = colors[scene_no % len(colors)]
+        img = Image.new('RGB', (720,1280), c)
+        img.save(str(out), "JPEG", quality=85)
+        log(f"IMG {scene_no} FALLBACK PIL {c}")
+        return Path(out)
+    except Exception as e:
+        log(f"PIL fail {e}")
+        Path(out).write_bytes(b'\xff\xd8\xff\xe0\x00\x10JFIF\x00')
+        return Path(out)
+
 async def _edge(text, voice, rate, pitch, out):
     import edge_tts
     comm = edge_tts.Communicate(text, voice, rate=rate, pitch=pitch)
@@ -103,31 +110,30 @@ def gen_voice_full(text, char_key, out):
         cfg = VOICE_MAP.get(char_key, {"voice":"ar-SA-HamedNeural","rate":"-15%","pitch":"-2Hz"})
         clean = text.strip()[:120]
         asyncio.run(_edge(clean, cfg["voice"], cfg["rate"], cfg["pitch"], out))
-        return out if Path(out).exists() else None
+        return out if Path(out).exists() and Path(out).stat().st_size>1000 else None
     except Exception as e:
-        log(f"Voice fail {e}"); return None
+        log(f"Voice fail {e}")
+        return None
 
-# === صوت بيئة ذكي حسب الكلمات ===
-def gen_ambient(text, out, dur=6):
+def gen_ambient(text, out, dur=5):
     low=text.lower()
-    if "قصر" in low or "ملك" in low: filt="anoisesrc=d=6:c=brown:r=44100:a=0.025,lowpass=f=350,volume=0.22"
-    elif "غابة" in low: filt="anoisesrc=d=6:c=brown:r=44100:a=0.05,highpass=f=700,lowpass=f=2500,volume=0.26"
-    elif "ذئبة" in low: filt="anoisesrc=d=6:c=white:r=44100:a=0.018,sine=f=320:d=6:beep_factor=1.5,lowpass=f=1100,volume=0.22"
-    elif "نمر" in low: filt="anoisesrc=d=6:c=brown:r=44100:a=0.10,sine=f=55:d=6,lowpass=f=180,volume=0.38"
-    elif "ضرب" in low or "يهجم" in low: filt="anoisesrc=d=6:c=brown:r=44100:a=0.12,sine=f=75:d=0.6,lowpass=f=280,volume=0.42"
-    elif "يبكي" in low or "سامحني" in low: filt="anoisesrc=d=6:c=pink:r=44100:a=0.03,lowpass=f=600,volume=0.18"
-    else: filt="anoisesrc=d=6:c=pink:r=44100:a=0.03,lowpass=f=700,volume=0.16"
+    if "قصر" in low or "ملك" in low: filt="anoisesrc=d=2:c=brown:r=22050:a=0.025,lowpass=f=350,volume=0.22"
+    elif "غابة" in low: filt="anoisesrc=d=2:c=brown:r=22050:a=0.05,highpass=f=700,lowpass=f=2500,volume=0.26"
+    elif "ذئبة" in low: filt="anoisesrc=d=2:c=white:r=22050:a=0.018,lowpass=f=1100,volume=0.22"
+    elif "نمر" in low: filt="anoisesrc=d=2:c=brown:r=22050:a=0.10,lowpass=f=180,volume=0.38"
+    elif "ضرب" in low or "يهجم" in low: filt="anoisesrc=d=2:c=brown:r=22050:a=0.12,lowpass=f=280,volume=0.42"
+    elif "يبكي" in low or "سامحني" in low: filt="anoisesrc=d=2:c=pink:r=22050:a=0.03,lowpass=f=600,volume=0.18"
+    else: filt="anullsrc=r=22050:cl=stereo:d=2,volume=0.05"
     try:
-        subprocess.run(["ffmpeg","-y","-f","lavfi","-i",filt,"-t",str(dur),"-c:a","aac","-b:a","64k",str(out)], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=12)
+        subprocess.run(["ffmpeg","-y","-f","lavfi","-i",filt,"-t","2","-c:a","aac","-b:a","32k",str(out)], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10)
         return out if Path(out).exists() else None
-    except: return None
+    except:
+        return None
 
-# === فيديو مع كل التأثيرات ===
 def gen_video_full(img_path, scene_text, voice_path, out_path, scene_no, work_dir):
     def esc(t): return str(t or "").replace("'","").replace('"',"").replace(":","").replace("\n"," ").replace("%"," ")[:65]
     raw = esc(scene_text)
 
-    # زوم متنوع ضد الملل - الي حللناه
     if scene_no==1: zoom="min(zoom+0.006,1.60)"; eq="eq=contrast=1.32:saturation=1.55"
     elif scene_no in [2,6]: zoom="min(zoom+0.0035,1.35)"; eq="eq=contrast=1.38:saturation=1.25:brightness=-0.04"
     elif scene_no in [4,5]: zoom="min(zoom+0.0007,1.18)"; eq="eq=contrast=1.08:saturation=0.85:brightness=0.03"
@@ -155,15 +161,16 @@ def gen_video_full(img_path, scene_text, voice_path, out_path, scene_no, work_di
         else:
             cmd = ["ffmpeg","-y","-loop","1","-i",str(img_path),"-vf",vf_text,"-t","5.5","-r","24","-c:v","libx264","-preset","veryfast","-crf","22","-pix_fmt","yuv420p","-movflags","+faststart",str(out_path)]
         subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=90)
-    except:
+    except Exception as e:
+        log(f"Video {scene_no} fallback {e}")
         subprocess.run(["ffmpeg","-y","-loop","1","-i",str(img_path),"-vf",vf_text,"-t","5.5","-r","24","-c:v","libx264","-preset","veryfast","-crf","22","-pix_fmt","yuv420p","-movflags","+faststart",str(out_path)], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
     return out_path
 
 def gen_music(out, dur=60):
     try:
         cmd = ["ffmpeg","-y","-f","lavfi","-i","anullsrc=r=44100:cl=stereo","-f","lavfi","-i",f"sine=f=110:duration={dur},sine=f=220:duration={dur}","-filter_complex","[1:a]volume=0.12,lowpass=f=700,atempo=0.82[a1];[0:a][a1]amix=inputs=2:duration=first[a]","-map","[a]","-t",str(dur),"-c:a","aac","-b:a","64k",str(out)]
-        subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=20)
-        return out
+        subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=15)
+        return out if Path(out).exists() else None
     except: return None
 
 def concat_copy(videos, out):
@@ -205,13 +212,12 @@ LONG_STORY = """شاب فقير يدخل قصر الملك الذهبي يبحث
 الملك يبكي سامحني يا بني وتصبح انت الملك ولكن فجأة سمعنا صوتا من السماء"""
 
 def process_full_fast(chat_id, user_text):
-    work=Path(tempfile.mkdtemp(prefix="fullfast_"))
+    work=Path(tempfile.mkdtemp(prefix="fullfixed_"))
     try:
         lines = [l.strip() for l in user_text.split("\n") if l.strip()][:10]
         if len(lines)<8: lines = LONG_STORY.split("\n")
-        send_text(chat_id, f"🎬 FULL V6.5 - 10 مشاهد كاملة\n🎧 صوت شخصيات + بيئة ذكية\n🎥 زوم متنوع + ترجمة تحت\n⚡ متوازي 10 = 2 دقيقة بس\n⏳ 10 صور + 10 أصوات بنفس الوقت")
+        send_text(chat_id, f"🎬 V6.5.1 FIXED - 10 مشاهد كامل\n✅ PIL fallback بدون ffmpeg color\n🎧 صوت+بيئة+زوم+ترجمة\n⚡ متوازي 10 = 2 دقيقة")
 
-        # === 1. صور + أصوات متوازي بنفس الوقت ===
         def job_media(i_txt):
             i, txt = i_txt
             no=i+1
@@ -234,15 +240,14 @@ def process_full_fast(chat_id, user_text):
                 no, img, voice, txt, key = f.result()
                 results[no]=(img,voice,txt,key)
                 done+=1
-                if done%2==0: send_text(chat_id, f"✅ {done}/10 صور+صوت [{key}]")
+                if done%2==0: send_text(chat_id, f"✅ {done}/10 [{key}]")
 
-        send_text(chat_id, f"✅ كل الصور والأصوات جاهزة - نحول فيديو")
+        send_text(chat_id, f"✅ كل الصور+أصوات جاهزة - نحول فيديو")
 
-        # === 2. فيديوهات متوازي ===
         def job_video(item):
             no, (img, voice, txt, key) = item
             vid=work / f"vid_{no}.mp4"
-            gen_video_full(img, txt, voice if voice.exists() else None, vid, no, work)
+            gen_video_full(img, txt, voice if Path(voice).exists() else None, vid, no, work)
             return no, vid
 
         videos_dict={}
@@ -265,8 +270,8 @@ def process_full_fast(chat_id, user_text):
         try: dur=float(p.stdout.strip() or "0")
         except: dur=0
 
-        send_text(chat_id, f"🎬 FULL {int(dur)}ث جاهز\n✅ صوت شخصيات مختلف\n✅ بيئة: قصر=صدى غابة=ريح نمر=زئير\n✅ زوم متنوع حزين/غضب/تشويق\n✅ ترجمة تحت بس\n✅ صور مطابقة للقصة")
-        send_video(chat_id, final, f"FULL V6.5 {int(dur)}ث")
+        send_text(chat_id, f"🎬 FIXED {int(dur)}ث - كلشي موجود")
+        send_video(chat_id, final, f"V6.5.1 FIXED {int(dur)}ث")
 
     except Exception as e:
         log("ERR "+repr(e))
@@ -279,7 +284,7 @@ def process_full_fast(chat_id, user_text):
 def handle_update(update):
     msg=update.get("message") or {}; chat=(msg.get("chat") or {}).get("id"); text=(msg.get("text") or "").strip()
     if not chat: return
-    if text=="/start": send_text(chat, "🎬 FULL V6.5\n✅ صوت+بيئة+زوم+ترجمة\n⚡ متوازي 10 = 2 دقيقة\n/full للتجربة الطويلة الكاملة"); return
+    if text=="/start": send_text(chat, "🎬 V6.5.1 FIXED\n/full للتجربة الطويلة الكاملة - 10 مشاهد\n✅ PIL بدون ffmpeg color"); return
     if text=="/clear":
         with plock: processing_chats.clear()
         send_text(chat, "✅ تم المسح"); return
@@ -290,7 +295,7 @@ def handle_update(update):
     threading.Thread(target=process_full_fast, args=(chat, user_text), daemon=True).start()
 
 @app.get("/")
-def home(): return "FULL V6.5", 200
+def home(): return "V6.5.1 FIXED", 200
 @app.post("/telegram/webhook")
 def webhook():
     upd=request.get_json(silent=True) or {}
