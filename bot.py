@@ -98,23 +98,43 @@ def extract_json(text):
         raise ValueError("Groq لم يُرجع JSON صالحًا")
 
 def groq_json_request(system_prompt, user_prompt, max_tokens=400, temperature=0.5):
-    """Avoid response_format=json_object: it can trigger json_validate_failed with some Groq models."""
+    """Request JSON from Groq GPT-OSS without letting reasoning consume the whole output budget."""
     last_error = None
     for attempt in range(GROQ_MAX_RETRIES + 1):
         try:
+            # GPT-OSS can return an empty message.content when a small max_tokens budget
+            # is spent on internal reasoning. Hide reasoning and use the current parameter.
             response = groq_client.chat.completions.create(
                 model=GROQ_MODEL,
-                messages=[{"role": "system", "content": system_prompt + " أخرج JSON صالحًا فقط دون Markdown."},
-                          {"role": "user", "content": user_prompt + "\nتذكير: أخرج كائن JSON واحدًا صالحًا فقط."}],
-                max_tokens=max_tokens, temperature=temperature,
+                messages=[
+                    {"role": "system", "content": system_prompt + " أخرج JSON صالحًا فقط دون Markdown."},
+                    {"role": "user", "content": user_prompt + "\nتذكير: أخرج كائن JSON واحدًا صالحًا فقط."},
+                ],
+                max_completion_tokens=max(700, max_tokens * 2),
+                temperature=temperature,
+                reasoning_effort="low",
+                include_reasoning=False,
             )
-            content = response.choices[0].message.content
-            if not content: raise ValueError("Groq returned empty content")
-            return extract_json(content)
+            if not response.choices:
+                raise ValueError("Groq returned no choices")
+            choice = response.choices[0]
+            message = choice.message
+            content = message.content
+            if not content or not str(content).strip():
+                finish_reason = getattr(choice, "finish_reason", None)
+                usage = getattr(response, "usage", None)
+                completion_tokens = getattr(usage, "completion_tokens", None) if usage else None
+                log.warning(
+                    "Groq empty content: model=%s finish_reason=%s completion_tokens=%s reasoning_present=%s",
+                    GROQ_MODEL, finish_reason, completion_tokens, bool(getattr(message, "reasoning", None))
+                )
+                raise ValueError(f"Groq returned empty content (finish_reason={finish_reason})")
+            return extract_json(str(content))
         except Exception as exc:
             last_error = exc
             err = str(exc).lower()
-            if attempt >= GROQ_MAX_RETRIES or any(x in err for x in ("401", "403", "model_not_found", "invalid_api_key")): break
+            if attempt >= GROQ_MAX_RETRIES or any(x in err for x in ("401", "403", "model_not_found", "invalid_api_key")):
+                break
             delay = 20 if any(x in err for x in ("429", "rate_limit", "tokens per minute", "tpm")) else GROQ_RETRY_DELAY
             log.warning("Groq attempt %s failed; retrying in %ss: %s", attempt + 1, delay, exc)
             time.sleep(delay)
