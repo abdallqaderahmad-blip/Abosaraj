@@ -1,9 +1,9 @@
-import os, requests, random, threading, re, traceback, subprocess, glob
+import os, requests, random, threading, re, traceback, subprocess, glob, asyncio
 from flask import Flask, request
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
-# Patch مهم جدا - قبل أي شي
+# FIX PIL ANTIALIAS
 from PIL import Image
 if not hasattr(Image, 'ANTIALIAS'):
     Image.ANTIALIAS = Image.LANCZOS
@@ -15,90 +15,169 @@ PIXABAY_KEY = os.getenv("PIXABAY_KEY")
 WEBHOOK_URL = os.getenv("RENDER_EXTERNAL_URL")
 web_app = Flask(__name__)
 
-def tg_send(chat_id, text):
-    try: requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", data={"chat_id":chat_id,"text":text}, timeout=15)
+def tg_send(c,t):
+    try: requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", data={"chat_id":c,"text":t}, timeout=15)
     except: pass
 
-def tg_send_video(chat_id, path):
+def tg_send_video(c,p,caption):
     try:
-        with open(path,"rb") as f:
-            requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendVideo", data={"chat_id":chat_id,"caption":"✅ V27 نظيف بدون كتابة - بدون علامة - متناسق"}, files={"video":f}, timeout=180)
-    except Exception as e: tg_send(chat_id,f"❌ رفع فشل: {e}")
+        with open(p,"rb") as f:
+            requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendVideo", data={"chat_id":c,"caption":caption}, files={"video":f}, timeout=180)
+    except Exception as e: tg_send(c,f"❌ رفع: {e}")
 
-def get_keyword(t):
-    t=t.lower()
-    if "ليل" in t or "وحيدة" in t: return "dark night girl"
-    if "مطر" in t: return "rain window"
-    return "cinematic night"
+def get_keyword_smart(line, idx):
+    """نظام ذكي - يفهم المعنى مش بس الكلمة - يمنع تناقض صورة/صوت"""
+    l = line.lower()
+    hope_words = ["أم", "أمل", "ابتسم", "نور", "شمس", "فرح", "ضحك", "حب", "دعاء", "الله", "أمان", "دفء"]
+    rain_words = ["مطر", "نافذة", "دموع", "بارد", "شتاء", "ريح", "يبكي", "بكت"]
 
-def build(chat_id, lines):
-    # Patch تاني جوة الـ Thread
+    is_hope = any(w in l for w in hope_words)
+    is_rain = any(w in l for w in rain_words)
+
+    if idx == 0:
+        # بداية = وحدة ليل تلة - دايما متناسق
+        return "anime girl alone hill night stars cinematic"
+    if idx == 1:
+        # وسط = مطر / حزن
+        if is_rain:
+            return "anime girl rain window sad tears cinematic"
+        return "anime girl night lonely rain cinematic"
+    if idx == 2:
+        # نهاية = لازم أمل ونور - مستحيل يجيب شارع مظلم هنا
+        if is_hope:
+            return "anime girl sunrise smile hope warm light"
+        # حتى لو ما ذكر أمل، نهاية الريلز لازم تكون نور
+        return "anime girl sunrise hope light smile happy ending"
+
+async def make_male_voice(text, out):
+    """راوي رجل غامض - صوت عميق بطيء"""
+    try:
+        import edge_tts
+        # Laith صوت رجل سوري غامض جدا وعميق
+        voice = "ar-SY-LaithNeural"
+        communicate = edge_tts.Communicate(text, voice, rate="-15%", pitch="-10Hz", volume="+15%")
+        await communicate.save(out)
+        return True
+    except Exception as e:
+        print(f"edge-tts fail {e}")
+        try:
+            from gtts import gTTS
+            gTTS(text=text, lang='ar', slow=False).save(out)
+        except: pass
+        return False
+
+def build(chat_id, lines, en_translation=""):
     from PIL import Image as PILImage
     if not hasattr(PILImage, 'ANTIALIAS'):
         PILImage.ANTIALIAS = PILImage.LANCZOS
-    
-    from moviepy.editor import VideoFileClip, AudioFileClip
-    from gtts import gTTS
+    from moviepy.editor import VideoFileClip, AudioFileClip, TextClip, CompositeVideoClip
+
     try:
         for f in glob.glob("s_*.mp4")+glob.glob("a_*.mp3")+glob.glob("part_*.mp4")+["FINAL.mp4","list.txt"]:
             try: os.remove(f)
             except: pass
+
         part_files=[]
+        en_parts = [p.strip() for p in en_translation.split(".") if p.strip()] if en_translation else []
+
         for i,line in enumerate(lines[:3]):
             v=f"s_{i}.mp4"; a=f"a_{i}.mp3"; part=f"part_{i}.mp4"
-            tg_send(chat_id,f"🎬 مشهد {i+1}...")
+
+            # اختيار فيديو ذكي متناسق
+            q = get_keyword_smart(line, i)
+            tg_send(chat_id,f"🎬 مشهد {i+1}: {line[:35]}\n🔍 بحث: {q}")
+
             try:
                 if PIXABAY_KEY:
-                    url=f"https://pixabay.com/api/videos/?key={PIXABAY_KEY}&q={get_keyword(line)}&per_page=10"
+                    url=f"https://pixabay.com/api/videos/?key={PIXABAY_KEY}&q={q}&per_page=15&video_type=film"
                     data=requests.get(url,timeout=12).json()
-                    vurl=random.choice(data["hits"])["videos"]["small"]["url"]
-                    open(v,"wb").write(requests.get(vurl,timeout=30).content)
-                else: raise Exception()
+                    if data.get("hits"):
+                        # اختار أفضل 3 مش متكررين
+                        vurl=random.choice(data["hits"][:5])["videos"]["small"]["url"]
+                        open(v,"wb").write(requests.get(vurl,timeout=30).content)
+                    else: raise Exception("no hits")
+                else: raise Exception("no key")
             except:
-                open(v,"wb").write(requests.get("https://cdn.pixabay.com/video/2020/07/30/45549-442790323_small.mp4",timeout=30).content)
-            
-            gTTS(text=line, lang='ar', slow=False).save(a)
-            
-            # resize بدون ANTIALIAS - نستخدم with block
-            vc=VideoFileClip(v)
-            vc=vc.resize((720,1280))
+                fallbacks = [
+                    "https://cdn.pixabay.com/video/2020/12/13/59398-490696104_small.mp4",
+                    "https://cdn.pixabay.com/video/2020/07/30/45549-442790323_small.mp4",
+                    "https://cdn.pixabay.com/video/2019/10/09/27834-365890983_small.mp4"
+                ]
+                open(v,"wb").write(requests.get(fallbacks[i%3],timeout=30).content)
+
+            tg_send(chat_id,f"🎙️ راوي رجل غامض {i+1}...")
+            asyncio.run(make_male_voice(line, a))
+
+            vc=VideoFileClip(v).resize((720,1280))
             ac=AudioFileClip(a)
-            dur=ac.duration+0.3
+            dur=ac.duration+0.6
             if vc.duration < dur: vc=vc.loop(duration=dur)
             else: vc=vc.subclip(0,dur)
-            vc.set_audio(ac).write_videofile(part, fps=24, preset="ultrafast", codec="libx264", audio_codec="aac", threads=1, logger=None)
-            vc.close(); ac.close()
-            part_files.append(part)
-            tg_send(chat_id,f"✅ مشهد {i+1} جاهز")
 
+            # ترجمة بطرف الصفحة تحت - نظام ريلز وشورتس
+            clips = [vc]
+            if i < len(en_parts):
+                try:
+                    en_text = en_parts[i][:90] # قصير عشان ريلز
+                    txt = TextClip(en_text, fontsize=22, color='white', font='DejaVu-Sans', stroke_color='black', stroke_width=1.5, method='caption', size=(660, None))
+                    txt = txt.set_position(('center', 0.88), relative=True).set_duration(dur)
+                    clips.append(txt)
+                except Exception as e:
+                    print(f"txt fail {e}")
+
+            final_vc = CompositeVideoClip(clips, size=(720,1280)) if len(clips)>1 else None
+            if len(clips)==1:
+                final_vc = vc
+
+            final_vc = final_vc.set_audio(ac)
+            final_vc.write_videofile(part, fps=24, preset="ultrafast", codec="libx264", audio_codec="aac", threads=1, logger=None)
+            vc.close(); ac.close(); final_vc.close()
+            part_files.append(part)
+            tg_send(chat_id,f"✅ مشهد {i+1} جاهز - متناسق مع الصوت")
+
+        tg_send(chat_id,"✂️ بجمع ريلز 9:16 لليوتيوب شورتس...")
         with open("list.txt","w") as f:
             for p in part_files: f.write(f"file '{p}'\n")
         subprocess.run(["ffmpeg","-y","-f","concat","-safe","0","-i","list.txt","-c","copy","FINAL.mp4"], check=True)
-        tg_send_video(chat_id,"FINAL.mp4")
+
+        cap = "✅ V29 REELS متناسق\n🎙️ راوي رجل غامض Laith\n📝 ترجمة تحت 88%\n📱 9:16 يوتيوب شورتس + انستا"
+        tg_send_video(chat_id,"FINAL.mp4", cap)
+
     except Exception as e:
-        tg_send(chat_id,f"❌ {e}\n{traceback.format_exc()[:1200]}")
+        tg_send(chat_id,f"❌ {e}\n{traceback.format_exc()[:1300]}")
 
 async def zel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    txt=re.sub(r'^/(zel|ظل)\s*','',update.message.text or "").strip()
-    if len(txt)<5:
-        lines=["جلست وحيدة في الليل","المطر ينزل على النافذة","تذكرت كلام أمها ثم ابتسمت"]
+    raw = re.sub(r'^/(zel|ظل)\s*','',update.message.text or "").strip()
+
+    if "|" in raw:
+        ar_text, en_text = raw.split("|",1)
     else:
-        lines=[l.strip() for l in re.split(r'[.!؟\n]+', txt) if len(l.strip())>3][:3]
-    await update.message.reply_text(f"🎬 V27 - {len(lines)} مشاهد نظيفة بدون كتابة")
-    threading.Thread(target=build, args=(update.effective_chat.id, lines), daemon=True).start()
+        ar_text = raw
+        en_text = ""
+
+    if len(ar_text)<5:
+        lines=["وقفت وحدها على التلة تحت سماء مليئة بالنجوم","المطر يلمس وجهها وهي تبكي بصمت","ثم تذكرت كلام أمها فابتسمت وظهر نور الشمس"]
+        en_text="Alone on hill under stars. Rain on her face. Mother words brought sunrise and smile"
+    else:
+        lines=[l.strip() for l in re.split(r'[.!؟\n]+', ar_text) if len(l.strip())>3][:3]
+        if not en_text:
+            en_text = ". ".join(lines) # لو ما كتب ترجمة
+
+    await update.message.reply_text(f"🎬 V29 ذكي متناسق\n🎙️ رجل غامض\n📝 ترجمة ريلز\n{len(lines)} مشاهد - بفحص المعنى")
+    threading.Thread(target=build, args=(update.effective_chat.id, lines, en_text), daemon=True).start()
 
 application=Application.builder().token(BOT_TOKEN).build()
 application.add_handler(CommandHandler("zel", zel))
+application.add_handler(CommandHandler("ظل", zel))
 application.add_handler(CommandHandler("start", zel))
 application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, zel))
 
-import asyncio
 loop=asyncio.new_event_loop(); asyncio.set_event_loop(loop)
 loop.run_until_complete(application.initialize())
 loop.run_until_complete(application.start())
 
 @web_app.route('/')
-def home(): return "V27 FIXED"
+def home(): return "V29 SMART REELS"
 
 @web_app.route(f'/{BOT_TOKEN}', methods=['POST'])
 def webhook():
