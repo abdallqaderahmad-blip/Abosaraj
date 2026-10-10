@@ -166,82 +166,164 @@ def _extract_json(text):
 
 
 def create_story_package(user_idea):
-    """Use Groq to write one coherent Arabic narration and map it to 18 timed scenes."""
+    """Generate a complete Arabic story package with resilient JSON parsing/retries."""
     if not GROQ_API_KEY:
         raise RuntimeError("GROQ_API_KEY is missing. Add it to Render Environment to enable AI story writing.")
 
-    system_prompt = """أنت كاتب سيناريو ومخرج قصص فانتازيا سينمائية قصيرة. أعد JSON صالحًا فقط، بلا Markdown ولا نص خارجه.
-اكتب قصة جديدة أو طوّر فكرة المستخدم إلى حكاية عربية مترابطة ذات بداية جذابة وتصاعد وخطر وكشف ونهاية مشوّقة.
-أنشئ نص راوي عربيًا فصيحًا طبيعيًا ومترابطًا، مناسبًا للتسجيل الصوتي خلال 90 ثانية. الهدف 155 إلى 195 كلمة تقريبًا، ولا تتجاوز 205 كلمات. لا تكتب تعليمات إخراج داخل كلام الراوي، ولا تكرر الجمل، ولا تكتب عناوين أو أرقام مشاهد داخل الرواية.
-قسّم الرواية نفسها إلى 18 مشهدًا بالضبط. كل مشهد يمثل نحو 5 ثوانٍ، ويحتوي narration من نص الرواية نفسه، لا تضف أو تحذف أحداثًا عند التقسيم. مجموع كلمات narration للمشاهد يجب أن يطابق النص الكامل تقريبًا وبالترتيب.
-لكل مشهد اكتب visual_prompt بالإنجليزية لوصف لقطة واضحة قابلة للبحث في مكتبة فيديو stock، وsearch_query بالإنجليزية من 4 إلى 10 كلمات، وeffect من القائمة فقط: mystery, castle, steps, romance, tension, storm, beast, fight, impact, magic, cliffhanger.
-لا تطلب ظهور كتابة أو ترجمة داخل الصورة. اجعل كل مشهد بصريًا مختلفًا ومرتبطًا مباشرة بكلام الراوي. لا تفترض أن مكتبة الفيديو ستضمن نفس الممثلين بين اللقطات، لذا استخدم أوصافًا واضحة وثابتة للشخصيات.
-شكل JSON المطلوب:
-{"title":"عنوان عربي قصير","story":"ملخص القصة الكامل بالعربية","narration":"النص الكامل للراوي بالعربية","scenes":[{"narration":"جملة/جزء الراوي لهذا المشهد","visual_prompt":"English visual description","search_query":"English stock video search terms","effect":"mystery"}]}
-يجب أن يحتوي scenes على 18 عنصرًا بالضبط. لا تكتب أي مفاتيح إضافية."""
+    system_prompt = r"""أنت كاتب سيناريو ومخرج فانتازيا سينمائية.
+مهمتك تحويل فكرة المستخدم إلى قصة عربية مترابطة، ثم إعداد خطة من 18 مشهدًا لها.
+أخرج كائن JSON واحدًا فقط، ولا تكتب Markdown أو أي شرح قبل JSON أو بعده.
+استخدم علامات اقتباس مزدوجة قياسية في JSON، ولا تضع فاصلة بعد آخر عنصر.
 
-    user_prompt = f"فكرة المستخدم أو القصة المراد تطويرها:\n{user_idea}\n\nاكتب قصة فانتازيا سينمائية مكتملة ومشوقة، واضبط نص الراوي ليناسب 90 ثانية. أعد JSON حسب التعليمات."
+متطلبات القصة والرواية:
+- title: عنوان عربي قصير.
+- story: ملخص القصة كاملًا بالعربية، مع بداية وتصاعد وكشف ونهاية مشوقة.
+- narration: نص الراوي الكامل بالعربية الفصحى الطبيعية، بين 155 و195 كلمة تقريبًا، وبحد أقصى 205 كلمات.
+- يجب أن تكون الرواية جاهزة للتسجيل الصوتي، من دون عناوين أو أرقام مشاهد أو تعليمات إخراج.
+- لا تكتب جملًا عامة لا تتصل بالأحداث. اجعل كل حدث سببًا لما بعده، واختم بخطاف مشوق.
+
+متطلبات المشاهد:
+- scenes مصفوفة من 18 عنصرًا بالضبط.
+- كل عنصر يحوي narration وvisual_prompt وsearch_query وeffect.
+- narration لكل مشهد هو جزء متصل من نص narration الكامل، بنفس ترتيب الأحداث، دون إضافة أحداث جديدة.
+- اجعل مجموع narration للمشاهد قريبًا جدًا من نص الرواية الكامل، ووزع النص بالتساوي قدر الإمكان على 18 مشهدًا.
+- كل مشهد يستهدف خمس ثوانٍ؛ استخدم جملة قصيرة قابلة للنطق خلال نحو خمس ثوانٍ.
+- visual_prompt وصف إنجليزي واضح للحدث الظاهر في اللقطة.
+- search_query عبارة إنجليزية من 4 إلى 10 كلمات مناسبة للبحث عن فيديو stock.
+- effect يجب أن يكون واحدًا فقط من: mystery, castle, steps, romance, tension, storm, beast, fight, impact, magic, cliffhanger.
+- لا تطلب كتابة أو ترجمة داخل الصورة. لا تضف مفاتيح أخرى.
+
+هيكل JSON المطلوب:
+{"title":"عنوان","story":"ملخص القصة","narration":"الرواية كاملة","scenes":[{"narration":"جزء من الرواية","visual_prompt":"English visual description","search_query":"English stock video search terms","effect":"mystery"}]}
+تأكد قبل الإخراج من أن JSON صالح وأن scenes فيها 18 عنصرًا بالضبط."""
+
+    user_prompt = (
+        "فكرة المستخدم التي يجب تطويرها إلى قصة فانتازيا سينمائية أصلية:\n"
+        + str(user_idea)[:MAX_STORY_LENGTH]
+        + "\nاكتب الرواية العربية أولًا في ذهنك، ثم قسّم النص نفسه إلى 18 جزءًا متتابعًا. "
+          "أخرج كائن JSON فقط حسب الهيكل المحدد."
+    )
     last_error = None
-    for attempt in range(2):
+    # Do not force Groq JSON mode: some model/API combinations reject otherwise
+    # valid prompts at constrained-decoding validation. Parse and validate JSON locally.
+    for attempt in range(3):
+        retry_note = ""
+        if attempt == 1:
+            retry_note = (
+                "\nالمحاولة السابقة لم تنتج حزمة صالحة. أخرج JSON خامًا فقط، "
+                "وتأكد من إغلاق جميع الأقواس وعلامات الاقتباس، ومن وجود 18 مشهدًا."
+            )
+        elif attempt == 2:
+            retry_note = (
+                "\nأعد بناء الناتج كاملًا من الصفر بشكل أبسط. لا تستخدم أسطرًا جديدة داخل "
+                "قيم النص ولا تضف Markdown. JSON صالح فقط و18 مشهدًا بالضبط."
+            )
         try:
             response = requests.post(
                 GROQ_API_URL,
-                headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"},
+                headers={
+                    "Authorization": f"Bearer {GROQ_API_KEY}",
+                    "Content-Type": "application/json",
+                },
                 json={
                     "model": GROQ_MODEL,
                     "messages": [
                         {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_prompt + ("\n\nتذكير: أصلح أي خلل في عدد المشاهد أو طول الرواية قبل إخراج JSON." if attempt else "")},
+                        {"role": "user", "content": user_prompt + retry_note},
                     ],
-                    "temperature": 0.85,
-                    "max_tokens": 7000,
-                    "response_format": {"type": "json_object"},
+                    "temperature": 0.55 if attempt else 0.75,
+                    "max_tokens": 8000,
                 },
-                timeout=100,
+                timeout=120,
             )
             if response.status_code >= 400:
-                raise RuntimeError(f"Groq API HTTP {response.status_code}: {response.text[:900]}")
+                body = response.text[:1200]
+                # Do not retry authentication, permission, or missing-model errors.
+                if response.status_code in (401, 403, 404):
+                    raise RuntimeError(f"Groq API HTTP {response.status_code}: {body}")
+                raise RuntimeError(f"Groq API HTTP {response.status_code}: {body}")
             payload = response.json()
-            content = payload["choices"][0]["message"]["content"]
-            package = _extract_json(content)
+            choices = payload.get("choices") or []
+            if not choices:
+                raise ValueError("Groq returned no choices.")
+            content = choices[0].get("message", {}).get("content")
+            if isinstance(content, list):
+                content = "".join(
+                    part.get("text", "") for part in content if isinstance(part, dict)
+                )
+            package = _extract_json(str(content or ""))
+            if not isinstance(package, dict):
+                raise ValueError("AI response root must be a JSON object.")
+
             scenes = package.get("scenes")
-            narration = re.sub(r"\s+", " ", str(package.get("narration", ""))).strip()
             if not isinstance(scenes, list) or len(scenes) != SCENE_COUNT:
-                raise ValueError(f"AI must return exactly {SCENE_COUNT} scenes; received {len(scenes) if isinstance(scenes, list) else 'invalid'}.")
-            if not narration:
-                raise ValueError("AI returned an empty narration.")
+                raise ValueError(
+                    f"AI must return exactly {SCENE_COUNT} scenes; received "
+                    f"{len(scenes) if isinstance(scenes, list) else 'invalid'}."
+                )
+
             clean_scenes = []
             for i, scene in enumerate(scenes):
                 if not isinstance(scene, dict):
-                    raise ValueError(f"Scene {i+1} is invalid.")
+                    raise ValueError(f"Scene {i + 1} is invalid.")
                 line = re.sub(r"\s+", " ", str(scene.get("narration", ""))).strip()
                 query = re.sub(r"[^a-zA-Z0-9 ,'-]", "", str(scene.get("search_query", ""))).strip()
                 visual = re.sub(r"\s+", " ", str(scene.get("visual_prompt", ""))).strip()
                 effect = str(scene.get("effect", "mystery")).strip().lower()
-                if not line or not query:
-                    raise ValueError(f"Scene {i+1} is missing narration or search query.")
-                if effect not in {"mystery", "castle", "steps", "romance", "tension", "storm", "beast", "fight", "impact", "magic", "cliffhanger"}:
+                if not line:
+                    raise ValueError(f"Scene {i + 1} has empty narration.")
+                if len(query.split()) < 3:
+                    # A sensible query fallback derived from the scene's English visual description.
+                    query = " ".join(re.findall(r"[A-Za-z0-9]+", visual)[:10])
+                if len(query.split()) < 3:
+                    raise ValueError(f"Scene {i + 1} is missing a usable English search query.")
+                if effect not in {
+                    "mystery", "castle", "steps", "romance", "tension", "storm",
+                    "beast", "fight", "impact", "magic", "cliffhanger"
+                }:
                     effect = "mystery"
-                clean_scenes.append({"narration": line, "search_query": query[:180], "visual_prompt": visual[:600], "effect": effect})
-            total_scene_words = sum(_word_count(x["narration"]) for x in clean_scenes)
-            total_words = _word_count(narration)
-            # The segmented narration is the authoritative source for voice/subtitles, avoiding mismatched timing.
-            segmented_text = " ".join(x["narration"] for x in clean_scenes)
-            if total_words < MIN_NARRATION_WORDS or total_words > MAX_NARRATION_WORDS:
-                # Some models may include punctuation/tokenization differences; validate the actual segment text too.
-                if not (MIN_NARRATION_WORDS <= _word_count(segmented_text) <= MAX_NARRATION_WORDS):
-                    raise ValueError(f"Narration length must be about {MIN_NARRATION_WORDS}-{MAX_NARRATION_WORDS} words; got {total_words} (segments {total_scene_words}).")
-            if not (MIN_NARRATION_WORDS <= _word_count(segmented_text) <= MAX_NARRATION_WORDS):
-                raise ValueError(f"Segmented narration length out of range: {_word_count(segmented_text)} words.")
-            package["title"] = str(package.get("title", "حكاية ظل"))[:100]
-            package["story"] = str(package.get("story", user_idea))[:5000]
-            package["narration"] = segmented_text
-            package["scenes"] = clean_scenes
-            return package
+                clean_scenes.append({
+                    "narration": line,
+                    "search_query": query[:180],
+                    "visual_prompt": visual[:600],
+                    "effect": effect,
+                })
+
+            segmented_text = " ".join(scene["narration"] for scene in clean_scenes)
+            segmented_text = re.sub(r"\s+", " ", segmented_text).strip()
+            word_count = _word_count(segmented_text)
+            if not (MIN_NARRATION_WORDS <= word_count <= MAX_NARRATION_WORDS):
+                raise ValueError(
+                    f"Segmented narration must contain {MIN_NARRATION_WORDS}-"
+                    f"{MAX_NARRATION_WORDS} words; got {word_count}."
+                )
+
+            full_narration = re.sub(
+                r"\s+", " ", str(package.get("narration", ""))
+            ).strip()
+            # Scene segments are authoritative so the narration and scene captions stay aligned.
+            if full_narration:
+                full_words = _word_count(full_narration)
+                if abs(full_words - word_count) > 30:
+                    log.warning(
+                        "Full narration (%s words) differs from scene segments (%s); using scene segments.",
+                        full_words, word_count,
+                    )
+            return {
+                "title": str(package.get("title") or "حكاية ظل")[:100],
+                "story": str(package.get("story") or user_idea)[:5000],
+                "narration": segmented_text,
+                "scenes": clean_scenes,
+            }
         except Exception as exc:
             last_error = exc
-            log.warning("AI story package attempt %s failed: %s", attempt + 1, exc)
-    raise RuntimeError(f"Could not create a valid AI story/narration package: {last_error}")
+            log.warning("AI story package attempt %s/%s failed: %s", attempt + 1, 3, exc)
+            # Stop quickly for credentials/model configuration problems; retries won't help.
+            if isinstance(exc, RuntimeError) and any(
+                marker in str(exc) for marker in ("HTTP 401", "HTTP 403", "HTTP 404")
+            ):
+                break
+    raise RuntimeError(f"Could not create a valid AI story/narration package after 3 attempts: {last_error}")
 
 
 def choose_scene_blueprint(story, index):
