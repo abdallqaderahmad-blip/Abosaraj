@@ -25,6 +25,9 @@ PIXABAY_API_KEY = (os.getenv("PIXABAY_API_KEY", "").strip() or os.getenv("PIXABA
 ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID", "").strip()
 PORT = int(os.getenv("PORT", "10000"))
 PIXABAY_API = "https://pixabay.com/api/videos/"
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
+GROQ_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b").strip()
+GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 
 SCENE_COUNT = 18
 SCENE_DURATION = 5
@@ -34,6 +37,8 @@ VIDEO_HEIGHT = 1280
 VIDEO_FPS = 24
 MAX_ACTIVE_JOBS = 1
 MAX_STORY_LENGTH = 2500
+MAX_NARRATION_WORDS = 205
+MIN_NARRATION_WORDS = 155
 MAX_VIDEO_SIZE = 49 * 1024 * 1024
 
 # Narration is intentionally slower, but individual lines are kept short
@@ -119,7 +124,7 @@ def notify_admin(message):
 
 
 def report_error(job_id, error):
-    log.exception("Job %s failed: %s", job_id, error)
+    log.error("Job %s failed: %s", job_id, error)
     update_job(job_id, status="failed", stage="failed", error=str(error)[:2000])
     threading.Thread(
         target=notify_admin,
@@ -141,13 +146,108 @@ def probe_duration(path):
         return None
 
 # =========================================================
-# STORY / SEARCH MATCHING
+# AI STORY / NARRATION / SCENE PLAN
 # =========================================================
+def _word_count(text):
+    return len(re.findall(r"\S+", text or ""))
+
+
+def _extract_json(text):
+    text = (text or "").strip()
+    text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.I)
+    text = re.sub(r"\s*```$", "", text)
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        first, last = text.find("{"), text.rfind("}")
+        if first >= 0 and last > first:
+            return json.loads(text[first:last + 1])
+        raise
+
+
+def create_story_package(user_idea):
+    """Use Groq to write one coherent Arabic narration and map it to 18 timed scenes."""
+    if not GROQ_API_KEY:
+        raise RuntimeError("GROQ_API_KEY is missing. Add it to Render Environment to enable AI story writing.")
+
+    system_prompt = """أنت كاتب سيناريو ومخرج قصص فانتازيا سينمائية قصيرة. أعد JSON صالحًا فقط، بلا Markdown ولا نص خارجه.
+اكتب قصة جديدة أو طوّر فكرة المستخدم إلى حكاية عربية مترابطة ذات بداية جذابة وتصاعد وخطر وكشف ونهاية مشوّقة.
+أنشئ نص راوي عربيًا فصيحًا طبيعيًا ومترابطًا، مناسبًا للتسجيل الصوتي خلال 90 ثانية. الهدف 155 إلى 195 كلمة تقريبًا، ولا تتجاوز 205 كلمات. لا تكتب تعليمات إخراج داخل كلام الراوي، ولا تكرر الجمل، ولا تكتب عناوين أو أرقام مشاهد داخل الرواية.
+قسّم الرواية نفسها إلى 18 مشهدًا بالضبط. كل مشهد يمثل نحو 5 ثوانٍ، ويحتوي narration من نص الرواية نفسه، لا تضف أو تحذف أحداثًا عند التقسيم. مجموع كلمات narration للمشاهد يجب أن يطابق النص الكامل تقريبًا وبالترتيب.
+لكل مشهد اكتب visual_prompt بالإنجليزية لوصف لقطة واضحة قابلة للبحث في مكتبة فيديو stock، وsearch_query بالإنجليزية من 4 إلى 10 كلمات، وeffect من القائمة فقط: mystery, castle, steps, romance, tension, storm, beast, fight, impact, magic, cliffhanger.
+لا تطلب ظهور كتابة أو ترجمة داخل الصورة. اجعل كل مشهد بصريًا مختلفًا ومرتبطًا مباشرة بكلام الراوي. لا تفترض أن مكتبة الفيديو ستضمن نفس الممثلين بين اللقطات، لذا استخدم أوصافًا واضحة وثابتة للشخصيات.
+شكل JSON المطلوب:
+{"title":"عنوان عربي قصير","story":"ملخص القصة الكامل بالعربية","narration":"النص الكامل للراوي بالعربية","scenes":[{"narration":"جملة/جزء الراوي لهذا المشهد","visual_prompt":"English visual description","search_query":"English stock video search terms","effect":"mystery"}]}
+يجب أن يحتوي scenes على 18 عنصرًا بالضبط. لا تكتب أي مفاتيح إضافية."""
+
+    user_prompt = f"فكرة المستخدم أو القصة المراد تطويرها:\n{user_idea}\n\nاكتب قصة فانتازيا سينمائية مكتملة ومشوقة، واضبط نص الراوي ليناسب 90 ثانية. أعد JSON حسب التعليمات."
+    last_error = None
+    for attempt in range(2):
+        try:
+            response = requests.post(
+                GROQ_API_URL,
+                headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"},
+                json={
+                    "model": GROQ_MODEL,
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt + ("\n\nتذكير: أصلح أي خلل في عدد المشاهد أو طول الرواية قبل إخراج JSON." if attempt else "")},
+                    ],
+                    "temperature": 0.85,
+                    "max_tokens": 7000,
+                    "response_format": {"type": "json_object"},
+                },
+                timeout=100,
+            )
+            if response.status_code >= 400:
+                raise RuntimeError(f"Groq API HTTP {response.status_code}: {response.text[:900]}")
+            payload = response.json()
+            content = payload["choices"][0]["message"]["content"]
+            package = _extract_json(content)
+            scenes = package.get("scenes")
+            narration = re.sub(r"\s+", " ", str(package.get("narration", ""))).strip()
+            if not isinstance(scenes, list) or len(scenes) != SCENE_COUNT:
+                raise ValueError(f"AI must return exactly {SCENE_COUNT} scenes; received {len(scenes) if isinstance(scenes, list) else 'invalid'}.")
+            if not narration:
+                raise ValueError("AI returned an empty narration.")
+            clean_scenes = []
+            for i, scene in enumerate(scenes):
+                if not isinstance(scene, dict):
+                    raise ValueError(f"Scene {i+1} is invalid.")
+                line = re.sub(r"\s+", " ", str(scene.get("narration", ""))).strip()
+                query = re.sub(r"[^a-zA-Z0-9 ,'-]", "", str(scene.get("search_query", ""))).strip()
+                visual = re.sub(r"\s+", " ", str(scene.get("visual_prompt", ""))).strip()
+                effect = str(scene.get("effect", "mystery")).strip().lower()
+                if not line or not query:
+                    raise ValueError(f"Scene {i+1} is missing narration or search query.")
+                if effect not in {"mystery", "castle", "steps", "romance", "tension", "storm", "beast", "fight", "impact", "magic", "cliffhanger"}:
+                    effect = "mystery"
+                clean_scenes.append({"narration": line, "search_query": query[:180], "visual_prompt": visual[:600], "effect": effect})
+            total_scene_words = sum(_word_count(x["narration"]) for x in clean_scenes)
+            total_words = _word_count(narration)
+            # The segmented narration is the authoritative source for voice/subtitles, avoiding mismatched timing.
+            segmented_text = " ".join(x["narration"] for x in clean_scenes)
+            if total_words < MIN_NARRATION_WORDS or total_words > MAX_NARRATION_WORDS:
+                # Some models may include punctuation/tokenization differences; validate the actual segment text too.
+                if not (MIN_NARRATION_WORDS <= _word_count(segmented_text) <= MAX_NARRATION_WORDS):
+                    raise ValueError(f"Narration length must be about {MIN_NARRATION_WORDS}-{MAX_NARRATION_WORDS} words; got {total_words} (segments {total_scene_words}).")
+            if not (MIN_NARRATION_WORDS <= _word_count(segmented_text) <= MAX_NARRATION_WORDS):
+                raise ValueError(f"Segmented narration length out of range: {_word_count(segmented_text)} words.")
+            package["title"] = str(package.get("title", "حكاية ظل"))[:100]
+            package["story"] = str(package.get("story", user_idea))[:5000]
+            package["narration"] = segmented_text
+            package["scenes"] = clean_scenes
+            return package
+        except Exception as exc:
+            last_error = exc
+            log.warning("AI story package attempt %s failed: %s", attempt + 1, exc)
+    raise RuntimeError(f"Could not create a valid AI story/narration package: {last_error}")
+
+
 def choose_scene_blueprint(story, index):
-    """Use the 18-beat dramatic arc, and bias searches toward words in the user's story."""
+    """Legacy fallback mapping; current video jobs use the AI-generated scene plan."""
     query, narration, effect = SCENE_BLUEPRINTS[index]
     lower = story.lower()
-    # Slightly prioritize recognizable user-story events while retaining a coherent arc.
     if any(word in lower for word in ("نمر", "أسد", "وحش", "tiger", "beast", "lion")) and index in (7, 8, 11, 12, 13, 16):
         query = "large tiger beast roaring charging action wildlife cinematic"
     if any(word in lower for word in ("أميرة", "princess")) and index in (3, 5):
@@ -205,7 +305,7 @@ def normalize_scene(source, destination):
         "ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-i", str(source),
         "-t", str(SCENE_DURATION), "-vf",
         f"scale={VIDEO_WIDTH}:{VIDEO_HEIGHT}:force_original_aspect_ratio=increase,"
-        f"crop={VIDEO_WIDTH}:{VIDEO_HEIGHT},setsar=1,fps={VIDEO_FPS},format=yuv420p",
+        f"crop={VIDEO_WIDTH}:{VIDEO_HEIGHT},setsar=1,fps={VIDEO_FPS},tpad=stop_mode=clone:stop_duration={SCENE_DURATION},format=yuv420p",
         "-an", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "25",
         "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(destination),
     ], timeout=180)
@@ -215,7 +315,7 @@ def normalize_scene(source, destination):
 
 
 def add_arabic_caption(source, caption, destination, workdir, index):
-    """Burn a short Arabic caption when Pillow + Arabic shaping are installed; otherwise keep video intact."""
+    """Burn readable two-line Arabic captions when Pillow and Arabic shaping are available."""
     try:
         from PIL import Image, ImageDraw, ImageFont
         import arabic_reshaper
@@ -224,26 +324,40 @@ def add_arabic_caption(source, caption, destination, workdir, index):
         log.warning("Arabic subtitle dependencies unavailable; continuing without burned subtitles.")
         return source
     try:
-        image = Image.new("RGBA", (VIDEO_WIDTH, 170), (0, 0, 0, 0))
+        image = Image.new("RGBA", (VIDEO_WIDTH, 190), (0, 0, 0, 0))
         draw = ImageDraw.Draw(image)
         font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
-        font = ImageFont.truetype(font_path, 31) if Path(font_path).exists() else ImageFont.load_default()
-        reshaped = get_display(arabic_reshaper.reshape(caption))
-        # Keep caption compact enough to fit the width.
-        if draw.textbbox((0, 0), reshaped, font=font)[2] > VIDEO_WIDTH - 48:
-            font = ImageFont.truetype(font_path, 25) if Path(font_path).exists() else font
-        bbox = draw.textbbox((0, 0), reshaped, font=font, stroke_width=1)
-        tw = bbox[2] - bbox[0]
-        x = max(18, (VIDEO_WIDTH - tw) // 2)
-        y = 45
-        draw.rounded_rectangle((12, 22, VIDEO_WIDTH - 12, 125), radius=20, fill=(0, 0, 0, 160))
-        draw.text((x, y), reshaped, font=font, fill=(255, 255, 255, 255), stroke_width=1, stroke_fill=(0, 0, 0, 220))
+        font = ImageFont.truetype(font_path, 27) if Path(font_path).exists() else ImageFont.load_default()
+        words = (caption or "").split()
+        rows, row = [], ""
+        for word in words:
+            candidate = f"{row} {word}".strip()
+            shaped_candidate = get_display(arabic_reshaper.reshape(candidate))
+            if row and draw.textbbox((0, 0), shaped_candidate, font=font)[2] > VIDEO_WIDTH - 60:
+                rows.append(row)
+                row = word
+            else:
+                row = candidate
+        if row:
+            rows.append(row)
+        if len(rows) > 2:
+            # Keep subtitle compact while preserving the sentence; smaller font is preferable to clipping.
+            font = ImageFont.truetype(font_path, 22) if Path(font_path).exists() else font
+            rows = [" ".join(words[:max(1, len(words)//2)]), " ".join(words[max(1, len(words)//2):])]
+        shaped_rows = [get_display(arabic_reshaper.reshape(line)) for line in rows[:2]]
+        y0, line_gap = 35, 42
+        draw.rounded_rectangle((10, 18, VIDEO_WIDTH - 10, 155), radius=18, fill=(0, 0, 0, 175))
+        for i, line in enumerate(shaped_rows):
+            bbox = draw.textbbox((0, 0), line, font=font, stroke_width=1)
+            tw = bbox[2] - bbox[0]
+            x = max(15, (VIDEO_WIDTH - tw) // 2)
+            draw.text((x, y0 + i * line_gap), line, font=font, fill=(255, 255, 255, 255), stroke_width=1, stroke_fill=(0, 0, 0, 220))
         png_path = workdir / f"caption_{index}.png"
         image.save(png_path)
         run_command([
             "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
             "-i", str(source), "-loop", "1", "-framerate", str(VIDEO_FPS), "-i", str(png_path),
-            "-filter_complex", "[0:v][1:v]overlay=0:H-170:format=auto[v]",
+            "-filter_complex", "[0:v][1:v]overlay=0:H-190:format=auto[v]",
             "-map", "[v]", "-t", str(SCENE_DURATION), "-an",
             "-c:v", "libx264", "-preset", "ultrafast", "-crf", "25",
             "-pix_fmt", "yuv420p", "-r", str(VIDEO_FPS), str(destination),
@@ -427,11 +541,24 @@ def build_video(job_id, chat_id, story, telegram_app):
         if not story:
             raise RuntimeError("Story is empty.")
 
+        update_job(job_id, stage="writing_story", progress=2)
+        package = create_story_package(story)
+        scenes = package["scenes"]
+        update_job(job_id, stage="story_ready", progress=5, title=package.get("title"), story=package.get("story", story), narration=package.get("narration", ""), narration_words=_word_count(package.get("narration", "")))
+        try:
+            send_coroutine(telegram_app, send_text_to_user(telegram_app, chat_id,
+                f"اكتمل إعداد القصة: {package.get('title', 'حكاية جديدة')}\nعدد كلمات الراوي: {_word_count(package.get('narration', ''))}\nبدأ الآن تجهيز المشاهد والصوت والترجمة."), timeout=45)
+        except Exception:
+            log.warning("Could not send story-ready update to user.")
+
         scene_videos, voice_clips, sfx_clips = [], [], []
         captions = []
         for index in range(SCENE_COUNT):
             scene_no = index + 1
-            query, narration_line, effect_type = choose_scene_blueprint(story, index)
+            scene = scenes[index]
+            query = scene["search_query"]
+            narration_line = scene["narration"]
+            effect_type = scene["effect"]
             captions.append(narration_line)
             update_job(job_id, stage=f"scene_{scene_no}_download", progress=round(index / SCENE_COUNT * 100))
             try:
@@ -517,7 +644,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "أهلًا بك في ظل ZIL.\n\n"
         "/test - إنشاء فيديو تجريبي 90 ثانية\n"
-        "/make نص القصة - إنشاء فيديو من قصتك\n"
+        "/make فكرة القصة - يؤلف الذكاء الاصطناعي قصة ورواية ثم ينتج الفيديو\n"
         "/status - حالة العمليات\n"
         "/diagnose - فحص النظام\n"
         "/last_error - آخر خطأ\n"
@@ -550,8 +677,8 @@ async def start_job(update, context, story):
         return
     await update.message.reply_text(
         f"بدأت صناعة فيديو ظل ZIL.\nرقم العملية: {job_id}\n"
-        "18 مشهدًا × 5 ثوانٍ = 90 ثانية، راوي عربي، ترجمة عربية، ومؤثرات متزامنة.\n"
-        "قد تستغرق العملية وقتًا لأن كل مشهد يُبحث عنه ويُعالج منفصلًا."
+        "سيؤلف الذكاء الاصطناعي القصة والرواية أولًا، ثم يبني 18 مشهدًا من النص نفسه.\n"
+        "المدة المستهدفة 90 ثانية مع راوي عربي وترجمة ومؤثرات. قد تستغرق العملية وقتًا."
     )
     try:
         threading.Thread(target=build_video, args=(job_id, update.effective_chat.id, story, context.application), daemon=True).start()
@@ -573,7 +700,7 @@ async def test_command(update, context):
 async def make_command(update, context):
     story = " ".join(context.args).strip()
     if not story:
-        await update.message.reply_text("اكتب القصة بعد الأمر:\n/make وصل رجل غامض إلى القصر...")
+        await update.message.reply_text("اكتب فكرة القصة بعد الأمر، وسيؤلف Groq قصة كاملة ورواية عربية ثم يحولها إلى فيديو:\n/make رجل غامض يصل إلى مملكة تحكمها أميرة، ويخفي قوة أسطورية")
         return
     await start_job(update, context, story)
 
@@ -585,6 +712,7 @@ async def status_command(update, context):
     lines = [
         "حالة ظل ZIL", f"العمليات النشطة: {active}",
         "Pixabay: جاهز" if PIXABAY_API_KEY else "Pixabay: مفتاح مفقود",
+        "Groq AI: جاهز" if GROQ_API_KEY else "Groq AI: مفتاح مفقود",
         "FFmpeg: جاهز" if command_exists("ffmpeg") else "FFmpeg: غير موجود",
         "FFprobe: جاهز" if command_exists("ffprobe") else "FFprobe: غير موجود", "", "آخر العمليات:",
     ]
@@ -613,6 +741,8 @@ async def diagnose_command(update, context):
     results = [
         f"BOT_TOKEN: {'OK' if BOT_TOKEN else 'MISSING'}",
         f"PIXABAY_API_KEY: {'OK' if PIXABAY_API_KEY else 'MISSING'}",
+        f"GROQ_API_KEY: {'OK' if GROQ_API_KEY else 'MISSING (AI story writing disabled)'}",
+        f"GROQ_MODEL: {GROQ_MODEL}",
         f"ADMIN_CHAT_ID: {'OK' if ADMIN_CHAT_ID else 'OPTIONAL/MISSING'}",
         f"Python: {sys.version.split()[0]}",
         f"FFmpeg: {'OK' if command_exists('ffmpeg') else 'MISSING'}",
@@ -635,7 +765,8 @@ async def health_command(update, context):
         f"ظل ZIL يعمل.\nPython: {sys.version.split()[0]}\n"
         f"FFmpeg: {'OK' if command_exists('ffmpeg') else 'MISSING'}\n"
         f"FFprobe: {'OK' if command_exists('ffprobe') else 'MISSING'}\n"
-        f"Pixabay: {'OK' if PIXABAY_API_KEY else 'MISSING'}\nالمدة المستهدفة: {VIDEO_DURATION} ثانية"
+        f"Pixabay: {'OK' if PIXABAY_API_KEY else 'MISSING'}\n"
+        f"Groq AI: {'OK' if GROQ_API_KEY else 'MISSING'}\nالمدة المستهدفة: {VIDEO_DURATION} ثانية"
     )
 
 # =========================================================
@@ -643,7 +774,7 @@ async def health_command(update, context):
 # =========================================================
 @app.get("/")
 def home():
-    return jsonify({"service": "ZIL", "status": "running", "target_duration_seconds": VIDEO_DURATION})
+    return jsonify({"service": "ZIL", "status": "running", "ai_story_configured": bool(GROQ_API_KEY), "target_duration_seconds": VIDEO_DURATION})
 
 
 @app.get("/health")
@@ -651,7 +782,7 @@ def health():
     return jsonify({
         "status": "ok", "ffmpeg": command_exists("ffmpeg"),
         "ffprobe": command_exists("ffprobe"), "pixabay_configured": bool(PIXABAY_API_KEY),
-        "active_jobs": get_active_jobs(), "target_duration_seconds": VIDEO_DURATION,
+        "active_jobs": get_active_jobs(), "groq_configured": bool(GROQ_API_KEY), "target_duration_seconds": VIDEO_DURATION,
     })
 
 
