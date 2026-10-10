@@ -1,8 +1,5 @@
 python-telegram-bot==20.7
 Flask==2.3.3
 requests==2.31.0
-Pillow==10.0.0
-arabic-reshaper==3.0.0
-python-bidi==0.4.2
 edge-tts==6.1.10
 gtts==2.4.0
