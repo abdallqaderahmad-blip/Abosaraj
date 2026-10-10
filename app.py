@@ -16,28 +16,23 @@ from PIL import Image, ImageDraw, ImageFont
 import arabic_reshaper
 from bidi.algorithm import get_display
 from telegram import Update
-from telegram.ext import (
-    Application,
-    CommandHandler,
-    MessageHandler,
-    ContextTypes,
-    filters,
-)
+from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
 import edge_tts
 
-
-# =========================================================
-# CONFIG
-# =========================================================
-
+# ============================== CONFIG ==============================
 BOT_TOKEN = (os.getenv("BOT_TOKEN") or "").strip()
 PIXABAY_API_KEY = (os.getenv("PIXABAY_API_KEY") or "").strip()
-
 PORT = int(os.getenv("PORT", "10000"))
 
 SCENES = 6
 SCENE_SECONDS = 5
 TOTAL_SECONDS = SCENES * SCENE_SECONDS
+TRANSITION_SECONDS = 0.35
+
+# Extra duration compensates for overlapping crossfades.
+CLIP_SECONDS = SCENE_SECONDS + (
+    (SCENES - 1) * TRANSITION_SECONDS / SCENES
+)
 
 WIDTH, HEIGHT, FPS = 720, 1280, 25
 
@@ -51,7 +46,6 @@ VOICE_RATE = (
 
 MAX_STORY_LENGTH = 5000
 MAX_DOWNLOAD_BYTES = 35 * 1024 * 1024
-
 API_TIMEOUT = 25
 DOWNLOAD_TIMEOUT = 45
 
@@ -70,7 +64,6 @@ logging.basicConfig(
 )
 
 log = logging.getLogger("zil")
-
 flask_app = Flask(__name__)
 
 SESSION = requests.Session()
@@ -80,11 +73,6 @@ SESSION.headers.update({
 
 busy_users = set()
 busy_lock = threading.Lock()
-
-
-# =========================================================
-# ARABIC SEARCH TERMS
-# =========================================================
 
 ARABIC_TO_ENGLISH = {
     "قصر": "royal castle",
@@ -120,9 +108,7 @@ ARABIC_TO_ENGLISH = {
 }
 
 
-# =========================================================
-# GENERAL HELPERS
-# =========================================================
+# ============================== HELPERS ==============================
 
 def check_binary(name):
     return shutil.which(name) is not None
@@ -185,7 +171,10 @@ def split_sentences(text):
     if not text:
         return []
 
-    parts = re.split(r"(?<=[.!؟?。])\s+", text)
+    parts = re.split(
+        r"(?<=[.!؟?。])\s+",
+        text,
+    )
 
     return [
         part.strip(" \t،,;؛")
@@ -244,11 +233,14 @@ def search_terms(text, index):
     return defaults[index % len(defaults)]
 
 
-# =========================================================
-# PIXABAY VIDEO SEARCH
-# =========================================================
+# ============================== PIXABAY SEARCH ==============================
 
 def pixabay_search(query):
+    """
+    Return several validated HTTPS candidates.
+    This lets the bot try another clip if one CDN URL fails.
+    """
+
     if not PIXABAY_API_KEY:
         raise RuntimeError(
             "PIXABAY_API_KEY غير موجود في إعدادات Render."
@@ -261,7 +253,7 @@ def pixabay_search(query):
             "q": query,
             "video_type": "film",
             "safesearch": "true",
-            "per_page": 10,
+            "per_page": 15,
             "page": 1,
         },
         timeout=API_TIMEOUT,
@@ -279,9 +271,6 @@ def pixabay_search(query):
             "Pixabay returned an invalid response."
         )
 
-    if payload.get("total", 0) <= 0:
-        return None
-
     candidates = []
 
     for video in payload.get("hits", []):
@@ -292,6 +281,8 @@ def pixabay_search(query):
         if duration and duration < 3:
             continue
 
+        selected = None
+
         for quality in ("large", "medium", "small", "tiny"):
             item = videos.get(quality) or {}
             link = item.get("url")
@@ -301,10 +292,7 @@ def pixabay_search(query):
 
             parsed = urlparse(link)
 
-            if (
-                parsed.scheme != "https"
-                or not parsed.hostname
-            ):
+            if parsed.scheme != "https" or not parsed.hostname:
                 continue
 
             width = int(item.get("width") or 0)
@@ -316,25 +304,27 @@ def pixabay_search(query):
                 + min(height, 1920)
             )
 
-            candidates.append((score, link))
-
-            # استخدم أفضل جودة متاحة لهذا الفيديو.
+            selected = (score, link)
             break
 
-    if not candidates:
-        return None
+        if selected:
+            candidates.append(selected)
 
     candidates.sort(
         key=lambda item: item[0],
         reverse=True,
     )
 
-    return candidates[0][1]
+    result = []
+    seen = set()
 
+    for _, link in candidates:
+        if link not in seen:
+            seen.add(link)
+            result.append(link)
 
-# =========================================================
-# VIDEO VALIDATION AND DOWNLOAD
-# =========================================================
+    return result
+
 
 def probe_video(path):
     result = run_command(
@@ -342,8 +332,7 @@ def probe_video(path):
             "ffprobe",
             "-v", "error",
             "-select_streams", "v:0",
-            "-show_entries",
-            "stream=codec_type,width,height",
+            "-show_entries", "stream=codec_type,width,height",
             "-of", "json",
             str(path),
         ],
@@ -351,10 +340,7 @@ def probe_video(path):
     )
 
     try:
-        streams = json.loads(
-            result.stdout
-        ).get("streams", [])
-
+        streams = json.loads(result.stdout).get("streams", [])
     except (ValueError, TypeError):
         return False
 
@@ -427,43 +413,59 @@ def download_clip(url, output_path):
 
 
 def obtain_clip(scene_text, index, workdir):
-    queries = list(
-        dict.fromkeys([
-            search_terms(scene_text, index),
-            "cinematic dramatic scene",
-            "cinematic landscape",
-        ])
-    )
+    queries = list(dict.fromkeys([
+        search_terms(scene_text, index),
+        "cinematic dramatic scene",
+        "cinematic landscape",
+    ]))
 
     last_error = None
+    output = workdir / f"source_{index:02d}.mp4"
+    candidate_count = 0
 
     for query in queries:
         try:
-            url = pixabay_search(query)
-
-            if not url:
-                continue
-
-            path = workdir / f"source_{index:02d}.mp4"
-
-            download_clip(url, path)
-
-            log.info(
-                "Scene %s source downloaded and validated",
-                index + 1,
-            )
-
-            return path
+            urls = pixabay_search(query) or []
 
         except Exception as exc:
             last_error = exc
 
             log.warning(
-                "Scene %s query failed (%s): %s",
+                "Scene %s search failed (%s): %s",
                 index + 1,
                 query,
-                str(exc)[:180],
+                str(exc)[:160],
             )
+
+            continue
+
+        # Try up to four candidate URLs for each search query.
+        for url in urls[:4]:
+            candidate_count += 1
+
+            try:
+                output.unlink(missing_ok=True)
+
+                download_clip(url, output)
+
+                log.info(
+                    "Scene %s source downloaded and validated "
+                    "(candidate %s)",
+                    index + 1,
+                    candidate_count,
+                )
+
+                return output
+
+            except Exception as exc:
+                last_error = exc
+
+                log.warning(
+                    "Scene %s candidate %s failed: %s",
+                    index + 1,
+                    candidate_count,
+                    str(exc)[:160],
+                )
 
     if last_error:
         log.warning(
@@ -473,14 +475,13 @@ def obtain_clip(scene_text, index, workdir):
         )
 
     raise RuntimeError(
-        f"تعذر تنزيل فيديو صالح للمشهد {index + 1} من Pixabay. "
-        "تحقق من PIXABAY_API_KEY واتصال Render."
+        f"تعذر تنزيل فيديو صالح للمشهد {index + 1} من Pixabay "
+        "بعد تجربة عدة روابط. تحقق من PIXABAY_API_KEY "
+        "واتصال Render."
     )
 
 
-# =========================================================
-# ARABIC CAPTIONS
-# =========================================================
+# ============================== ARABIC CAPTIONS ==============================
 
 def find_font():
     for path in FONT_CANDIDATES:
@@ -539,8 +540,8 @@ def create_caption_image(text, output_path):
         return output_path
 
     draw = ImageDraw.Draw(image)
-
     font_path = find_font()
+
     font_size = 40
     lines = []
 
@@ -616,8 +617,9 @@ def create_caption_image(text, output_path):
             stroke_width=1,
         )
 
-        text_width = box[2] - box[0]
-        x = (panel.width - text_width) // 2
+        x = (
+            panel.width - (box[2] - box[0])
+        ) // 2
 
         panel_draw.text(
             (x, y),
@@ -635,25 +637,44 @@ def create_caption_image(text, output_path):
         HEIGHT - panel_h - 115,
     )
 
-    image.alpha_composite(panel, (20, top))
+    image.alpha_composite(
+        panel,
+        (20, top),
+    )
+
     image.save(output_path)
 
     return output_path
 
 
-# =========================================================
-# VIDEO SCENES
-# =========================================================
+# ============================== VIDEO BUILD ==============================
 
 def build_scene(source_path, caption_path, output_path):
+    """
+    Prepare each scene:
+    - portrait crop
+    - mild color adjustment
+    - gentle zoom
+    - Arabic caption overlay
+    """
+
     filter_complex = (
-        f"[0:v]scale={WIDTH}:{HEIGHT}:"
-        "force_original_aspect_ratio=increase,"
-        f"crop={WIDTH}:{HEIGHT},fps={FPS},setsar=1,"
-        f"trim=duration={SCENE_SECONDS},"
-        "setpts=PTS-STARTPTS[base];"
+        f"[0:v]"
+        f"scale={WIDTH}:{HEIGHT}:force_original_aspect_ratio=increase,"
+        f"crop={WIDTH}:{HEIGHT},"
+        f"eq=contrast=1.035:saturation=1.06:brightness=0.005,"
+        f"zoompan="
+        f"z='min(zoom+0.00008,1.02)':"
+        f"x='iw/2-(iw/zoom/2)':"
+        f"y='ih/2-(ih/zoom/2)':"
+        f"d=1:s={WIDTH}x{HEIGHT}:fps={FPS},"
+        f"fps={FPS},"
+        f"setsar=1,"
+        f"trim=duration={CLIP_SECONDS:.6f},"
+        f"setpts=PTS-STARTPTS[base];"
         "[1:v]format=rgba[cap];"
-        "[base][cap]overlay=0:0,format=yuv420p[out]"
+        "[base][cap]overlay=0:0:shortest=1,"
+        "format=yuv420p[out]"
     )
 
     run_command(
@@ -669,16 +690,16 @@ def build_scene(source_path, caption_path, output_path):
             "-filter_complex", filter_complex,
             "-map", "[out]",
             "-an",
-            "-t", str(SCENE_SECONDS),
+            "-t", f"{CLIP_SECONDS:.6f}",
             "-r", str(FPS),
             "-c:v", "libx264",
             "-preset", "veryfast",
-            "-crf", "27",
+            "-crf", "25",
             "-pix_fmt", "yuv420p",
             "-movflags", "+faststart",
             str(output_path),
         ],
-        timeout=150,
+        timeout=180,
     )
 
     if (
@@ -694,19 +715,46 @@ def build_scene(source_path, caption_path, output_path):
 
 
 def concatenate_scenes(scene_paths, workdir):
-    concat_file = workdir / "scenes.txt"
+    """
+    Crossfade adjacent shots.
+    The overlap offsets are calculated to preserve a 30-second runtime.
+    """
 
-    with open(
-        concat_file,
-        "w",
-        encoding="utf-8",
-    ) as handle:
+    if len(scene_paths) != SCENES:
+        raise RuntimeError(
+            "عدد مشاهد الفيديو غير صحيح."
+        )
 
-        for path in scene_paths:
-            handle.write(
-                f"file '{str(path)}'\n"
-            )
+    inputs = []
 
+    for path in scene_paths:
+        inputs += ["-i", str(path)]
+
+    pieces = []
+
+    for i in range(SCENES):
+        pieces.append(
+            f"[{i}:v]fps={FPS},format=yuv420p[v{i}]"
+        )
+
+    current = "v0"
+    offset_step = CLIP_SECONDS - TRANSITION_SECONDS
+
+    for i in range(1, SCENES):
+        out_label = f"xf{i}"
+        offset = offset_step * i
+
+        pieces.append(
+            f"[{current}][v{i}]"
+            f"xfade=transition=fade:"
+            f"duration={TRANSITION_SECONDS:.3f}:"
+            f"offset={offset:.6f}"
+            f"[{out_label}]"
+        )
+
+        current = out_label
+
+    filter_complex = ";".join(pieces)
     output = workdir / "video_only.mp4"
 
     run_command(
@@ -715,36 +763,39 @@ def concatenate_scenes(scene_paths, workdir):
             "-hide_banner",
             "-loglevel", "error",
             "-y",
-            "-f", "concat",
-            "-safe", "0",
-            "-i", str(concat_file),
+            *inputs,
+            "-filter_complex", filter_complex,
+            "-map", f"[{current}]",
             "-an",
             "-t", str(TOTAL_SECONDS),
             "-c:v", "libx264",
             "-preset", "veryfast",
-            "-crf", "27",
+            "-crf", "25",
             "-pix_fmt", "yuv420p",
             "-r", str(FPS),
             "-movflags", "+faststart",
             str(output),
         ],
-        timeout=180,
+        timeout=240,
     )
 
-    if (
-        not output.exists()
-        or not probe_video(output)
-    ):
+    if not output.exists() or not probe_video(output):
         raise RuntimeError(
-            "تعذر دمج مشاهد الفيديو."
+            "تعذر دمج مشاهد الفيديو بالانتقالات السينمائية."
+        )
+
+    duration = media_duration(output)
+
+    if duration < TOTAL_SECONDS - 0.25:
+        raise RuntimeError(
+            "مدة الفيديو بعد الدمج أقصر من المطلوب "
+            f"({duration:.2f} ثانية)."
         )
 
     return output
 
 
-# =========================================================
-# ARABIC NARRATION
-# =========================================================
+# ============================== AUDIO ==============================
 
 async def edge_tts_to_file(text, output_path):
     await edge_tts.Communicate(
@@ -805,8 +856,7 @@ def media_duration(path):
             "ffprobe",
             "-v", "error",
             "-show_entries", "format=duration",
-            "-of",
-            "default=noprint_wrappers=1:nokey=1",
+            "-of", "default=noprint_wrappers=1:nokey=1",
             str(path),
         ],
         timeout=25,
@@ -817,7 +867,7 @@ def media_duration(path):
 
     except (TypeError, ValueError):
         raise RuntimeError(
-            "تعذّر تحديد مدة الصوت الناتج."
+            "تعذّر تحديد مدة ملف الصوت أو الفيديو."
         )
 
 
@@ -878,24 +928,25 @@ def create_narration(story, workdir):
     return output
 
 
-# =========================================================
-# BACKGROUND AUDIO
-# =========================================================
-
 def create_ambient_audio(workdir):
+    """
+    Create a subtle synthetic atmosphere with FFmpeg.
+    This is not a licensed music track or a generated orchestral score.
+    """
+
     output = workdir / "ambient.m4a"
 
-    # نغمات خلفية اصطناعية بسيطة وليست موسيقى مرخصة.
     filter_complex = (
-        "[0:a]volume=0.025[a0];"
-        "[1:a]volume=0.018[a1];"
-        "[2:a]volume=0.012[a2];"
+        "[0:a]volume=0.030[a0];"
+        "[1:a]volume=0.012[a1];"
+        "[2:a]volume=0.008[a2];"
         "[a0][a1][a2]"
         "amix=inputs=3:duration=longest:normalize=0,"
-        "lowpass=f=900,"
-        "afade=t=in:st=0:d=2,"
-        "afade=t=out:st=27:d=3,"
-        "volume=0.7[m]"
+        "lowpass=f=700,"
+        "highpass=f=45,"
+        "afade=t=in:st=0:d=1.5,"
+        f"afade=t=out:st={TOTAL_SECONDS - 2}:d=2,"
+        "volume=0.8[m]"
     )
 
     run_command(
@@ -906,13 +957,13 @@ def create_ambient_audio(workdir):
             "-y",
             "-f", "lavfi",
             "-i",
+            f"sine=frequency=55:sample_rate=44100:duration={TOTAL_SECONDS}",
+            "-f", "lavfi",
+            "-i",
+            f"sine=frequency=82.41:sample_rate=44100:duration={TOTAL_SECONDS}",
+            "-f", "lavfi",
+            "-i",
             f"sine=frequency=110:sample_rate=44100:duration={TOTAL_SECONDS}",
-            "-f", "lavfi",
-            "-i",
-            f"sine=frequency=164.81:sample_rate=44100:duration={TOTAL_SECONDS}",
-            "-f", "lavfi",
-            "-i",
-            f"sine=frequency=220:sample_rate=44100:duration={TOTAL_SECONDS}",
             "-filter_complex", filter_complex,
             "-map", "[m]",
             "-t", str(TOTAL_SECONDS),
@@ -942,12 +993,24 @@ def mux_final_video(
     ambient_path,
     output_path,
 ):
+    """
+    Mix narration with a quiet background.
+    Sidechain compression reduces the background under the narration.
+    """
+
     filter_complex = (
-        "[0:a]volume=1.0[v];"
-        "[1:a]volume=0.22[b];"
-        "[v][b]"
+        "[0:a]asplit=2[voice][side];"
+        "[1:a]volume=1.0[bed];"
+        "[bed][side]"
+        "sidechaincompress="
+        "threshold=0.025:"
+        "ratio=7:"
+        "attack=25:"
+        "release=450[duck];"
+        "[voice][duck]"
         "amix=inputs=2:duration=first:normalize=0,"
-        "alimiter=limit=0.95[a]"
+        "alimiter=limit=0.92,"
+        "aresample=44100[a]"
     )
 
     run_command(
@@ -969,7 +1032,7 @@ def mux_final_video(
             "-movflags", "+faststart",
             str(output_path),
         ],
-        timeout=150,
+        timeout=180,
     )
 
     if (
@@ -981,12 +1044,21 @@ def mux_final_video(
             "التحقق من الفيديو النهائي فشل."
         )
 
+    duration = media_duration(output_path)
+
+    if not (
+        TOTAL_SECONDS - 0.3
+        <= duration
+        <= TOTAL_SECONDS + 0.5
+    ):
+        raise RuntimeError(
+            f"مدة الفيديو النهائي غير صحيحة: {duration:.2f} ثانية."
+        )
+
     return output_path
 
 
-# =========================================================
-# COMPLETE VIDEO GENERATION
-# =========================================================
+# ============================== GENERATE VIDEO ==============================
 
 def generate_video(story, workdir):
     if not PIXABAY_API_KEY:
@@ -1010,13 +1082,8 @@ def generate_video(story, workdir):
             workdir,
         )
 
-        caption_path = (
-            workdir / f"caption_{i:02d}.png"
-        )
-
-        scene_path = (
-            workdir / f"scene_{i:02d}.mp4"
-        )
+        caption_path = workdir / f"caption_{i:02d}.png"
+        scene_path = workdir / f"scene_{i:02d}.mp4"
 
         create_caption_image(
             caption or "",
@@ -1053,9 +1120,7 @@ def generate_video(story, workdir):
     )
 
 
-# =========================================================
-# TELEGRAM HELPERS
-# =========================================================
+# ============================== TELEGRAM HANDLERS ==============================
 
 async def reply(update, text):
     if update.effective_message:
@@ -1077,10 +1142,6 @@ async def send_video(update, path):
         )
 
 
-# =========================================================
-# GENERATE FOR USER
-# =========================================================
-
 async def generate_for_user(update, story):
     user = update.effective_user
 
@@ -1100,7 +1161,6 @@ async def generate_for_user(update, story):
         busy_users.add(uid)
 
     job_id = uuid.uuid4().hex[:10]
-
     workdir = BASE_DIR / job_id
     workdir.mkdir(parents=True, exist_ok=True)
 
@@ -1118,11 +1178,13 @@ async def generate_for_user(update, story):
         await reply(
             update,
             "بدأت صناعة فيديو ظل:\n"
-            "• 6 مشاهد\n"
-            "• 30 ثانية\n"
-            "• مقاطع فيديو من Pixabay\n"
-            "• نص عربي وراوي عربي\n\n"
-            "قد تستغرق العملية عدة دقائق.",
+            "• 6 مشاهد وانتقالات ناعمة\n"
+            "• نحو 30 ثانية عمودي 9:16\n"
+            "• مقاطع فيديو من Pixabay مع حركة وتقريب خفيف\n"
+            "• نص عربي وراوي عربي وخلفية صوتية اصطناعية منخفضة\n\n"
+            "قد تستغرق العملية عدة دقائق. "
+            "المقاطع المتاحة من Pixabay ولا تضمن تطابقًا كاملًا "
+            "مع كل حدث في القصة.",
         )
 
         loop = asyncio.get_running_loop()
@@ -1193,10 +1255,6 @@ async def generate_for_user(update, story):
             ignore_errors=True,
         )
 
-
-# =========================================================
-# TELEGRAM COMMANDS
-# =========================================================
 
 async def start_command(
     update: Update,
@@ -1275,7 +1333,6 @@ async def arabic_zil_handler(
     context: ContextTypes.DEFAULT_TYPE,
 ):
     message = update.effective_message
-
     text = message.text if message else ""
 
     story = re.sub(
@@ -1337,9 +1394,7 @@ async def text_story_handler(
     )
 
 
-# =========================================================
-# FLASK HEALTH ENDPOINTS
-# =========================================================
+# ============================== FLASK HEALTH ==============================
 
 @flask_app.get("/")
 def home():
@@ -1348,6 +1403,7 @@ def home():
         "status": "online",
         "video_seconds": TOTAL_SECONDS,
         "scenes": SCENES,
+        "transitions": True,
     })
 
 
@@ -1362,17 +1418,16 @@ def health():
         and ffprobe_ok
     )
 
-    return (
-        jsonify({
-            "service": "ZIL",
-            "status": "healthy" if ok else "degraded",
-            "ffmpeg": ffmpeg_ok,
-            "ffprobe": ffprobe_ok,
-            "pixabay_key_configured": bool(PIXABAY_API_KEY),
-            "video_seconds": TOTAL_SECONDS,
-        }),
-        200 if ok else 503,
-    )
+    return jsonify({
+        "service": "ZIL",
+        "status": "healthy" if ok else "degraded",
+        "ffmpeg": ffmpeg_ok,
+        "ffprobe": ffprobe_ok,
+        "pixabay_key_configured": bool(PIXABAY_API_KEY),
+        "video_seconds": TOTAL_SECONDS,
+        "scenes": SCENES,
+        "transitions": True,
+    }), 200 if ok else 503
 
 
 def run_flask():
@@ -1384,9 +1439,7 @@ def run_flask():
     )
 
 
-# =========================================================
-# MAIN
-# =========================================================
+# ============================== MAIN ==============================
 
 def main():
     validate_environment()
