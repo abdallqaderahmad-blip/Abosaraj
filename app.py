@@ -11,8 +11,10 @@ PEXELS_KEY=os.getenv("PEXELS_KEY")
 WEBHOOK_URL=os.getenv("RENDER_EXTERNAL_URL")
 web_app=Flask(__name__)
 
-print(f"🔑 PEXELS: {'OK '+PEXELS_KEY[:8] if PEXELS_KEY else '❌ MISSING'}")
-print(f"🔑 PIXABAY: {'OK '+PIXABAY_KEY[:6] if PIXABAY_KEY else '❌ MISSING'}")
+print(f"===== V46 GOLD =====")
+print(f"🔑 PEXELS_KEY: {PEXELS_KEY[:10] + '...' if PEXELS_KEY else '❌ MISSING - ضيفو برندر'}")
+print(f"🔑 PIXABAY_KEY: {PIXABAY_KEY[:6] + '...' if PIXABAY_KEY else '❌ MISSING'}")
+print(f"🔑 BOT_TOKEN: {'OK' if BOT_TOKEN else '❌'}")
 
 def tg_send(c,t):
     try: requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", data={"chat_id":c,"text":t}, timeout=10)
@@ -51,30 +53,32 @@ def voice_gtts(t,o):
     gTTS(text=t, lang='ar', slow=False).save(o)
 
 def make_voice(t,o):
-    # جرب edge-tts أول - لو فشل 403 جرب gTTS
     try:
-        print(f"🎙️ edge-tts: {t[:20]}...")
+        print(f"🎙️ edge-tts...")
         asyncio.run(voice_edge(t,o))
-        print("✅ edge-tts نجح")
+        print("✅ edge OK")
         return True
     except Exception as e:
-        print(f"⚠️ edge-tts فشل {e} - بجرب gTTS")
+        print(f"⚠️ edge فشل {str(e)[:100]} -> gTTS")
         try:
             voice_gtts(t,o)
-            print("✅ gTTS نجح")
+            print("✅ gTTS OK")
             return True
         except Exception as e2:
             print(f"❌ gTTS فشل {e2}")
             raise e
 
 def get_video_pexels(q_list):
-    if not PEXELS_KEY: return None, None
+    if not PEXELS_KEY:
+        print("❌ PEXELS_KEY missing - بتخطى")
+        return None, None
     headers={"Authorization": PEXELS_KEY}
     for q in q_list:
         try:
             r=requests.get(f"https://api.pexels.com/videos/search?query={q}&per_page=8&orientation=portrait&size=small", headers=headers, timeout=10)
+            print(f"Pexels search '{q}' -> {r.status_code}")
             if r.status_code==401:
-                print("❌ Pexels KEY غلط")
+                print("❌ Pexels KEY غلط - Unauthorized")
                 return None, None
             data=r.json()
             vids=data.get("videos",[])
@@ -84,7 +88,9 @@ def get_video_pexels(q_list):
                     if f["width"] in [720,640,540,360,240]:
                         return f["link"], q
                 return v["video_files"][0]["link"], q
-        except: continue
+        except Exception as e:
+            print(f"Pexels err {e}")
+            continue
     return None, None
 
 def get_video_pixabay(q):
@@ -169,9 +175,9 @@ def build(cid, parts):
 
         with open("FINAL.mp4","rb") as f:
             requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendVideo",
-                data={"chat_id":cid,"caption":"🏆 V45 ذهبي نهائي FIX صوت\n✅ Pexels+Pixabay\n🎙️ edge-tts+gTTS احتياطي\n⏱️ 18.3s"},
+                data={"chat_id":cid,"caption":"🏆 V46 ذهبي FIX\n✅ Pexels+Pixabay HD\n🎙️ صوت مزدوج\n⏱️ 18.3s"},
                 files={"video":f}, timeout=115)
-        tg_send(cid,"🏆 V45 ذهبي جاهز")
+        tg_send(cid,"🏆 V46 ذهبي جاهز ✅")
 
     except Exception as e:
         tg_send(cid,f"❌ {e}\n{traceback.format_exc()[:800]}")
@@ -182,7 +188,7 @@ async def zel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         raw="كان مجرد سواق فقير الكل بضحك عليه|البنت الغنية اختارتو قدام الكل|ما بيعرفو انه ملياردير مخفي واشترى الشركة"
     parts=[p.strip() for p in raw.split("|") if p.strip()][:3]
     while len(parts)<3: parts.append(parts[-1])
-    await update.message.reply_text(f"🏆 V45 ذهبي FIX\n🔑 Pexels: {'✅' if PEXELS_KEY else '❌ فاضي - حطو برندر'}\n🔑 Pixabay: {'✅' if PIXABAY_KEY else '❌'}\n🎙️ صوت مزدوج ما بعلق")
+    await update.message.reply_text(f"🏆 V46 ذهبي\n🔑 Pexels: {'✅ '+PEXELS_KEY[:8] if PEXELS_KEY else '❌ MISSING'}\n🔑 Pixabay: {'✅' if PIXABAY_KEY else '❌'}\n🎙️ مزدوج FIX")
     threading.Thread(target=build, args=(update.effective_chat.id, parts), daemon=True).start()
 
 application=Application.builder().token(BOT_TOKEN).build()
@@ -194,7 +200,7 @@ loop=asyncio.new_event_loop(); asyncio.set_event_loop(loop)
 loop.run_until_complete(application.initialize())
 loop.run_until_complete(application.start())
 @web_app.route('/')
-def home(): return f"V45 GOLD FIX - Pexels {'OK' if PEXELS_KEY else 'MISSING'}"
+def home(): return f"V46 GOLD - Pexels {'OK '+PEXELS_KEY[:8] if PEXELS_KEY else 'MISSING'} - Pixabay {'OK' if PIXABAY_KEY else 'MISSING'}"
 @web_app.route(f'/{BOT_TOKEN}', methods=['POST'])
 def webhook():
     try:
