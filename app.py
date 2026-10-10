@@ -6,22 +6,19 @@ from PIL import Image
 if not hasattr(Image, 'ANTIALIAS'): Image.ANTIALIAS = Image.LANCZOS
 
 BOT_TOKEN=os.getenv("BOT_TOKEN")
-PIXABAY_KEY=os.getenv("PIXABAY_KEY")
-PEXELS_KEY=os.getenv("PEXELS_KEY")
+PIXABAY_KEY=os.getenv("PIXABAY_KEY") or os.getenv("PEXELS_KEY") # لو حطيتو بمكان Pexels باخدو تلقائي
+PEXELS_KEY=os.getenv("PEXELS_KEY") if os.getenv("PEXELS_KEY") and len(os.getenv("PEXELS_KEY"))>40 else None
 WEBHOOK_URL=os.getenv("RENDER_EXTERNAL_URL")
 web_app=Flask(__name__)
 
-print(f"===== V47 GOLD FIX =====")
-# تصحيح تلقائي لو المفاتيح مقلوبة
-if PEXELS_KEY and PEXELS_KEY.startswith("5") and len(PEXELS_KEY) < 25:
-    print(f"⚠️ PEXELS_KEY شكلو Pixabay! ببدلهم تلقائي")
-    # اذا Pexels يبلش بـ 5 وهو قصير - هو Pixabay
-    tmp = PEXELS_KEY
-    PEXELS_KEY = PIXABAY_KEY
-    PIXABAY_KEY = tmp
+print(f"===== V48 PIXABAY ONLY GOLD =====")
+if PEXELS_KEY and PEXELS_KEY.startswith("57885775"):
+    print("⚠️ اكتشفت مفتاح Pixabay بمكان Pexels - بصلح تلقائي")
+    PIXABAY_KEY=PEXELS_KEY
+    PEXELS_KEY=None
 
-print(f"🔑 PEXELS_KEY: {PEXELS_KEY[:12] + '...' if PEXELS_KEY and len(PEXELS_KEY)>12 else '❌'} len={len(PEXELS_KEY) if PEXELS_KEY else 0}")
-print(f"🔑 PIXABAY_KEY: {PIXABAY_KEY[:8] + '...' if PIXABAY_KEY else '❌'} len={len(PIXABAY_KEY) if PIXABAY_KEY else 0}")
+print(f"🔑 PEXELS: {'OK '+PEXELS_KEY[:10]+'...' if PEXELS_KEY else '❌ OFF - بيشتغل Pixabay بس'}")
+print(f"🔑 PIXABAY: {'OK '+PIXABAY_KEY[:10]+'...' if PIXABAY_KEY else '❌ MISSING'} len={len(PIXABAY_KEY) if PIXABAY_KEY else 0}")
 
 def tg_send(c,t):
     try: requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", data={"chat_id":c,"text":t}, timeout=10)
@@ -62,86 +59,66 @@ def voice_gtts(t,o):
 def make_voice(t,o):
     try:
         asyncio.run(voice_edge(t,o))
-        print("✅ edge OK")
         return True
-    except Exception as e:
-        print(f"⚠️ edge فشل -> gTTS {e}")
+    except:
         voice_gtts(t,o)
-        print("✅ gTTS OK")
         return True
 
 def download_valid(url, path):
-    """تحميل مع تحقق 100% انه mp4 صالح"""
     for attempt in range(3):
         try:
-            print(f"⬇️ {path} محاولة {attempt+1}")
-            r=requests.get(url, timeout=30, stream=True)
-            if r.status_code!=200:
-                print(f"❌ HTTP {r.status_code}")
-                continue
-            data=r.content
-            if len(data) < 80000:
-                print(f"⚠️ ملف صغير {len(data)} bytes")
+            print(f"⬇️ {path} attempt {attempt+1} {url[:60]}")
+            r=requests.get(url, timeout=30)
+            if r.status_code!=200 or len(r.content)<70000:
+                print(f"⚠️ صغير {len(r.content)} او {r.status_code}")
                 time.sleep(1)
                 continue
-            open(path,"wb").write(data)
-            # ffprobe تحقق
+            open(path,"wb").write(r.content)
             probe=subprocess.run(["ffprobe","-v","error","-show_entries","format=duration","-of","default=noprint_wrappers=1:nokey=1",path], capture_output=True, text=True, timeout=8)
-            if probe.stdout.strip() and float(probe.stdout.strip())>0:
-                print(f"✅ {path} صالح {len(data)} bytes dur={probe.stdout.strip()}")
-                return True
-            else:
-                print(f"❌ {path} تالف - ffprobe فشل")
+            if probe.stdout.strip():
+                dur=float(probe.stdout.strip())
+                if dur>0.5:
+                    print(f"✅ {path} OK {len(r.content)} bytes dur={dur}")
+                    return True
         except Exception as e:
-            print(f"❌ تحميل خطأ {e}")
+            print(f"❌ dl err {e}")
     return False
 
-def get_video_pexels(q_list):
-    if not PEXELS_KEY or len(PEXELS_KEY)<30:
-        print(f"❌ PEXELS_KEY غلط او قصير len={len(PEXELS_KEY) if PEXELS_KEY else 0}")
-        return None, None
-    headers={"Authorization": PEXELS_KEY}
-    for q in q_list:
-        try:
-            r=requests.get(f"https://api.pexels.com/videos/search?query={q}&per_page=8&orientation=portrait&size=small", headers=headers, timeout=12)
-            print(f"Pexels '{q}' -> {r.status_code}")
-            if r.status_code==401:
-                print("❌ Pexels KEY Unauthorized")
-                return None, None
-            data=r.json()
-            vids=data.get("videos",[])
-            if not vids: continue
-            # جرب 3 فيديوهات مختلفة
-            random.shuffle(vids)
-            for vid in vids[:3]:
-                try:
-                    files=sorted(vid["video_files"], key=lambda x: x["width"], reverse=True)
-                    for f in files:
-                        if f["width"]>=360 and f["width"]<=720:
-                            link=f["link"]
-                            # اختبار سريع ان الرابط شغال
-                            head=requests.head(link, timeout=8)
-                            if head.status_code==200:
-                                return link, q
-                except: continue
-        except Exception as e:
-            print(f"Pexels err {e}")
-            continue
-    return None, None
-
 def get_video_pixabay(q):
+    if not PIXABAY_KEY:
+        print("❌ PIXABAY_KEY missing")
+        return None
     try:
-        if not PIXABAY_KEY: return None
-        r=requests.get(f"https://pixabay.com/api/videos/?key={PIXABAY_KEY}&q={q}&per_page=8",timeout=10)
-        data=r.json()
+        url=f"https://pixabay.com/api/videos/?key={PIXABAY_KEY}&q={q}&per_page=10&safesearch=true&order=popular"
+        data=requests.get(url,timeout=10).json()
+        print(f"Pixabay '{q}' -> {len(data.get('hits',[]))} hits")
         if data.get("hits"):
             random.shuffle(data["hits"])
-            for hit in data["hits"][:3]:
-                url=hit["videos"]["small"]["url"]
-                return url
+            for hit in data["hits"][:5]:
+                try:
+                    vurl=hit["videos"]["small"]["url"]
+                    if vurl: return vurl
+                except: continue
     except Exception as e:
         print(f"Pixabay err {e}")
     return None
+
+def get_video_pexels(q_list):
+    if not PEXELS_KEY: return None, None
+    headers={"Authorization": PEXELS_KEY}
+    for q in q_list:
+        try:
+            r=requests.get(f"https://api.pexels.com/videos/search?query={q}&per_page=8&orientation=portrait", headers=headers, timeout=10)
+            print(f"Pexels '{q}' -> {r.status_code}")
+            if r.status_code!=200: continue
+            vids=r.json().get("videos",[])
+            if vids:
+                v=random.choice(vids[:3])
+                for f in sorted(v["video_files"], key=lambda x: x["width"], reverse=True):
+                    if 360 <= f["width"] <= 720:
+                        return f["link"], q
+        except: continue
+    return None, None
 
 def build(cid, parts):
     from moviepy.editor import VideoFileClip, AudioFileClip, CompositeVideoClip, CompositeAudioClip
@@ -153,44 +130,50 @@ def build(cid, parts):
         try: open("bg.mp3","wb").write(requests.get("https://cdn.pixabay.com/audio/2022/06/07/audio_b9bd4170e8.mp3",timeout=10).content)
         except: pass
 
-        pexels_queries=[["poor man uniform", "sad driver", "poor worker"],["rich woman office", "business woman", "boss woman"],["billionaire luxury", "rich man success", "ceo office"]]
-        pixabay_queries=["poor driver", "rich woman office", "billionaire success"]
-        durs=[2.8, 6.7, 8.8]
-        backup_urls=[
+        pexels_q=[["poor man uniform","sad driver"],["rich woman office","business woman"],["billionaire luxury","rich man success"]]
+        pixabay_q=["poor man driver sad","rich woman office boss","billionaire luxury success"]
+        backups=[
             "https://cdn.pixabay.com/video/2020/12/13/59398-490696104_small.mp4",
             "https://cdn.pixabay.com/video/2019/11/03/28976-370981083_small.mp4",
-            "https://cdn.pixabay.com/video/2021/08/04/84388-580045401_small.mp4"
+            "https://cdn.pixabay.com/video/2021/08/04/84388-580045401_small.mp4",
+            "https://cdn.pixabay.com/video/2020/05/25/40244-423361133_small.mp4"
         ]
+        durs=[2.8, 6.7, 8.8]
         vids=[]
         for i in range(3):
             v=f"s_{i}.mp4"; a=f"a_{i}.mp3"; p=f"p_{i}.mp4"
             dur=durs[i]
             tg_send(cid,f"🎬 {i+1}/3 ذهبي {dur}s")
 
-            url, found_q = get_video_pexels(pexels_queries[i])
-            src=f"Pexels HD - {found_q}" if url else ""
+            url=None; src=""
+            # جرب Pexels لو موجود
+            if PEXELS_KEY:
+                url, fq = get_video_pexels(pexels_q[i])
+                if url: src=f"Pexels {fq}"
+            # جرب Pixabay
             if not url:
-                url=get_video_pixabay(pixabay_queries[i])
-                src=f"Pixabay - {pixabay_queries[i]}"
+                url=get_video_pixabay(pixabay_q[i])
+                if url: src=f"Pixabay {pixabay_q[i]}"
 
-            success=False
+            ok=False
             if url:
                 if download_valid(url, v):
                     tg_send(cid,f"✅ {src} {i+1}")
-                    success=True
+                    ok=True
+                else:
+                    print(f"❌ فشل {src}")
 
-            if not success:
+            if not ok:
                 tg_send(cid,f"⚠️ احتياطي {i+1}")
-                # جرب 3 احتياطيين
-                for burl in random.sample(backup_urls, 3):
-                    if download_valid(burl, v):
-                        success=True
+                random.shuffle(backups)
+                for b in backups:
+                    if download_valid(b, v):
+                        ok=True
                         break
-                if not success:
-                    raise Exception(f"فشل تحميل فيديو {i+1}")
+                if not ok:
+                    raise Exception(f"فشل تحميل فيديو {i+1} - كل الروابط فشلت")
 
             make_voice(parts[i],a)
-
             vc=VideoFileClip(v).resize((720,1280))
             ac=AudioFileClip(a)
             if vc.duration < dur: vc=vc.loop(duration=dur)
@@ -230,10 +213,9 @@ def build(cid, parts):
 
         with open("FINAL.mp4","rb") as f:
             requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendVideo",
-                data={"chat_id":cid,"caption":"🏆 V47 ذهبي FIXED\n✅ تحميل مضمون 100%\n🎙️ مزدوج\n⏱️ 18.3s"},
+                data={"chat_id":cid,"caption":"🏆 V48 ذهبي\n✅ Pixabay HD FIXED\n🎙️ مزدوج\n⏱️ 18.3s"},
                 files={"video":f}, timeout=115)
-        tg_send(cid,"🏆 V47 جاهز ✅")
-
+        tg_send(cid,"🏆 V48 جاهز ✅")
     except Exception as e:
         tg_send(cid,f"❌ {e}\n{traceback.format_exc()[:900]}")
 
@@ -243,7 +225,7 @@ async def zel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         raw="كان مجرد سواق فقير الكل بضحك عليه|البنت الغنية اختارتو قدام الكل|ما بيعرفو انه ملياردير مخفي واشترى الشركة"
     parts=[p.strip() for p in raw.split("|") if p.strip()][:3]
     while len(parts)<3: parts.append(parts[-1])
-    await update.message.reply_text(f"🏆 V47 ذهبي FIX\n🔑 Pexels: {'✅ '+PEXELS_KEY[:8] if PEXELS_KEY and len(PEXELS_KEY)>20 else '❌'} len={len(PEXELS_KEY) if PEXELS_KEY else 0}\n🔑 Pixabay: {'✅ '+PIXABAY_KEY[:6] if PIXABAY_KEY else '❌'} len={len(PIXABAY_KEY) if PIXABAY_KEY else 0}")
+    await update.message.reply_text(f"🏆 V48 ذهبي\n🔑 Pixabay: {'✅' if PIXABAY_KEY else '❌'}\n🔑 Pexels: {'✅' if PEXELS_KEY else 'OFF'}")
     threading.Thread(target=build, args=(update.effective_chat.id, parts), daemon=True).start()
 
 application=Application.builder().token(BOT_TOKEN).build()
@@ -255,7 +237,7 @@ loop=asyncio.new_event_loop(); asyncio.set_event_loop(loop)
 loop.run_until_complete(application.initialize())
 loop.run_until_complete(application.start())
 @web_app.route('/')
-def home(): return f"V47 GOLD - Pexels {'OK' if PEXELS_KEY and len(PEXELS_KEY)>20 else 'BAD'} - Pixabay {'OK' if PIXABAY_KEY else 'MISSING'}"
+def home(): return f"V48 GOLD - PIXABAY {'OK' if PIXABAY_KEY else 'MISSING'}"
 @web_app.route(f'/{BOT_TOKEN}', methods=['POST'])
 def webhook():
     try:
