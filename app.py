@@ -11,17 +11,23 @@ WEBHOOK_URL = os.getenv("RENDER_EXTERNAL_URL")
 web_app = Flask(__name__)
 
 SCENES = [
-    {"keyword": "sad girl dark", "text": "جلست ظل وحيدة... في عتمة لا يراها أحد"},
-    {"keyword": "rain window", "text": "كانت تبحث عن ظل... يحميها من برد الوحدة"},
-    {"keyword": "lonely street", "text": "في الشارع... الجميع يمضي ولا أحد يلتفت"},
-    {"keyword": "prayer light", "text": "ثم جاء صوت أمها... بدعاء يشبه النور"}
+    {"keyword": "sad girl dark", "text": "جلست ظل وحيدة في عتمة لا يراها أحد"},
+    {"keyword": "rain window", "text": "كانت تبحث عن ظل يحميها من برد الوحدة"},
+    {"keyword": "lonely street", "text": "في الشارع الجميع يمضي ولا أحد يلتفت"},
+    {"keyword": "prayer light", "text": "ثم جاء صوت أمها بدعاء يشبه النور"}
 ]
 
 async def make_voice(text, output):
-    voice = "ar-SA-ZaydNeural"
-    comm = edge_tts.Communicate(text, voice, rate="-15%", pitch="-8Hz", volume="+10%")
-    await comm.save(output)
-    return output
+    try:
+        voice = "ar-SA-ZaydNeural"
+        comm = edge_tts.Communicate(text, voice, rate="-15%", pitch="-8Hz", volume="+10%")
+        await comm.save(output)
+        return output
+    except:
+        from gtts import gTTS
+        tts = gTTS(text=text, lang='ar', slow=False)
+        tts.save(output)
+        return output
 
 def download_video(keyword, filename):
     try:
@@ -58,11 +64,9 @@ def build_video(chat_id, bot):
             clips.append(vc)
         final = concatenate_videoclips(clips, method="compose")
         final.write_videofile("FINAL.mp4", fps=24, codec="libx264", audio_codec="aac", preset="ultrafast", logger=None)
-        
-        # ابعث الفيديو
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-        loop.run_until_complete(bot.send_video(chat_id=chat_id, video=open("FINAL.mp4","rb"), caption="🎬 ظل V17"))
+        loop.run_until_complete(bot.send_video(chat_id=chat_id, video=open("FINAL.mp4","rb"), caption="🎬 ظل V18"))
         loop.close()
     except Exception as e:
         loop = asyncio.new_event_loop()
@@ -72,8 +76,7 @@ def build_video(chat_id, bot):
 
 async def zel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
-    await update.message.reply_text("🎬 ببلش بناء الفيديو... 2-3 دقايق ⏳")
-    # شغل بالخلفية عشان Webhook ما يعمل timeout
+    await update.message.reply_text("🎬 ببلش بناء الفيديو... 2 دقايق ⏳")
     threading.Thread(target=build_video, args=(chat_id, context.bot), daemon=True).start()
 
 application = Application.builder().token(BOT_TOKEN).build()
@@ -87,7 +90,7 @@ loop.run_until_complete(application.initialize())
 loop.run_until_complete(application.start())
 
 @web_app.route('/')
-def home(): return "V17 Working"
+def home(): return "V18 Working"
 
 @web_app.route(f'/{BOT_TOKEN}', methods=['POST'])
 def webhook():
@@ -104,5 +107,4 @@ if __name__ == "__main__":
     if WEBHOOK_URL:
         url = f"{WEBHOOK_URL}/{BOT_TOKEN}"
         requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook?url={url}")
-        print(f"Webhook: {url}")
     web_app.run(host='0.0.0.0', port=port)
