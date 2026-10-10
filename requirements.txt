@@ -1,5 +1,8 @@
-Flask
-python-telegram-bot
-requests
-edge-tts
-gTTS
+Flask>=3.0,<4.0
+requests>=2.31,<3.0
+python-telegram-bot>=20.8,<23.0
+edge-tts>=6.1.12
+gTTS>=2.5.1
+Pillow>=10.0.0
+arabic-reshaper>=3.0.0
+python-bidi>=0.4.2
