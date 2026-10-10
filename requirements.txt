@@ -1,12 +1,8 @@
 python-telegram-bot==20.7
-flask==3.0.3
-moviepy==1.0.3
-requests==2.32.3
-edge-tts==6.1.10
-gtts==2.5.1
-pillow==10.4.0
+Flask==2.3.3
+requests==2.31.0
+Pillow==10.0.0
 arabic-reshaper==3.0.0
 python-bidi==0.4.2
-imageio-ffmpeg==0.5.1
-imageio==2.34.2
-numpy==1.26.4
+edge-tts==6.1.10
+gtts==2.4.0
