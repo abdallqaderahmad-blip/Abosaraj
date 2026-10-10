@@ -25,7 +25,9 @@ from telegram.ext import (
 )
 import edge_tts
 
-# ============================== CONFIG ==============================
+# ============================================================
+# CONFIG
+# ============================================================
 
 BOT_TOKEN = (os.getenv("BOT_TOKEN") or "").strip()
 PIXABAY_API_KEY = (os.getenv("PIXABAY_API_KEY") or "").strip()
@@ -39,7 +41,9 @@ CLIP_SECONDS = SCENE_SECONDS + (
     (SCENES - 1) * TRANSITION_SECONDS / SCENES
 )
 
-WIDTH, HEIGHT, FPS = 720, 1280, 25
+WIDTH = 720
+HEIGHT = 1280
+FPS = 25
 
 VOICE = (os.getenv("TTS_VOICE") or "ar-SA-HamedNeural").strip()
 VOICE_RATE = (os.getenv("TTS_RATE") or "-8%").strip()
@@ -59,17 +63,21 @@ FONT_CANDIDATES = [
 ]
 
 logging.basicConfig(
-    level=os.getenv("LOG_LEVEL", "INFO"),
+    level=os.getenv("LOG_LEVEL", "INFO").upper(),
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
+
 log = logging.getLogger("zil")
 flask_app = Flask(__name__)
 
 SESSION = requests.Session()
-SESSION.headers.update({"User-Agent": "ZIL-VideoBot/1.2"})
+SESSION.headers.update({"User-Agent": "ZIL-VideoBot/1.3"})
 
 busy_users = set()
 busy_lock = threading.Lock()
+
+jobs = {}
+jobs_lock = threading.Lock()
 
 ARABIC_TO_ENGLISH = {
     "قصر": "royal castle",
@@ -105,24 +113,55 @@ ARABIC_TO_ENGLISH = {
 }
 
 
-# ============================== HELPERS ==============================
+# ============================================================
+# JOB STATUS AND LOGGING
+# ============================================================
+
+def update_job(job_id, status, detail=None):
+    with jobs_lock:
+        entry = jobs.setdefault(job_id, {})
+        entry["status"] = status
+
+        if detail is not None:
+            entry["detail"] = str(detail)[:500]
+
+    log.info(
+        "JOB %s | %s | %s",
+        job_id,
+        status,
+        str(detail or ""),
+    )
+
+
+# ============================================================
+# HELPERS
+# ============================================================
 
 def check_binary(name):
     return shutil.which(name) is not None
 
 
 def run_command(command, timeout=120):
-    result = subprocess.run(
-        command,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        timeout=timeout,
-        check=False,
-    )
+    log.info("RUN COMMAND: %s", " ".join(map(str, command[:5])))
+
+    try:
+        result = subprocess.run(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(
+            f"Command timed out after {timeout} seconds."
+        ) from exc
 
     if result.returncode != 0:
-        details = (result.stderr or "")[-1500:]
+        details = (result.stderr or "")[-1800:]
+        log.error("COMMAND FAILED: %s", details)
+
         raise RuntimeError(
             f"Command failed ({result.returncode}): {details}"
         )
@@ -136,6 +175,9 @@ def validate_environment():
     if not BOT_TOKEN:
         missing.append("BOT_TOKEN")
 
+    if not PIXABAY_API_KEY:
+        missing.append("PIXABAY_API_KEY")
+
     for binary in ("ffmpeg", "ffprobe"):
         if not check_binary(binary):
             missing.append(binary)
@@ -146,16 +188,21 @@ def validate_environment():
             + ", ".join(missing)
         )
 
+    log.info("STARTUP CHECK PASSED")
+
 
 def clean_story(text):
     text = (text or "").strip()
+
     text = re.sub(
         r"^/(?:zil|test|ظل)(?:@\w+)?\s*",
         "",
         text,
         flags=re.IGNORECASE,
     )
+
     text = re.sub(r"\s+", " ", text).strip()
+
     return text[:MAX_STORY_LENGTH]
 
 
@@ -186,7 +233,10 @@ def make_scene_texts(story):
         for i in range(SCENES):
             start = (i * len(sentences)) // SCENES
             end = ((i + 1) * len(sentences)) // SCENES
-            result.append(" ".join(sentences[start:end]).strip())
+
+            result.append(
+                " ".join(sentences[start:end]).strip()
+            )
 
         return result
 
@@ -196,7 +246,10 @@ def make_scene_texts(story):
     for i in range(SCENES):
         start = round(i * len(words) / SCENES)
         end = round((i + 1) * len(words) / SCENES)
-        result.append(" ".join(words[start:end]).strip())
+
+        result.append(
+            " ".join(words[start:end]).strip()
+        )
 
     return result
 
@@ -218,11 +271,15 @@ def search_terms(text, index):
     return defaults[index % len(defaults)]
 
 
-# ============================== PIXABAY ==============================
+# ============================================================
+# PIXABAY
+# ============================================================
 
 def pixabay_search(query):
     if not PIXABAY_API_KEY:
-        raise RuntimeError("PIXABAY_API_KEY غير موجود في إعدادات Render.")
+        raise RuntimeError("PIXABAY_API_KEY غير موجود في Render.")
+
+    log.info("PIXABAY SEARCH: %s", query)
 
     response = SESSION.get(
         "https://pixabay.com/api/videos/",
@@ -290,6 +347,8 @@ def pixabay_search(query):
             seen.add(link)
             result.append(link)
 
+    log.info("PIXABAY RESULTS: %s", len(result))
+
     return result
 
 
@@ -325,7 +384,9 @@ def probe_video(path):
 
 def download_clip(url, output_path):
     output_path = Path(output_path)
-    temp_path = output_path.with_name(output_path.stem + ".part.mp4")
+    temp_path = output_path.with_name(
+        output_path.stem + ".part.mp4"
+    )
 
     try:
         with SESSION.get(
@@ -339,26 +400,36 @@ def download_clip(url, output_path):
             length = response.headers.get("Content-Length")
 
             if length and int(length) > MAX_DOWNLOAD_BYTES:
-                raise RuntimeError("Video file exceeds download size limit.")
+                raise RuntimeError("Video exceeds size limit.")
 
             total = 0
 
             with open(temp_path, "wb") as handle:
-                for chunk in response.iter_content(chunk_size=256 * 1024):
+                for chunk in response.iter_content(
+                    chunk_size=256 * 1024
+                ):
                     if not chunk:
                         continue
 
                     total += len(chunk)
 
                     if total > MAX_DOWNLOAD_BYTES:
-                        raise RuntimeError("Video exceeded download size limit.")
+                        raise RuntimeError(
+                            "Video exceeded download size limit."
+                        )
 
                     handle.write(chunk)
 
-        if temp_path.stat().st_size < 30000 or not probe_video(temp_path):
+        if (
+            temp_path.stat().st_size < 30000
+            or not probe_video(temp_path)
+        ):
             raise RuntimeError("Downloaded file is not a valid video.")
 
         temp_path.replace(output_path)
+
+        log.info("VIDEO DOWNLOADED: %s", output_path.name)
+
         return output_path
 
     except Exception:
@@ -381,47 +452,49 @@ def obtain_clip(scene_text, index, workdir):
             urls = pixabay_search(query)
         except Exception as exc:
             last_error = exc
+
             log.warning(
-                "Scene %s search failed: %s",
+                "SCENE %s SEARCH ERROR: %s",
                 index + 1,
-                str(exc)[:160],
+                str(exc)[:200],
             )
+
             continue
 
-        for candidate_number, url in enumerate(urls[:4], start=1):
+        for candidate_number, url in enumerate(
+            urls[:4],
+            start=1,
+        ):
             try:
                 output.unlink(missing_ok=True)
                 download_clip(url, output)
 
                 log.info(
-                    "Scene %s downloaded candidate %s",
+                    "SCENE %s CLIP READY",
                     index + 1,
-                    candidate_number,
                 )
+
                 return output
 
             except Exception as exc:
                 last_error = exc
+
                 log.warning(
-                    "Scene %s candidate %s failed: %s",
+                    "SCENE %s CANDIDATE %s FAILED: %s",
                     index + 1,
                     candidate_number,
-                    str(exc)[:160],
+                    str(exc)[:200],
                 )
 
-    if last_error:
-        log.warning(
-            "Last clip retrieval error: %s",
-            str(last_error)[:200],
-        )
-
     raise RuntimeError(
-        f"تعذر تنزيل فيديو صالح للمشهد {index + 1} من Pixabay. "
-        "تحقق من PIXABAY_API_KEY واتصال Render."
+        f"تعذر تنزيل مقطع صالح للمشهد {index + 1} من Pixabay. "
+        f"آخر خطأ: {str(last_error)[:250]}"
     )
 
 
-# ============================== ARABIC CAPTIONS ==============================
+# ============================================================
+# ARABIC CAPTIONS
+# ============================================================
 
 def find_font():
     for path in FONT_CANDIDATES:
@@ -429,7 +502,7 @@ def find_font():
             return path
 
     raise RuntimeError(
-        "لم يتم العثور على خط عربي. ثبّت fonts-dejavu-core في Dockerfile."
+        "خط العربية غير موجود. ثبّت fonts-dejavu-core في Dockerfile."
     )
 
 
@@ -444,8 +517,12 @@ def wrap_text(draw, text, font, max_width):
 
     for word in words:
         candidate = (current + " " + word).strip()
-        shaped = shape_arabic(candidate)
-        box = draw.textbbox((0, 0), shaped, font=font)
+
+        box = draw.textbbox(
+            (0, 0),
+            shape_arabic(candidate),
+            font=font,
+        )
 
         if box[2] - box[0] <= max_width or not current:
             current = candidate
@@ -460,7 +537,11 @@ def wrap_text(draw, text, font, max_width):
 
 
 def create_caption_image(text, output_path):
-    image = Image.new("RGBA", (WIDTH, HEIGHT), (0, 0, 0, 0))
+    image = Image.new(
+        "RGBA",
+        (WIDTH, HEIGHT),
+        (0, 0, 0, 0),
+    )
 
     if not (text or "").strip():
         image.save(output_path)
@@ -473,14 +554,23 @@ def create_caption_image(text, output_path):
 
     while font_size >= 24:
         font = ImageFont.truetype(font_path, font_size)
-        lines = wrap_text(draw, text, font, WIDTH - 100)
+
+        lines = wrap_text(
+            draw,
+            text,
+            font,
+            WIDTH - 100,
+        )
 
         if len(lines) <= 3:
             break
 
         font_size -= 2
 
-    font = ImageFont.truetype(font_path, max(font_size, 24))
+    font = ImageFont.truetype(
+        font_path,
+        max(font_size, 24),
+    )
 
     if not lines:
         lines = [text]
@@ -494,13 +584,24 @@ def create_caption_image(text, output_path):
             font=font,
             stroke_width=1,
         )
+
         line_heights.append(max(1, box[3] - box[1]))
 
     spacing = 12
     pad_y = 20
-    panel_h = sum(line_heights) + spacing * (len(lines) - 1) + pad_y * 2
 
-    panel = Image.new("RGBA", (WIDTH - 40, panel_h), (0, 0, 0, 0))
+    panel_h = (
+        sum(line_heights)
+        + spacing * (len(lines) - 1)
+        + pad_y * 2
+    )
+
+    panel = Image.new(
+        "RGBA",
+        (WIDTH - 40, panel_h),
+        (0, 0, 0, 0),
+    )
+
     panel_draw = ImageDraw.Draw(panel)
 
     panel_draw.rounded_rectangle(
@@ -515,6 +616,7 @@ def create_caption_image(text, output_path):
 
     for i, line in enumerate(lines):
         shaped = shape_arabic(line)
+
         box = panel_draw.textbbox(
             (0, 0),
             shaped,
@@ -536,15 +638,21 @@ def create_caption_image(text, output_path):
         y += line_heights[i] + spacing
 
     top = max(55, HEIGHT - panel_h - 115)
+
     image.alpha_composite(panel, (20, top))
     image.save(output_path)
 
     return output_path
 
 
-# ============================== VIDEO BUILD ==============================
+# ============================================================
+# VIDEO RENDERING
+# ============================================================
 
 def build_scene(source_path, caption_path, output_path):
+    update_message = f"scene output {output_path.name}"
+    log.info("BUILD SCENE: %s", update_message)
+
     filter_complex = (
         f"[0:v]"
         f"scale={WIDTH}:{HEIGHT}:force_original_aspect_ratio=increase,"
@@ -556,10 +664,10 @@ def build_scene(source_path, caption_path, output_path):
         f"d=1:s={WIDTH}x{HEIGHT}:fps={FPS},"
         f"fps={FPS},setsar=1,"
         f"trim=duration={CLIP_SECONDS:.6f},"
-        "setpts=PTS-STARTPTS[base];"
-        "[1:v]format=rgba[cap];"
-        "[base][cap]overlay=0:0:shortest=1,"
-        "format=yuv420p[out]"
+        f"setpts=PTS-STARTPTS[base];"
+        f"[1:v]format=rgba[cap];"
+        f"[base][cap]overlay=0:0:shortest=1,"
+        f"format=yuv420p[out]"
     )
 
     run_command(
@@ -613,7 +721,9 @@ def media_duration(path):
     try:
         return float(result.stdout.strip())
     except (TypeError, ValueError) as exc:
-        raise RuntimeError("تعذّر تحديد مدة الملف.") from exc
+        raise RuntimeError(
+            "تعذّر تحديد مدة ملف الوسائط."
+        ) from exc
 
 
 def concatenate_scenes(scene_paths, workdir):
@@ -651,6 +761,8 @@ def concatenate_scenes(scene_paths, workdir):
 
     output = workdir / "video_only.mp4"
 
+    log.info("MERGING %s SCENES", len(scene_paths))
+
     run_command(
         [
             "ffmpeg",
@@ -686,7 +798,9 @@ def concatenate_scenes(scene_paths, workdir):
     return output
 
 
-# ============================== AUDIO ==============================
+# ============================================================
+# AUDIO
+# ============================================================
 
 async def edge_tts_to_file(text, output_path):
     communicate = edge_tts.Communicate(
@@ -694,29 +808,36 @@ async def edge_tts_to_file(text, output_path):
         voice=VOICE,
         rate=VOICE_RATE,
     )
+
     await communicate.save(str(output_path))
 
 
 def make_voice(text, output_path):
     try:
-        asyncio.run(edge_tts_to_file(text, output_path))
+        asyncio.run(
+            edge_tts_to_file(text, output_path)
+        )
 
         if output_path.exists() and output_path.stat().st_size > 1000:
             return output_path
 
     except Exception as exc:
-        log.warning("Edge TTS failed: %s", str(exc)[:160])
+        log.warning("Edge TTS failed: %s", str(exc)[:200])
 
     try:
         from gtts import gTTS
 
-        gTTS(text=text, lang="ar", slow=False).save(str(output_path))
+        gTTS(
+            text=text,
+            lang="ar",
+            slow=False,
+        ).save(str(output_path))
 
         if output_path.exists() and output_path.stat().st_size > 1000:
             return output_path
 
     except Exception as exc:
-        log.warning("gTTS fallback failed: %s", str(exc)[:160])
+        log.warning("gTTS fallback failed: %s", str(exc)[:200])
 
     raise RuntimeError(
         "تعذّر إنشاء الراوي العربي. تحقق من اتصال Render."
@@ -726,6 +847,8 @@ def make_voice(text, output_path):
 def create_narration(story, workdir):
     raw = workdir / "narration_raw.mp3"
     output = workdir / "narration.m4a"
+
+    log.info("CREATING ARABIC NARRATION")
 
     make_voice(story, raw)
     duration = media_duration(raw)
@@ -816,6 +939,8 @@ def create_ambient_audio(workdir):
 
 
 def mux_final_video(video_path, narration_path, ambient_path, output_path):
+    log.info("MIXING FINAL VIDEO AND AUDIO")
+
     filter_complex = (
         "[0:a]asplit=2[voice][side];"
         "[1:a]volume=1.0[bed];"
@@ -868,41 +993,86 @@ def mux_final_video(video_path, narration_path, ambient_path, output_path):
     return output_path
 
 
-# ============================== GENERATE VIDEO ==============================
+# ============================================================
+# GENERATE VIDEO
+# ============================================================
 
-def generate_video(story, workdir):
+def generate_video(story, workdir, job_id):
+    update_job(job_id, "validating_story")
+
     if not PIXABAY_API_KEY:
-        raise RuntimeError("PIXABAY_API_KEY غير موجود في إعدادات Render.")
+        raise RuntimeError(
+            "PIXABAY_API_KEY غير موجود في إعدادات Render."
+        )
 
     captions = make_scene_texts(story)
     scene_paths = []
 
     for i, caption in enumerate(captions):
-        log.info("Rendering scene %s/%s", i + 1, SCENES)
+        update_job(
+            job_id,
+            f"scene_{i + 1}_of_{SCENES}",
+        )
 
-        source = obtain_clip(caption or story, i, workdir)
+        log.info(
+            "JOB %s: RENDERING SCENE %s/%s",
+            job_id,
+            i + 1,
+            SCENES,
+        )
+
+        source = obtain_clip(
+            caption or story,
+            i,
+            workdir,
+        )
 
         caption_path = workdir / f"caption_{i:02d}.png"
         scene_path = workdir / f"scene_{i:02d}.mp4"
 
-        create_caption_image(caption or "", caption_path)
-        build_scene(source, caption_path, scene_path)
+        create_caption_image(
+            caption or "",
+            caption_path,
+        )
+
+        build_scene(
+            source,
+            caption_path,
+            scene_path,
+        )
 
         scene_paths.append(scene_path)
 
-    video = concatenate_scenes(scene_paths, workdir)
+    update_job(job_id, "merging_scenes")
+
+    video = concatenate_scenes(
+        scene_paths,
+        workdir,
+    )
+
+    update_job(job_id, "creating_narration")
     voice = create_narration(story, workdir)
+
+    update_job(job_id, "creating_ambient_audio")
     ambient = create_ambient_audio(workdir)
 
-    return mux_final_video(
+    update_job(job_id, "mixing_final_video")
+
+    final_path = mux_final_video(
         video,
         voice,
         ambient,
         workdir / "zil_final.mp4",
     )
 
+    update_job(job_id, "video_ready")
 
-# ============================== TELEGRAM ==============================
+    return final_path
+
+
+# ============================================================
+# TELEGRAM HANDLERS
+# ============================================================
 
 async def reply(update, text):
     if update.effective_message:
@@ -913,24 +1083,35 @@ async def send_video(update, path):
     if not update.effective_message:
         return
 
+    log.info("SENDING VIDEO TO TELEGRAM")
+
     with open(path, "rb") as video_file:
         await update.effective_message.reply_video(
             video=video_file,
             caption="تم إنشاء فيديو ظل.",
             supports_streaming=True,
-            read_timeout=120,
-            write_timeout=120,
+            read_timeout=180,
+            write_timeout=180,
             connect_timeout=30,
+            pool_timeout=30,
         )
+
+    log.info("VIDEO SENT SUCCESSFULLY")
 
 
 async def generate_for_user(update, story):
     user = update.effective_user
 
     if not user:
+        log.warning("UPDATE HAS NO EFFECTIVE USER")
         return
 
     uid = user.id
+
+    log.info(
+        "GENERATION REQUEST RECEIVED: user=%s",
+        uid,
+    )
 
     with busy_lock:
         if uid in busy_users:
@@ -940,12 +1121,17 @@ async def generate_for_user(update, story):
             already_busy = False
 
     if already_busy:
-        await reply(update, "طلبك السابق ما زال قيد التنفيذ. انتظر حتى ينتهي.")
+        await reply(
+            update,
+            "طلبك السابق ما زال قيد التنفيذ. انتظر حتى ينتهي.",
+        )
         return
 
     job_id = uuid.uuid4().hex[:10]
     workdir = BASE_DIR / job_id
     workdir.mkdir(parents=True, exist_ok=True)
+
+    update_job(job_id, "request_received")
 
     try:
         story = clean_story(story)
@@ -956,54 +1142,83 @@ async def generate_for_user(update, story):
                 "اكتب قصة أطول بعد الأمر، مثال:\n"
                 "/zil بطل غامض يصل إلى القصر وينقذ الأميرة.",
             )
+            update_job(job_id, "rejected_short_story")
             return
+
+        log.info(
+            "JOB %s: STORY ACCEPTED (%s characters)",
+            job_id,
+            len(story),
+        )
 
         await reply(
             update,
-            "بدأت صناعة فيديو ظل:\n"
-            "• 6 مشاهد وانتقالات ناعمة\n"
-            "• نحو 30 ثانية عمودي 9:16\n"
-            "• مقاطع فيديو من Pixabay\n"
-            "• نص عربي وراوي عربي وخلفية صوتية اصطناعية منخفضة\n\n"
+            "بدأت صناعة فيديو ظل.\n"
+            "6 مشاهد، انتقالات ناعمة، فيديو عمودي، "
+            "راوي عربي وخلفية صوتية.\n\n"
             "قد تستغرق العملية عدة دقائق. "
-            "المقاطع المتاحة لا تضمن تطابقًا كاملًا مع كل حدث في القصة.",
+            "سيتم إبلاغك عند حدوث خطأ.",
         )
 
         loop = asyncio.get_running_loop()
+
+        log.info(
+            "JOB %s: STARTING BACKGROUND VIDEO GENERATION",
+            job_id,
+        )
+
         final_path = await loop.run_in_executor(
             None,
             generate_video,
             story,
             workdir,
+            job_id,
         )
+
+        update_job(job_id, "sending_video")
 
         await send_video(update, final_path)
 
+        update_job(job_id, "completed")
+
     except Exception as exc:
-        log.exception("Generation failed. job=%s", job_id)
+        log.exception("GENERATION FAILED: job=%s", job_id)
+
+        update_job(
+            job_id,
+            "failed",
+            str(exc),
+        )
+
         message = str(exc)
 
         if "PIXABAY_API_KEY" in message:
-            friendly = "فشل إنشاء الفيديو: مفتاح PIXABAY_API_KEY غير موجود في Render."
-        elif "Pixabay" in message or "تنزيل" in message or "مشهد" in message:
+            friendly = (
+                "فشل إنشاء الفيديو: مفتاح PIXABAY_API_KEY "
+                "غير موجود في Render."
+            )
+        elif "تعذر تنزيل" in message or "Pixabay" in message:
             friendly = (
                 "تعذر الحصول على مقاطع فيديو صالحة من Pixabay. "
-                "تحقق من المفتاح أو حدود API ثم جرّب مجددًا."
+                "تحقق من المفتاح واتصال Render."
             )
         elif "القصة أطول" in message:
             friendly = message
-        elif "الراوي" in message or "TTS" in message:
+        elif "الراوي العربي" in message:
             friendly = "تعذر إنشاء الراوي العربي. تحقق من اتصال Render."
         else:
             friendly = (
-                f"حدث خطأ أثناء إنشاء الفيديو. رقم العملية: {job_id}. "
-                "راجع Render Logs."
+                f"فشل إنشاء الفيديو. رقم العملية: {job_id}\n"
+                "افحص Render Logs لمعرفة المرحلة التي توقفت."
             )
 
         try:
             await reply(update, friendly)
         except Exception:
-            log.exception("Failed to send error message to Telegram.")
+            log.exception(
+                "Could not send error reply for job %s",
+                job_id,
+            )
 
     finally:
         with busy_lock:
@@ -1011,8 +1226,15 @@ async def generate_for_user(update, story):
 
         shutil.rmtree(workdir, ignore_errors=True)
 
+        log.info("JOB %s: CLEANUP FINISHED", job_id)
 
-async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+async def start_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    log.info("START COMMAND RECEIVED")
+
     await reply(
         update,
         "أهلًا بك في ظل ZIL.\n\n"
@@ -1027,14 +1249,25 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def status_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
     with busy_lock:
         active = len(busy_users)
+
+    with jobs_lock:
+        recent = list(jobs.items())[-5:]
+
+    recent_text = "\n".join(
+        f"{jid}: {data.get('status', 'unknown')}"
+        for jid, data in recent
+    ) or "لا توجد عمليات مسجلة."
 
     await reply(
         update,
         "حالة ظل ZIL\n\n"
-        f"البوت: {'مهيأ' if BOT_TOKEN else 'رمز البوت غير موجود'}\n"
+        f"البوت: {'مهيأ' if BOT_TOKEN else 'الرمز غير موجود'}\n"
         f"Pixabay key: {'موجود' if PIXABAY_API_KEY else 'غير موجود'}\n"
         f"FFmpeg: {'جاهز' if check_binary('ffmpeg') else 'غير موجود'}\n"
         f"FFprobe: {'جاهز' if check_binary('ffprobe') else 'غير موجود'}\n"
@@ -1042,14 +1275,23 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"المدة: {TOTAL_SECONDS} ثانية\n"
         f"الدقة: {WIDTH}x{HEIGHT}\n"
         f"الطلبات النشطة: {active}\n\n"
-        "وجود المفتاح لا يثبت صلاحيته؛ يتم اختباره عند التوليد.",
+        f"آخر العمليات:\n{recent_text}",
     )
 
 
-async def zil_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def zil_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    log.info("ZIL COMMAND RECEIVED")
+
     story = " ".join(context.args).strip()
 
-    if not story and update.effective_message and update.effective_message.text:
+    if (
+        not story
+        and update.effective_message
+        and update.effective_message.text
+    ):
         story = re.sub(
             r"^/\S+\s*",
             "",
@@ -1057,26 +1299,48 @@ async def zil_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ).strip()
 
     if not story:
-        await reply(update, "اكتب القصة بعد الأمر، مثال:\n/zil بطل غامض يدخل القصر.")
+        await reply(
+            update,
+            "اكتب القصة بعد الأمر، مثال:\n"
+            "/zil بطل غامض يدخل القصر.",
+        )
         return
 
     await generate_for_user(update, story)
 
 
-async def arabic_zil_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def arabic_zil_handler(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    log.info("ARABIC ZIL COMMAND RECEIVED")
+
     message = update.effective_message
     text = message.text if message else ""
 
-    story = re.sub(r"^/ظل(?:@\w+)?\s*", "", text or "").strip()
+    story = re.sub(
+        r"^/ظل(?:@\w+)?\s*",
+        "",
+        text or "",
+    ).strip()
 
     if not story:
-        await reply(update, "اكتب القصة بعد الأمر، مثال:\n/ظل بطل غامض يدخل القصر.")
+        await reply(
+            update,
+            "اكتب القصة بعد الأمر، مثال:\n"
+            "/ظل بطل غامض يدخل القصر.",
+        )
         return
 
     await generate_for_user(update, story)
 
 
-async def test_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def test_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    log.info("TEST COMMAND RECEIVED")
+
     story = (
         "في مملكة بعيدة ظهر رجل غامض عند أبواب القصر. "
         "رفض الملك السماح له بالاقتراب من الأميرة. "
@@ -1086,10 +1350,18 @@ async def test_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "لكن الملك لاحظ علامة قديمة على ذراعه وعرف سرًا خطيرًا."
     )
 
+    log.info(
+        "TEST STORY READY: %s characters",
+        len(story),
+    )
+
     await generate_for_user(update, story)
 
 
-async def text_story_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def text_story_handler(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
     message = update.effective_message
 
     if not message or not message.text:
@@ -1100,10 +1372,28 @@ async def text_story_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if text.startswith("/"):
         return
 
+    log.info("PLAIN TEXT STORY RECEIVED")
+
     await generate_for_user(update, text)
 
 
-# ============================== FLASK HEALTH ==============================
+async def error_handler(
+    update: object,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    log.error(
+        "TELEGRAM HANDLER ERROR",
+        exc_info=(
+            type(context.error),
+            context.error,
+            context.error.__traceback__,
+        ) if context.error else None,
+    )
+
+
+# ============================================================
+# FLASK
+# ============================================================
 
 @flask_app.get("/")
 def home():
@@ -1121,7 +1411,11 @@ def health():
     ffmpeg_ok = check_binary("ffmpeg")
     ffprobe_ok = check_binary("ffprobe")
 
-    ok = bool(BOT_TOKEN) and ffmpeg_ok and ffprobe_ok
+    ok = (
+        bool(BOT_TOKEN)
+        and ffmpeg_ok
+        and ffprobe_ok
+    )
 
     return jsonify({
         "service": "ZIL",
@@ -1135,6 +1429,17 @@ def health():
     }), (200 if ok else 503)
 
 
+@flask_app.get("/jobs")
+def jobs_endpoint():
+    with jobs_lock:
+        snapshot = dict(jobs)
+
+    return jsonify({
+        "service": "ZIL",
+        "jobs": snapshot,
+    })
+
+
 def run_flask():
     flask_app.run(
         host="0.0.0.0",
@@ -1144,18 +1449,37 @@ def run_flask():
     )
 
 
-# ============================== MAIN ==============================
+# ============================================================
+# MAIN
+# ============================================================
 
 def main():
     validate_environment()
-    log.info("Starting ZIL Telegram bot")
 
-    telegram_app = Application.builder().token(BOT_TOKEN).build()
+    log.info("BOT STARTUP: environment validated")
+    log.info("BOT STARTUP: building Telegram application")
 
-    telegram_app.add_handler(CommandHandler("start", start_command))
-    telegram_app.add_handler(CommandHandler("status", status_command))
-    telegram_app.add_handler(CommandHandler("test", test_command))
-    telegram_app.add_handler(CommandHandler("zil", zil_command))
+    telegram_app = (
+        Application.builder()
+        .token(BOT_TOKEN)
+        .build()
+    )
+
+    telegram_app.add_handler(
+        CommandHandler("start", start_command)
+    )
+
+    telegram_app.add_handler(
+        CommandHandler("status", status_command)
+    )
+
+    telegram_app.add_handler(
+        CommandHandler("test", test_command)
+    )
+
+    telegram_app.add_handler(
+        CommandHandler("zil", zil_command)
+    )
 
     telegram_app.add_handler(
         MessageHandler(
@@ -1171,13 +1495,20 @@ def main():
         )
     )
 
+    telegram_app.add_error_handler(error_handler)
+
     threading.Thread(
         target=run_flask,
         daemon=True,
         name="zil-flask",
     ).start()
 
-    telegram_app.run_polling(drop_pending_updates=True)
+    log.info("BOT STARTUP: Flask thread started")
+    log.info("BOT STARTUP: starting Telegram polling")
+
+    telegram_app.run_polling(
+        drop_pending_updates=True,
+    )
 
 
 if __name__ == "__main__":
