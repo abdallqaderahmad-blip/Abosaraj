@@ -1,8 +1,5 @@
 Flask
+python-telegram-bot
 requests
-Pillow
-arabic-reshaper
-python-bidi
-python-telegram-bot>=20,<23
 edge-tts
 gTTS
