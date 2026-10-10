@@ -4,4 +4,6 @@ moviepy==1.0.3
 requests
 edge-tts
 pillow
+arabic-reshaper
+python-bidi
 imageio-ffmpeg
