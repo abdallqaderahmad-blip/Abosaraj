@@ -3,6 +3,13 @@ from flask import Flask, request
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
+# Patch مهم جدا - قبل أي شي
+from PIL import Image
+if not hasattr(Image, 'ANTIALIAS'):
+    Image.ANTIALIAS = Image.LANCZOS
+if not hasattr(Image, 'BICUBIC'):
+    Image.BICUBIC = Image.LANCZOS
+
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 PIXABAY_KEY = os.getenv("PIXABAY_KEY")
 WEBHOOK_URL = os.getenv("RENDER_EXTERNAL_URL")
@@ -15,7 +22,7 @@ def tg_send(chat_id, text):
 def tg_send_video(chat_id, path):
     try:
         with open(path,"rb") as f:
-            requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendVideo", data={"chat_id":chat_id,"caption":"✅ نظيف بدون كتابة - متناسق"}, files={"video":f}, timeout=180)
+            requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendVideo", data={"chat_id":chat_id,"caption":"✅ V27 نظيف بدون كتابة - بدون علامة - متناسق"}, files={"video":f}, timeout=180)
     except Exception as e: tg_send(chat_id,f"❌ رفع فشل: {e}")
 
 def get_keyword(t):
@@ -25,7 +32,11 @@ def get_keyword(t):
     return "cinematic night"
 
 def build(chat_id, lines):
-    # استيراد تقيل جوة الدالة عشان ما يوقع السيرفر
+    # Patch تاني جوة الـ Thread
+    from PIL import Image as PILImage
+    if not hasattr(PILImage, 'ANTIALIAS'):
+        PILImage.ANTIALIAS = PILImage.LANCZOS
+    
     from moviepy.editor import VideoFileClip, AudioFileClip
     from gtts import gTTS
     try:
@@ -45,8 +56,12 @@ def build(chat_id, lines):
                 else: raise Exception()
             except:
                 open(v,"wb").write(requests.get("https://cdn.pixabay.com/video/2020/07/30/45549-442790323_small.mp4",timeout=30).content)
+            
             gTTS(text=line, lang='ar', slow=False).save(a)
-            vc=VideoFileClip(v).resize((720,1280))
+            
+            # resize بدون ANTIALIAS - نستخدم with block
+            vc=VideoFileClip(v)
+            vc=vc.resize((720,1280))
             ac=AudioFileClip(a)
             dur=ac.duration+0.3
             if vc.duration < dur: vc=vc.loop(duration=dur)
@@ -55,12 +70,13 @@ def build(chat_id, lines):
             vc.close(); ac.close()
             part_files.append(part)
             tg_send(chat_id,f"✅ مشهد {i+1} جاهز")
+
         with open("list.txt","w") as f:
             for p in part_files: f.write(f"file '{p}'\n")
         subprocess.run(["ffmpeg","-y","-f","concat","-safe","0","-i","list.txt","-c","copy","FINAL.mp4"], check=True)
         tg_send_video(chat_id,"FINAL.mp4")
     except Exception as e:
-        tg_send(chat_id,f"❌ {e}\n{traceback.format_exc()[:1000]}")
+        tg_send(chat_id,f"❌ {e}\n{traceback.format_exc()[:1200]}")
 
 async def zel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     txt=re.sub(r'^/(zel|ظل)\s*','',update.message.text or "").strip()
@@ -68,7 +84,7 @@ async def zel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lines=["جلست وحيدة في الليل","المطر ينزل على النافذة","تذكرت كلام أمها ثم ابتسمت"]
     else:
         lines=[l.strip() for l in re.split(r'[.!؟\n]+', txt) if len(l.strip())>3][:3]
-    await update.message.reply_text(f"🎬 V26 - {len(lines)} مشاهد نظيفة")
+    await update.message.reply_text(f"🎬 V27 - {len(lines)} مشاهد نظيفة بدون كتابة")
     threading.Thread(target=build, args=(update.effective_chat.id, lines), daemon=True).start()
 
 application=Application.builder().token(BOT_TOKEN).build()
@@ -82,7 +98,7 @@ loop.run_until_complete(application.initialize())
 loop.run_until_complete(application.start())
 
 @web_app.route('/')
-def home(): return "V26 OK - no ANTIALIAS"
+def home(): return "V27 FIXED"
 
 @web_app.route(f'/{BOT_TOKEN}', methods=['POST'])
 def webhook():
@@ -90,8 +106,7 @@ def webhook():
         data=request.get_json(force=True)
         update=Update.de_json(data, application.bot)
         loop.run_until_complete(application.process_update(update))
-    except Exception as e:
-        print(e)
+    except: pass
     return 'ok'
 
 if __name__=="__main__":
@@ -99,5 +114,4 @@ if __name__=="__main__":
     if WEBHOOK_URL:
         try: requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook?url={WEBHOOK_URL}/{BOT_TOKEN}", timeout=10)
         except: pass
-    print(f"Starting on {port}")
     web_app.run(host='0.0.0.0', port=port)
