@@ -12,22 +12,22 @@ import edge_tts
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 PEXELS_KEY = os.getenv("PEXELS_KEY")
 
-# ========== WEB SERVER عشان Render ==========
+# ========== WEB SERVER لـ Render ==========
 web_app = Flask(__name__)
 @web_app.route('/')
 def home():
-    return "V11 Zel Factory - Bot Active - Use /zel in Telegram"
+    return "V12 Zel Factory - Bot Active - Use /zel"
 
 def run_web():
     port = int(os.environ.get("PORT", 10000))
     web_app.run(host='0.0.0.0', port=port)
 
-# ========== SCENES ==========
+# ========== SCENES مبسطة لـ Pexels ==========
 SCENES = [
-    {"keyword": "lonely girl dark room portrait", "text": "جلست ظل وحيدة... في عتمة لا يراها أحد"},
-    {"keyword": "girl window rain sad portrait", "text": "كانت تبحث عن ظل... يحميها من برد الوحدة"},
-    {"keyword": "crowd street alone girl portrait", "text": "في الشارع... الجميع يمضي ولا أحد يلتفت"},
-    {"keyword": "mother praying light portrait", "text": "ثم جاء صوت أمها... بدعاء يشبه النور"}
+    {"keyword": "sad girl", "text": "جلست ظل وحيدة... في عتمة لا يراها أحد"},
+    {"keyword": "rain window", "text": "كانت تبحث عن ظل... يحميها من برد الوحدة"},
+    {"keyword": "crowd street", "text": "في الشارع... الجميع يمضي ولا أحد يلتفت"},
+    {"keyword": "prayer light", "text": "ثم جاء صوت أمها... بدعاء يشبه النور"}
 ]
 
 MUSIC_URL = "https://cdn.pixabay.com/download/audio/2022/05/27/audio_1808fbf07a.mp3"
@@ -40,19 +40,26 @@ async def make_voice(text, output="voice.mp3"):
 
 def download_pexels(keyword, filename):
     headers = {"Authorization": PEXELS_KEY}
-    params = {"query": keyword, "per_page": 15, "orientation": "portrait", "size": "medium"}
-    r = requests.get("https://api.pexels.com/videos/search", headers=headers, params=params, timeout=25)
-    data = r.json()
-    if not data.get("videos"):
-        raise Exception(f"No video for {keyword}")
-    video = random.choice(data["videos"])
-    portrait_files = [f for f in video["video_files"] if f["width"] < f["height"]]
-    file_link = portrait_files[0]["link"] if portrait_files else video["video_files"][0]["link"]
-    with requests.get(file_link, stream=True, timeout=40) as resp:
-        with open(filename, "wb") as f:
-            for chunk in resp.iter_content(1024*1024):
-                f.write(chunk)
-    return filename
+    tries = [keyword, "girl portrait", "dark portrait", "sad portrait", "girl"]
+    for q in tries:
+        try:
+            params = {"query": q, "per_page": 20, "orientation": "portrait"}
+            r = requests.get("https://api.pexels.com/videos/search", headers=headers, params=params, timeout=25)
+            data = r.json()
+            if data.get("videos"):
+                video = random.choice(data["videos"])
+                portrait_files = [f for f in video["video_files"] if f["width"] < f["height"]]
+                file_link = portrait_files[0]["link"] if portrait_files else video["video_files"][0]["link"]
+                print(f"Found {q}")
+                with requests.get(file_link, stream=True, timeout=40) as resp:
+                    with open(filename, "wb") as f:
+                        for chunk in resp.iter_content(1024*1024):
+                            f.write(chunk)
+                return filename
+        except Exception as e:
+            print(f"Fail {q}: {e}")
+            continue
+    raise Exception(f"No video for {keyword}")
 
 def build_final():
     clips = []
@@ -79,14 +86,14 @@ def build_final():
     except:
         pass
 
-    final_video.write_videofile("V11_ZEL_FINAL.mp4", fps=24, codec="libx264", audio_codec="aac", preset="ultrafast")
-    return "V11_ZEL_FINAL.mp4"
+    final_video.write_videofile("V12_ZEL_FINAL.mp4", fps=24, codec="libx264", audio_codec="aac", preset="ultrafast")
+    return "V12_ZEL_FINAL.mp4"
 
 async def zel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🎬 V11 مصنع ظل - الراوي الغامض\n📦 9:16 + صوت رجل + موسيقى\n⏳ 3-4 دقايق وبجهز...")
+    await update.message.reply_text("🎬 V12 مصنع ظل\n⏳ ببني 4 مشاهد 9:16... 3 دقايق")
     try:
         path = build_final()
-        await update.message.reply_video(video=open(path,"rb"), caption="🎥 V11 ظل - Reels جاهز\n🎙️ راوي غامض")
+        await update.message.reply_video(video=open(path,"rb"), caption="🎥 V12 ظل - جاهز")
     except Exception as e:
         await update.message.reply_text(f"❌ خطأ: {e}")
 
@@ -98,7 +105,7 @@ def main():
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("zel", zel))
     app.add_handler(MessageHandler(filters.Regex(r'^(ظل|/ظل)$'), zel_arabic))
-    print("V11 Factory Running...")
+    print("V12 Running...")
     app.run_polling()
 
 if __name__ == "__main__":
