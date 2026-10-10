@@ -1,6 +1,6 @@
 python-telegram-bot
 flask
 moviepy==1.0.3
-edge-tts
 requests
 gtts
+pillow==9.5.0
