@@ -20,10 +20,12 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 # =========================================================
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
+
 PIXABAY_API_KEY = (
     os.getenv("PIXABAY_API_KEY", "").strip()
     or os.getenv("PIXABAY_KEY", "").strip()
 )
+
 ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID", "").strip()
 PORT = int(os.getenv("PORT", "10000"))
 
@@ -34,6 +36,7 @@ SCENE_DURATION = 5
 VIDEO_WIDTH = 720
 VIDEO_HEIGHT = 1280
 VIDEO_FPS = 24
+
 MAX_ACTIVE_JOBS = 1
 MAX_STORY_LENGTH = 2500
 MAX_VIDEO_SIZE = 49 * 1024 * 1024
@@ -46,6 +49,7 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(message)s",
     stream=sys.stdout,
 )
+
 log = logging.getLogger("ZIL")
 
 app = Flask(__name__)
@@ -81,7 +85,10 @@ def run_command(command, timeout=180):
     )
 
     if result.returncode != 0:
-        error = (result.stderr or result.stdout or "")[-2500:]
+        error = (
+            result.stderr or result.stdout or "Unknown FFmpeg error"
+        )[-2500:]
+
         raise RuntimeError(
             f"Command failed ({result.returncode}): {error}"
         )
@@ -106,20 +113,26 @@ def notify_admin(message):
         return
 
     try:
-        requests.post(
+        response = requests.post(
             f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
             json={
                 "chat_id": ADMIN_CHAT_ID,
                 "text": message[:3500],
             },
             timeout=15,
-        ).raise_for_status()
+        )
+        response.raise_for_status()
+
     except Exception:
         log.exception("Admin notification failed")
 
 
 def report_error(job_id, error):
-    log.exception("Job %s failed: %s", job_id, error)
+    log.error(
+        "Job %s failed: %s",
+        job_id,
+        error,
+    )
 
     update_job(
         job_id,
@@ -140,7 +153,7 @@ def report_error(job_id, error):
 
 
 # =========================================================
-# PIXABAY
+# PIXABAY VIDEO SEARCH
 # =========================================================
 
 def search_pixabay_video(query):
@@ -160,8 +173,8 @@ def search_pixabay_video(query):
         },
         timeout=30,
     )
-    response.raise_for_status()
 
+    response.raise_for_status()
     data = response.json()
 
     if not isinstance(data, dict) or "hits" not in data:
@@ -177,7 +190,9 @@ def search_pixabay_video(query):
             if url and urlparse(url).scheme == "https":
                 return url
 
-    raise RuntimeError(f"No downloadable video found for: {query}")
+    raise RuntimeError(
+        f"No downloadable video found for: {query}"
+    )
 
 
 def download_video(url, destination):
@@ -206,7 +221,9 @@ def download_video(url, destination):
                 output.write(chunk)
 
     if total < 10000:
-        raise RuntimeError("Downloaded video is too small.")
+        raise RuntimeError(
+            "Downloaded video is too small."
+        )
 
     return destination
 
@@ -216,35 +233,54 @@ def download_video(url, destination):
 # =========================================================
 
 def normalize_scene(source, destination):
-    run_command([
-        "ffmpeg",
-        "-y",
-        "-hide_banner",
-        "-loglevel", "error",
-        "-i", str(source),
-        "-t", str(SCENE_DURATION),
-        "-vf",
-        (
-            f"scale={VIDEO_WIDTH}:{VIDEO_HEIGHT}:"
-            "force_original_aspect_ratio=increase,"
-            f"crop={VIDEO_WIDTH}:{VIDEO_HEIGHT},"
-            "setsar=1,"
-            f"fps={VIDEO_FPS},"
-            "format=yuv420p"
-        ),
-        "-an",
-        "-c:v", "libx264",
-        "-preset", "ultrafast",
-        "-crf", "25",
-        "-movflags", "+faststart",
-        str(destination),
-    ], timeout=180)
+    run_command(
+        [
+            "ffmpeg",
+            "-y",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-i",
+            str(source),
+            "-t",
+            str(SCENE_DURATION),
+            "-vf",
+            (
+                f"scale={VIDEO_WIDTH}:{VIDEO_HEIGHT}:"
+                "force_original_aspect_ratio=increase,"
+                f"crop={VIDEO_WIDTH}:{VIDEO_HEIGHT},"
+                "setsar=1,"
+                f"fps={VIDEO_FPS},"
+                "format=yuv420p"
+            ),
+            "-an",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "ultrafast",
+            "-crf",
+            "25",
+            "-movflags",
+            "+faststart",
+            str(destination),
+        ],
+        timeout=180,
+    )
 
-    if not destination.exists() or destination.stat().st_size < 1000:
-        raise RuntimeError("FFmpeg produced an empty scene.")
+    if (
+        not destination.exists()
+        or destination.stat().st_size < 1000
+    ):
+        raise RuntimeError(
+            "FFmpeg produced an empty scene."
+        )
 
     return destination
 
+
+# =========================================================
+# ARABIC NARRATION
+# =========================================================
 
 def create_narration(text, destination):
     try:
@@ -256,15 +292,21 @@ def create_narration(text, destination):
                 voice="ar-SA-HamedNeural",
                 rate="-8%",
             )
+
             await communicate.save(str(destination))
 
         asyncio.run(generate())
 
-        if destination.exists() and destination.stat().st_size > 1000:
+        if (
+            destination.exists()
+            and destination.stat().st_size > 1000
+        ):
             return destination
 
     except Exception:
-        log.exception("Edge TTS failed; trying gTTS.")
+        log.exception(
+            "Edge TTS failed; trying gTTS."
+        )
 
     try:
         from gtts import gTTS
@@ -275,85 +317,187 @@ def create_narration(text, destination):
             slow=False,
         ).save(str(destination))
 
-        if destination.exists() and destination.stat().st_size > 1000:
+        if (
+            destination.exists()
+            and destination.stat().st_size > 1000
+        ):
             return destination
 
     except Exception:
-        log.exception("gTTS failed.")
+        log.exception(
+            "gTTS failed."
+        )
 
-    raise RuntimeError("Arabic narration generation failed.")
+    raise RuntimeError(
+        "Arabic narration generation failed."
+    )
 
+
+# =========================================================
+# BACKGROUND AUDIO
+# =========================================================
 
 def make_background_music(destination, duration):
-    run_command([
-        "ffmpeg",
-        "-y",
-        "-hide_banner",
-        "-loglevel", "error",
-        "-f", "lavfi",
-        "-i",
-        (
-            "sine=frequency=110:sample_rate=44100:"
-            f"duration={duration}"
-        ),
-        "-af", "volume=0.035,afade=t=in:d=2",
-        "-c:a", "aac",
-        "-b:a", "96k",
-        str(destination),
-    ], timeout=60)
+    run_command(
+        [
+            "ffmpeg",
+            "-y",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            (
+                "sine=frequency=110:sample_rate=44100:"
+                f"duration={duration}"
+            ),
+            "-af",
+            "volume=0.035,afade=t=in:d=2",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "96k",
+            str(destination),
+        ],
+        timeout=60,
+    )
 
-    if not destination.exists() or destination.stat().st_size < 1000:
-        raise RuntimeError("Background audio generation failed.")
+    if (
+        not destination.exists()
+        or destination.stat().st_size < 1000
+    ):
+        raise RuntimeError(
+            "Background audio generation failed."
+        )
 
     return destination
 
 
-def mux_audio(video, narration, music, output):
-    run_command([
-        "ffmpeg",
-        "-y",
-        "-hide_banner",
-        "-loglevel", "error",
-        "-i", str(video),
-        "-i", str(narration),
-        "-i", str(music),
-        "-filter_complex",
-        (
-            "[1:a]volume=1.0[voice];"
-            "[2:a]volume=0.20[bed];"
-            "[bed][voice]sidechaincompress="
-            "threshold=0.03:ratio=6:attack=20:release=300[duck];"
-            "[voice][duck]amix=inputs=2:duration=first:"
-            "dropout_transition=2[aout]"
-        ),
-        "-map", "0:v:0",
-        "-map", "[aout]",
-        "-c:v", "copy",
-        "-c:a", "aac",
-        "-b:a", "128k",
-        "-shortest",
-        "-movflags", "+faststart",
-        str(output),
-    ], timeout=180)
+# =========================================================
+# FIXED AUDIO MIXING
+# =========================================================
 
-    if not output.exists() or output.stat().st_size < 10000:
-        raise RuntimeError("Final video file is missing or too small.")
+def mux_audio(video, narration, music, output):
+    # The voice stream is used only once in the final mix.
+    # This avoids the previous FFmpeg filtergraph error.
+
+    run_command(
+        [
+            "ffmpeg",
+            "-y",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-i",
+            str(video),
+            "-i",
+            str(narration),
+            "-i",
+            str(music),
+            "-filter_complex",
+            (
+                "[1:a]volume=1.0[voice];"
+                "[2:a]volume=0.12[bed];"
+                "[voice][bed]"
+                "amix=inputs=2:duration=first:"
+                "dropout_transition=2[aout]"
+            ),
+            "-map",
+            "0:v:0",
+            "-map",
+            "[aout]",
+            "-c:v",
+            "copy",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "128k",
+            "-shortest",
+            "-movflags",
+            "+faststart",
+            str(output),
+        ],
+        timeout=180,
+    )
+
+    if (
+        not output.exists()
+        or output.stat().st_size < 10000
+    ):
+        raise RuntimeError(
+            "Final video file is missing or too small."
+        )
 
     return output
 
 
 # =========================================================
-# VIDEO JOB
+# TELEGRAM ASYNC BRIDGE
+# =========================================================
+
+def send_coroutine(application, coroutine, timeout=360):
+    loop = application.bot_data.get("event_loop")
+
+    if loop is None or not loop.is_running():
+        coroutine.close()
+        raise RuntimeError(
+            "Telegram event loop is not available."
+        )
+
+    future = asyncio.run_coroutine_threadsafe(
+        coroutine,
+        loop,
+    )
+
+    return future.result(timeout=timeout)
+
+
+async def send_video_to_user(
+    application,
+    chat_id,
+    video_path,
+    job_id,
+):
+    with open(video_path, "rb") as video_file:
+        await application.bot.send_video(
+            chat_id=chat_id,
+            video=video_file,
+            caption=(
+                "تم إنشاء فيديو ظل ZIL.\n"
+                f"رقم العملية: {job_id}"
+            ),
+            supports_streaming=True,
+            read_timeout=180,
+            write_timeout=180,
+            connect_timeout=30,
+            pool_timeout=30,
+        )
+
+
+async def send_text_to_user(
+    application,
+    chat_id,
+    message,
+):
+    await application.bot.send_message(
+        chat_id=chat_id,
+        text=message[:3500],
+    )
+
+
+# =========================================================
+# VIDEO GENERATION JOB
 # =========================================================
 
 def build_video(job_id, chat_id, story, telegram_app):
     global ACTIVE_JOBS
 
     workdir = BASE_DIR / job_id
-    workdir.mkdir(parents=True, exist_ok=True)
-
-    with JOBS_LOCK:
-        ACTIVE_JOBS += 1
+    workdir.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
 
     try:
         update_job(
@@ -363,15 +507,23 @@ def build_video(job_id, chat_id, story, telegram_app):
         )
 
         if not command_exists("ffmpeg"):
-            raise RuntimeError("FFmpeg is missing.")
+            raise RuntimeError(
+                "FFmpeg is missing."
+            )
 
         if not PIXABAY_API_KEY:
-            raise RuntimeError("PIXABAY_API_KEY is missing.")
+            raise RuntimeError(
+                "PIXABAY_API_KEY is missing."
+            )
 
-        story = (story or "").strip()[:MAX_STORY_LENGTH]
+        story = (
+            story or ""
+        ).strip()[:MAX_STORY_LENGTH]
 
         if not story:
-            raise RuntimeError("Story is empty.")
+            raise RuntimeError(
+                "Story is empty."
+            )
 
         queries = [
             "cinematic dramatic landscape",
@@ -384,87 +536,163 @@ def build_video(job_id, chat_id, story, telegram_app):
 
         scenes = []
 
-        for index, query in enumerate(queries, start=1):
+        for index, query in enumerate(
+            queries,
+            start=1,
+        ):
             update_job(
                 job_id,
                 stage=f"scene_{index}_download",
             )
 
             try:
-                video_url = search_pixabay_video(query)
+                video_url = search_pixabay_video(
+                    query
+                )
+
             except Exception as error:
                 log.warning(
-                    "Pixabay search failed for %s: %s",
+                    "Search failed for %s: %s",
                     query,
                     error,
                 )
+
                 video_url = search_pixabay_video(
                     "cinematic nature landscape"
                 )
 
-            raw_path = workdir / f"raw_{index}.mp4"
-            normalized_path = workdir / f"scene_{index}.mp4"
+            raw_path = (
+                workdir / f"raw_{index}.mp4"
+            )
 
-            download_video(video_url, raw_path)
+            normalized_path = (
+                workdir / f"scene_{index}.mp4"
+            )
+
+            download_video(
+                video_url,
+                raw_path,
+            )
 
             update_job(
                 job_id,
                 stage=f"scene_{index}_processing",
             )
 
-            normalize_scene(raw_path, normalized_path)
+            normalize_scene(
+                raw_path,
+                normalized_path,
+            )
+
             scenes.append(normalized_path)
 
-            raw_path.unlink(missing_ok=True)
+            raw_path.unlink(
+                missing_ok=True
+            )
 
-        update_job(job_id, stage="concatenate")
-
-        concat_file = workdir / "concat.txt"
-
-        with open(concat_file, "w", encoding="utf-8") as file:
-            for scene in scenes:
-                safe_path = str(scene).replace("'", "'\\''")
-                file.write(f"file '{safe_path}'\n")
-
-        silent_video = workdir / "silent_video.mp4"
-
-        run_command([
-            "ffmpeg",
-            "-y",
-            "-hide_banner",
-            "-loglevel", "error",
-            "-f", "concat",
-            "-safe", "0",
-            "-i", str(concat_file),
-            "-c:v", "libx264",
-            "-preset", "ultrafast",
-            "-crf", "25",
-            "-pix_fmt", "yuv420p",
-            "-r", str(VIDEO_FPS),
-            "-movflags", "+faststart",
-            str(silent_video),
-        ], timeout=300)
-
-        update_job(job_id, stage="narration")
-
-        narration_text = (
-            story + "\n\nتابعوا الجزء القادم لاكتشاف السر."
+        # Concatenate scenes.
+        update_job(
+            job_id,
+            stage="concatenate",
         )
 
-        narration_path = workdir / "narration.mp3"
-        create_narration(narration_text, narration_path)
+        concat_file = (
+            workdir / "concat.txt"
+        )
 
-        update_job(job_id, stage="audio")
+        with open(
+            concat_file,
+            "w",
+            encoding="utf-8",
+        ) as file:
+            for scene in scenes:
+                safe_path = str(scene).replace(
+                    "'",
+                    "'\\''",
+                )
 
-        music_path = workdir / "ambient.m4a"
+                file.write(
+                    f"file '{safe_path}'\n"
+                )
+
+        silent_video = (
+            workdir / "silent_video.mp4"
+        )
+
+        run_command(
+            [
+                "ffmpeg",
+                "-y",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-f",
+                "concat",
+                "-safe",
+                "0",
+                "-i",
+                str(concat_file),
+                "-c:v",
+                "libx264",
+                "-preset",
+                "ultrafast",
+                "-crf",
+                "25",
+                "-pix_fmt",
+                "yuv420p",
+                "-r",
+                str(VIDEO_FPS),
+                "-movflags",
+                "+faststart",
+                str(silent_video),
+            ],
+            timeout=300,
+        )
+
+        # Generate Arabic narration.
+        update_job(
+            job_id,
+            stage="narration",
+        )
+
+        narration_text = (
+            story
+            + "\n\nتابعوا الجزء القادم لاكتشاف السر."
+        )
+
+        narration_path = (
+            workdir / "narration.mp3"
+        )
+
+        create_narration(
+            narration_text,
+            narration_path,
+        )
+
+        # Generate background audio.
+        update_job(
+            job_id,
+            stage="background_audio",
+        )
+
+        music_path = (
+            workdir / "ambient.m4a"
+        )
+
         make_background_music(
             music_path,
             SCENE_COUNT * SCENE_DURATION,
         )
 
-        final_path = workdir / "ZIL_video.mp4"
+        # Mix audio with video.
+        update_job(
+            job_id,
+            stage="mux_audio",
+        )
 
-        update_job(job_id, stage="mux_audio")
+        final_path = (
+            workdir / "ZIL_video.mp4"
+        )
 
         mux_audio(
             silent_video,
@@ -475,57 +703,46 @@ def build_video(job_id, chat_id, story, telegram_app):
 
         update_job(
             job_id,
-            status="completed",
+            status="sending",
             stage="sending_video",
             output=str(final_path),
             size=final_path.stat().st_size,
         )
 
-        # Send the final video to the user.
-        update_job(job_id, stage="sending_video")
-
+        # Send final video through Telegram.
         if final_path.stat().st_size > MAX_VIDEO_SIZE:
-            awaitable_message = (
-                "اكتمل الفيديو، لكن حجمه أكبر من الحد المسموح "
-                "به للإرسال المباشر من هذا البوت."
-            )
-
-            asyncio.run_coroutine_threadsafe(
-                telegram_app.bot.send_message(
-                    chat_id=chat_id,
-                    text=awaitable_message,
+            send_coroutine(
+                telegram_app,
+                send_text_to_user(
+                    telegram_app,
+                    chat_id,
+                    (
+                        "اكتمل إنشاء الفيديو، لكن حجمه أكبر "
+                        "من حد الإرسال الذي ضبطه البوت.\n"
+                        f"رقم العملية: {job_id}"
+                    ),
                 ),
-                telegram_app.bot_data["event_loop"],
-            ).result(timeout=30)
+                timeout=45,
+            )
 
             update_job(
                 job_id,
                 status="completed",
                 stage="completed_file_too_large",
             )
+
             return
 
-        async def send_video():
-            with open(final_path, "rb") as video_file:
-                await telegram_app.bot.send_video(
-                    chat_id=chat_id,
-                    video=video_file,
-                    caption=(
-                        "تم إنشاء فيديو ظل ZIL.\n"
-                        f"رقم العملية: {job_id}"
-                    ),
-                    supports_streaming=True,
-                    read_timeout=180,
-                    write_timeout=180,
-                    connect_timeout=30,
-                    pool_timeout=30,
-                )
-
-        future = asyncio.run_coroutine_threadsafe(
-            send_video(),
-            telegram_app.bot_data["event_loop"],
+        send_coroutine(
+            telegram_app,
+            send_video_to_user(
+                telegram_app,
+                chat_id,
+                final_path,
+                job_id,
+            ),
+            timeout=360,
         )
-        future.result(timeout=360)
 
         update_job(
             job_id,
@@ -533,34 +750,43 @@ def build_video(job_id, chat_id, story, telegram_app):
             stage="completed",
         )
 
-        log.info("Job %s completed and sent.", job_id)
+        log.info(
+            "Job %s completed and sent to Telegram.",
+            job_id,
+        )
 
     except Exception as error:
-        report_error(job_id, error)
+        report_error(
+            job_id,
+            error,
+        )
 
         try:
-            async def notify_user():
-                await telegram_app.bot.send_message(
-                    chat_id=chat_id,
-                    text=(
+            send_coroutine(
+                telegram_app,
+                send_text_to_user(
+                    telegram_app,
+                    chat_id,
+                    (
                         "تعذر إكمال الفيديو أو إرساله.\n"
                         f"رقم العملية: {job_id}\n"
-                        "استخدم /last_error لمعرفة تفاصيل الخطأ."
+                        "استخدم /last_error لمعرفة الخطأ."
                     ),
-                )
-
-            future = asyncio.run_coroutine_threadsafe(
-                notify_user(),
-                telegram_app.bot_data["event_loop"],
+                ),
+                timeout=45,
             )
-            future.result(timeout=30)
 
         except Exception:
-            log.exception("Could not notify user about failure.")
+            log.exception(
+                "Could not notify user about failure."
+            )
 
     finally:
         with JOBS_LOCK:
-            ACTIVE_JOBS = max(0, ACTIVE_JOBS - 1)
+            ACTIVE_JOBS = max(
+                0,
+                ACTIVE_JOBS - 1,
+            )
 
 
 # =========================================================
@@ -585,43 +811,56 @@ async def start_command(
     )
 
 
-async def start_job(update, context, story):
+async def start_job(
+    update,
+    context,
+    story,
+):
     global ACTIVE_JOBS
 
     if not update.message:
         return
 
-    story = (story or "").strip()[:MAX_STORY_LENGTH]
+    if not update.effective_chat:
+        return
+
+    story = (
+        story or ""
+    ).strip()[:MAX_STORY_LENGTH]
 
     if not story:
-        await update.message.reply_text("أرسل نص القصة أولًا.")
+        await update.message.reply_text(
+            "أرسل نص القصة أولًا."
+        )
         return
 
     with JOBS_LOCK:
         if ACTIVE_JOBS >= MAX_ACTIVE_JOBS:
-            await update.message.reply_text(
-                "يوجد فيديو قيد المعالجة. حاول مرة أخرى لاحقًا."
-            )
-            return
+            busy = True
+        else:
+            busy = False
 
-        job_id = uuid.uuid4().hex[:10]
+            job_id = uuid.uuid4().hex[:10]
 
-        JOBS[job_id] = {
-            "id": job_id,
-            "chat_id": update.effective_chat.id,
-            "status": "queued",
-            "stage": "queued",
-            "story": story[:500],
-            "created_at": time.time(),
-            "updated_at": time.time(),
-        }
+            JOBS[job_id] = {
+                "id": job_id,
+                "chat_id": update.effective_chat.id,
+                "status": "queued",
+                "stage": "queued",
+                "story": story[:500],
+                "created_at": time.time(),
+                "updated_at": time.time(),
+            }
 
-        ACTIVE_JOBS += 1
+            # Reserve the slot before starting the worker.
+            ACTIVE_JOBS += 1
 
-    # Reserve the job slot before starting the worker.
-    # build_video accounts for this reservation below.
-    with JOBS_LOCK:
-        ACTIVE_JOBS = max(0, ACTIVE_JOBS - 1)
+    if busy:
+        await update.message.reply_text(
+            "يوجد فيديو قيد المعالجة. "
+            "حاول مرة أخرى لاحقًا."
+        )
+        return
 
     await update.message.reply_text(
         "بدأت صناعة فيديو ظل ZIL.\n"
@@ -630,30 +869,62 @@ async def start_job(update, context, story):
         "سأرسل الفيديو هنا عند اكتماله."
     )
 
-    threading.Thread(
-        target=build_video,
-        args=(
+    try:
+        worker = threading.Thread(
+            target=build_video,
+            args=(
+                job_id,
+                update.effective_chat.id,
+                story,
+                context.application,
+            ),
+            daemon=True,
+        )
+
+        worker.start()
+
+    except Exception as error:
+        with JOBS_LOCK:
+            ACTIVE_JOBS = max(
+                0,
+                ACTIVE_JOBS - 1,
+            )
+
+        report_error(
             job_id,
-            update.effective_chat.id,
-            story,
-            context.application,
-        ),
-        daemon=True,
-    ).start()
+            error,
+        )
+
+        await update.message.reply_text(
+            "تعذر بدء عملية إنشاء الفيديو."
+        )
 
 
-async def test_command(update, context):
+async def test_command(
+    update,
+    context,
+):
     story = (
         "في مملكة غامضة، يصل رجل يخفي قوة خارقة. "
         "تقع الأميرة في حبه، لكن الملك يرفض العلاقة. "
         "يظهر نمر عملاق أمام القصر، فيواجهه الرجل "
         "ويكشف جزءًا من قوته المخفية."
     )
-    await start_job(update, context, story)
+
+    await start_job(
+        update,
+        context,
+        story,
+    )
 
 
-async def make_command(update, context):
-    story = " ".join(context.args).strip()
+async def make_command(
+    update,
+    context,
+):
+    story = " ".join(
+        context.args
+    ).strip()
 
     if not story:
         await update.message.reply_text(
@@ -662,10 +933,17 @@ async def make_command(update, context):
         )
         return
 
-    await start_job(update, context, story)
+    await start_job(
+        update,
+        context,
+        story,
+    )
 
 
-async def status_command(update, context):
+async def status_command(
+    update,
+    context,
+):
     with JOBS_LOCK:
         active = ACTIVE_JOBS
         recent = list(JOBS.values())[-5:]
@@ -673,8 +951,16 @@ async def status_command(update, context):
     lines = [
         "حالة ظل ZIL",
         f"العمليات النشطة: {active}",
-        f"Pixabay: {'جاهز' if PIXABAY_API_KEY else 'مفتاح مفقود'}",
-        f"FFmpeg: {'جاهز' if command_exists('ffmpeg') else 'غير موجود'}",
+        (
+            "Pixabay: جاهز"
+            if PIXABAY_API_KEY
+            else "Pixabay: مفتاح مفقود"
+        ),
+        (
+            "FFmpeg: جاهز"
+            if command_exists("ffmpeg")
+            else "FFmpeg: غير موجود"
+        ),
         "",
         "آخر العمليات:",
     ]
@@ -687,15 +973,23 @@ async def status_command(update, context):
         )
 
         if job.get("error"):
-            lines.append(f"الخطأ: {job['error'][:400]}")
+            lines.append(
+                f"الخطأ: {job['error'][:400]}"
+            )
 
-    await update.message.reply_text("\n".join(lines)[:3900])
+    await update.message.reply_text(
+        "\n".join(lines)[:3900]
+    )
 
 
-async def last_error_command(update, context):
+async def last_error_command(
+    update,
+    context,
+):
     with JOBS_LOCK:
         failed = [
-            job for job in JOBS.values()
+            job
+            for job in JOBS.values()
             if job.get("status") == "failed"
         ]
 
@@ -708,21 +1002,41 @@ async def last_error_command(update, context):
     job = failed[-1]
 
     await update.message.reply_text(
-        f"آخر خطأ في ظل ZIL\n\n"
+        "آخر خطأ في ظل ZIL\n\n"
         f"العملية: {job['id']}\n"
         f"المرحلة: {job.get('stage')}\n"
-        f"الخطأ:\n{job.get('error', 'غير معروف')[:2500]}"
+        "الخطأ:\n"
+        f"{job.get('error', 'غير معروف')[:2500]}"
     )
 
 
-async def diagnose_command(update, context):
+async def diagnose_command(
+    update,
+    context,
+):
     results = [
         f"BOT_TOKEN: {'OK' if BOT_TOKEN else 'MISSING'}",
-        f"PIXABAY_API_KEY: {'OK' if PIXABAY_API_KEY else 'MISSING'}",
-        f"ADMIN_CHAT_ID: {'OK' if ADMIN_CHAT_ID else 'OPTIONAL/MISSING'}",
+        (
+            "PIXABAY_API_KEY: OK"
+            if PIXABAY_API_KEY
+            else "PIXABAY_API_KEY: MISSING"
+        ),
+        (
+            "ADMIN_CHAT_ID: OK"
+            if ADMIN_CHAT_ID
+            else "ADMIN_CHAT_ID: OPTIONAL/MISSING"
+        ),
         f"Python: {sys.version.split()[0]}",
-        f"FFmpeg: {'OK' if command_exists('ffmpeg') else 'MISSING'}",
-        f"Work directory: {'OK' if BASE_DIR.exists() else 'MISSING'}",
+        (
+            "FFmpeg: OK"
+            if command_exists("ffmpeg")
+            else "FFmpeg: MISSING"
+        ),
+        (
+            "Work directory: OK"
+            if BASE_DIR.exists()
+            else "Work directory: MISSING"
+        ),
     ]
 
     if PIXABAY_API_KEY:
@@ -740,9 +1054,12 @@ async def diagnose_command(update, context):
 
             if response.status_code == 200:
                 data = response.json()
+
                 results.append(
-                    f"Pixabay API: OK (hits={len(data.get('hits', []))})"
+                    "Pixabay API: OK "
+                    f"(hits={len(data.get('hits', []))})"
                 )
+
             else:
                 results.append(
                     f"Pixabay API: HTTP {response.status_code}"
@@ -754,11 +1071,15 @@ async def diagnose_command(update, context):
             )
 
     await update.message.reply_text(
-        "تشخيص ظل ZIL\n\n" + "\n".join(results)
+        "تشخيص ظل ZIL\n\n"
+        + "\n".join(results)
     )
 
 
-async def health_command(update, context):
+async def health_command(
+    update,
+    context,
+):
     await update.message.reply_text(
         "ظل ZIL يعمل.\n"
         f"Python: {sys.version.split()[0]}\n"
@@ -808,11 +1129,15 @@ def main():
     log.info("Port: %s", PORT)
 
     if not BOT_TOKEN:
-        log.critical("BOT_TOKEN is missing in Render Environment.")
+        log.critical(
+            "BOT_TOKEN is missing in Render Environment."
+        )
         sys.exit(1)
 
     if not command_exists("ffmpeg"):
-        log.critical("FFmpeg is missing. Check Dockerfile.")
+        log.critical(
+            "FFmpeg is missing. Check Dockerfile."
+        )
         sys.exit(1)
 
     threading.Thread(
@@ -826,15 +1151,10 @@ def main():
         .build()
     )
 
-    # Save the asyncio event loop so the video worker can
-    # safely send the finished video from its background thread.
-    original_post_init = telegram_app.post_init
-
     async def save_event_loop(application):
-        application.bot_data["event_loop"] = asyncio.get_running_loop()
-
-        if original_post_init:
-            await original_post_init(application)
+        application.bot_data["event_loop"] = (
+            asyncio.get_running_loop()
+        )
 
     telegram_app.post_init = save_event_loop
 
