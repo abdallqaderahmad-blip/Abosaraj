@@ -31,7 +31,7 @@ import edge_tts
 # =========================================================
 
 BOT_TOKEN = (os.getenv("BOT_TOKEN") or "").strip()
-PEXELS_KEY = (os.getenv("PEXELS_KEY") or "").strip()
+PIXABAY_API_KEY = (os.getenv("PIXABAY_API_KEY") or "").strip()
 
 PORT = int(os.getenv("PORT", "10000"))
 
@@ -41,13 +41,18 @@ TOTAL_SECONDS = SCENES * SCENE_SECONDS
 
 WIDTH, HEIGHT, FPS = 720, 1280, 25
 
-VOICE = (os.getenv("TTS_VOICE") or "ar-SA-HamedNeural").strip()
-VOICE_RATE = (os.getenv("TTS_RATE") or "-8%").strip()
+VOICE = (
+    os.getenv("TTS_VOICE") or "ar-SA-HamedNeural"
+).strip()
+
+VOICE_RATE = (
+    os.getenv("TTS_RATE") or "-8%"
+).strip()
 
 MAX_STORY_LENGTH = 5000
 MAX_DOWNLOAD_BYTES = 35 * 1024 * 1024
 
-PEXELS_TIMEOUT = 20
+API_TIMEOUT = 25
 DOWNLOAD_TIMEOUT = 45
 
 BASE_DIR = Path("/tmp/zil")
@@ -69,11 +74,17 @@ log = logging.getLogger("zil")
 flask_app = Flask(__name__)
 
 SESSION = requests.Session()
-SESSION.headers.update({"User-Agent": "ZIL-VideoBot/1.0"})
+SESSION.headers.update({
+    "User-Agent": "ZIL-VideoBot/1.1"
+})
 
 busy_users = set()
 busy_lock = threading.Lock()
 
+
+# =========================================================
+# ARABIC SEARCH TERMS
+# =========================================================
 
 ARABIC_TO_ENGLISH = {
     "قصر": "royal castle",
@@ -184,11 +195,6 @@ def split_sentences(text):
 
 
 def make_scene_texts(story):
-    """
-    Split the story into six consecutive chunks.
-    Avoid repeating story text when the story is short.
-    """
-
     sentences = split_sentences(story)
 
     if not sentences:
@@ -214,7 +220,9 @@ def make_scene_texts(story):
         start = round(i * len(words) / SCENES)
         end = round((i + 1) * len(words) / SCENES)
 
-        result.append(" ".join(words[start:end]).strip())
+        result.append(
+            " ".join(words[start:end]).strip()
+        )
 
     return result
 
@@ -237,56 +245,71 @@ def search_terms(text, index):
 
 
 # =========================================================
-# PEXELS VIDEO SEARCH
+# PIXABAY VIDEO SEARCH
 # =========================================================
 
-def pexels_search(query):
-    if not PEXELS_KEY:
+def pixabay_search(query):
+    if not PIXABAY_API_KEY:
         raise RuntimeError(
-            "PEXELS_KEY غير موجود في إعدادات Render."
+            "PIXABAY_API_KEY غير موجود في إعدادات Render."
         )
 
     response = SESSION.get(
-        "https://api.pexels.com/videos/search",
-        headers={"Authorization": PEXELS_KEY},
+        "https://pixabay.com/api/videos/",
         params={
-            "query": query,
-            "orientation": "portrait",
-            "size": "small",
+            "key": PIXABAY_API_KEY,
+            "q": query,
+            "video_type": "film",
+            "safesearch": "true",
             "per_page": 10,
+            "page": 1,
         },
-        timeout=PEXELS_TIMEOUT,
+        timeout=API_TIMEOUT,
     )
 
     if response.status_code != 200:
         raise RuntimeError(
-            f"Pexels search failed: HTTP {response.status_code}"
+            f"Pixabay search failed: HTTP {response.status_code}"
         )
 
-    payload = response.json()
+    try:
+        payload = response.json()
+    except ValueError:
+        raise RuntimeError(
+            "Pixabay returned an invalid response."
+        )
+
+    if payload.get("total", 0) <= 0:
+        return None
+
     candidates = []
 
-    for video in payload.get("videos", []):
-        duration = video.get("duration") or 0
+    for video in payload.get("hits", []):
+        videos = video.get("videos") or {}
+
+        duration = int(video.get("duration") or 0)
 
         if duration and duration < 3:
             continue
 
-        for item in video.get("video_files", []):
-            link = item.get("link")
+        for quality in ("large", "medium", "small", "tiny"):
+            item = videos.get(quality) or {}
+            link = item.get("url")
 
             if not link:
                 continue
 
             parsed = urlparse(link)
 
-            if parsed.scheme != "https" or not parsed.hostname:
+            if (
+                parsed.scheme != "https"
+                or not parsed.hostname
+            ):
                 continue
 
-            width = item.get("width") or 0
-            height = item.get("height") or 0
+            width = int(item.get("width") or 0)
+            height = int(item.get("height") or 0)
 
-            # Prefer vertical videos and usable resolutions.
             score = (
                 (100000 if height > width else 0)
                 + min(width, 1080)
@@ -295,33 +318,43 @@ def pexels_search(query):
 
             candidates.append((score, link))
 
+            # استخدم أفضل جودة متاحة لهذا الفيديو.
+            break
+
     if not candidates:
         return None
 
-    candidates.sort(key=lambda item: item[0], reverse=True)
+    candidates.sort(
+        key=lambda item: item[0],
+        reverse=True,
+    )
 
     return candidates[0][1]
 
+
+# =========================================================
+# VIDEO VALIDATION AND DOWNLOAD
+# =========================================================
 
 def probe_video(path):
     result = run_command(
         [
             "ffprobe",
-            "-v",
-            "error",
-            "-select_streams",
-            "v:0",
+            "-v", "error",
+            "-select_streams", "v:0",
             "-show_entries",
             "stream=codec_type,width,height",
-            "-of",
-            "json",
+            "-of", "json",
             str(path),
         ],
         timeout=25,
     )
 
     try:
-        streams = json.loads(result.stdout).get("streams", [])
+        streams = json.loads(
+            result.stdout
+        ).get("streams", [])
+
     except (ValueError, TypeError):
         return False
 
@@ -395,18 +428,18 @@ def download_clip(url, output_path):
 
 def obtain_clip(scene_text, index, workdir):
     queries = list(
-        dict.fromkeys(
-            [
-                search_terms(scene_text, index),
-                "cinematic dramatic scene",
-                "cinematic landscape",
-            ]
-        )
+        dict.fromkeys([
+            search_terms(scene_text, index),
+            "cinematic dramatic scene",
+            "cinematic landscape",
+        ])
     )
+
+    last_error = None
 
     for query in queries:
         try:
-            url = pexels_search(query)
+            url = pixabay_search(query)
 
             if not url:
                 continue
@@ -423,6 +456,8 @@ def obtain_clip(scene_text, index, workdir):
             return path
 
         except Exception as exc:
+            last_error = exc
+
             log.warning(
                 "Scene %s query failed (%s): %s",
                 index + 1,
@@ -430,9 +465,16 @@ def obtain_clip(scene_text, index, workdir):
                 str(exc)[:180],
             )
 
+    if last_error:
+        log.warning(
+            "Last Pixabay retrieval error for scene %s: %s",
+            index + 1,
+            str(last_error)[:180],
+        )
+
     raise RuntimeError(
-        f"تعذر تنزيل فيديو صالح للمشهد {index + 1}. "
-        "تحقق من PEXELS_KEY واتصال Render."
+        f"تعذر تنزيل فيديو صالح للمشهد {index + 1} من Pixabay. "
+        "تحقق من PIXABAY_API_KEY واتصال Render."
     )
 
 
@@ -452,11 +494,14 @@ def find_font():
 
 
 def shape_arabic(text):
-    return get_display(arabic_reshaper.reshape(text or ""))
+    return get_display(
+        arabic_reshaper.reshape(text or "")
+    )
 
 
 def wrap_text(draw, text, font, max_width):
     words = text.split()
+
     lines = []
     current = ""
 
@@ -469,10 +514,9 @@ def wrap_text(draw, text, font, max_width):
             font=font,
         )
 
-        width = box[2] - box[0]
-
-        if width <= max_width or not current:
+        if box[2] - box[0] <= max_width or not current:
             current = candidate
+
         else:
             lines.append(current)
             current = word
@@ -495,11 +539,16 @@ def create_caption_image(text, output_path):
         return output_path
 
     draw = ImageDraw.Draw(image)
+
     font_path = find_font()
     font_size = 40
+    lines = []
 
     while font_size >= 24:
-        font = ImageFont.truetype(font_path, font_size)
+        font = ImageFont.truetype(
+            font_path,
+            font_size,
+        )
 
         lines = wrap_text(
             draw,
@@ -581,7 +630,10 @@ def create_caption_image(text, output_path):
 
         y += line_heights[i] + spacing
 
-    top = max(55, HEIGHT - panel_h - 115)
+    top = max(
+        55,
+        HEIGHT - panel_h - 115,
+    )
 
     image.alpha_composite(panel, (20, top))
     image.save(output_path)
@@ -608,36 +660,22 @@ def build_scene(source_path, caption_path, output_path):
         [
             "ffmpeg",
             "-hide_banner",
-            "-loglevel",
-            "error",
+            "-loglevel", "error",
             "-y",
-            "-stream_loop",
-            "-1",
-            "-i",
-            str(source_path),
-            "-loop",
-            "1",
-            "-i",
-            str(caption_path),
-            "-filter_complex",
-            filter_complex,
-            "-map",
-            "[out]",
+            "-stream_loop", "-1",
+            "-i", str(source_path),
+            "-loop", "1",
+            "-i", str(caption_path),
+            "-filter_complex", filter_complex,
+            "-map", "[out]",
             "-an",
-            "-t",
-            str(SCENE_SECONDS),
-            "-r",
-            str(FPS),
-            "-c:v",
-            "libx264",
-            "-preset",
-            "veryfast",
-            "-crf",
-            "27",
-            "-pix_fmt",
-            "yuv420p",
-            "-movflags",
-            "+faststart",
+            "-t", str(SCENE_SECONDS),
+            "-r", str(FPS),
+            "-c:v", "libx264",
+            "-preset", "veryfast",
+            "-crf", "27",
+            "-pix_fmt", "yuv420p",
+            "-movflags", "+faststart",
             str(output_path),
         ],
         timeout=150,
@@ -658,9 +696,16 @@ def build_scene(source_path, caption_path, output_path):
 def concatenate_scenes(scene_paths, workdir):
     concat_file = workdir / "scenes.txt"
 
-    with open(concat_file, "w", encoding="utf-8") as handle:
+    with open(
+        concat_file,
+        "w",
+        encoding="utf-8",
+    ) as handle:
+
         for path in scene_paths:
-            handle.write(f"file '{str(path)}'\n")
+            handle.write(
+                f"file '{str(path)}'\n"
+            )
 
     output = workdir / "video_only.mp4"
 
@@ -668,36 +713,28 @@ def concatenate_scenes(scene_paths, workdir):
         [
             "ffmpeg",
             "-hide_banner",
-            "-loglevel",
-            "error",
+            "-loglevel", "error",
             "-y",
-            "-f",
-            "concat",
-            "-safe",
-            "0",
-            "-i",
-            str(concat_file),
+            "-f", "concat",
+            "-safe", "0",
+            "-i", str(concat_file),
             "-an",
-            "-t",
-            str(TOTAL_SECONDS),
-            "-c:v",
-            "libx264",
-            "-preset",
-            "veryfast",
-            "-crf",
-            "27",
-            "-pix_fmt",
-            "yuv420p",
-            "-r",
-            str(FPS),
-            "-movflags",
-            "+faststart",
+            "-t", str(TOTAL_SECONDS),
+            "-c:v", "libx264",
+            "-preset", "veryfast",
+            "-crf", "27",
+            "-pix_fmt", "yuv420p",
+            "-r", str(FPS),
+            "-movflags", "+faststart",
             str(output),
         ],
         timeout=180,
     )
 
-    if not output.exists() or not probe_video(output):
+    if (
+        not output.exists()
+        or not probe_video(output)
+    ):
         raise RuntimeError(
             "تعذر دمج مشاهد الفيديو."
         )
@@ -706,7 +743,7 @@ def concatenate_scenes(scene_paths, workdir):
 
 
 # =========================================================
-# NARRATION AND BACKGROUND AUDIO
+# ARABIC NARRATION
 # =========================================================
 
 async def edge_tts_to_file(text, output_path):
@@ -766,10 +803,8 @@ def media_duration(path):
     result = run_command(
         [
             "ffprobe",
-            "-v",
-            "error",
-            "-show_entries",
-            "format=duration",
+            "-v", "error",
+            "-show_entries", "format=duration",
             "-of",
             "default=noprint_wrappers=1:nokey=1",
             str(path),
@@ -787,12 +822,6 @@ def media_duration(path):
 
 
 def create_narration(story, workdir):
-    """
-    Create one narration track.
-    Speed it up moderately if necessary.
-    Never silently cut off the end of the story.
-    """
-
     raw = workdir / "narration_raw.mp3"
     output = workdir / "narration.m4a"
 
@@ -823,30 +852,25 @@ def create_narration(story, workdir):
         [
             "ffmpeg",
             "-hide_banner",
-            "-loglevel",
-            "error",
+            "-loglevel", "error",
             "-y",
-            "-i",
-            str(raw),
+            "-i", str(raw),
             "-vn",
-            "-af",
-            audio_filter,
-            "-t",
-            str(TOTAL_SECONDS),
-            "-ac",
-            "2",
-            "-ar",
-            "44100",
-            "-c:a",
-            "aac",
-            "-b:a",
-            "128k",
+            "-af", audio_filter,
+            "-t", str(TOTAL_SECONDS),
+            "-ac", "2",
+            "-ar", "44100",
+            "-c:a", "aac",
+            "-b:a", "128k",
             str(output),
         ],
         timeout=120,
     )
 
-    if not output.exists() or output.stat().st_size < 1000:
+    if (
+        not output.exists()
+        or output.stat().st_size < 1000
+    ):
         raise RuntimeError(
             "فشل تجهيز ملف الراوي العربي."
         )
@@ -854,14 +878,14 @@ def create_narration(story, workdir):
     return output
 
 
-def create_ambient_audio(workdir):
-    """
-    Simple synthesized atmospheric background tones.
-    This is not a licensed cinematic music track.
-    """
+# =========================================================
+# BACKGROUND AUDIO
+# =========================================================
 
+def create_ambient_audio(workdir):
     output = workdir / "ambient.m4a"
 
+    # نغمات خلفية اصطناعية بسيطة وليست موسيقى مرخصة.
     filter_complex = (
         "[0:a]volume=0.025[a0];"
         "[1:a]volume=0.018[a1];"
@@ -878,41 +902,33 @@ def create_ambient_audio(workdir):
         [
             "ffmpeg",
             "-hide_banner",
-            "-loglevel",
-            "error",
+            "-loglevel", "error",
             "-y",
-            "-f",
-            "lavfi",
+            "-f", "lavfi",
             "-i",
             f"sine=frequency=110:sample_rate=44100:duration={TOTAL_SECONDS}",
-            "-f",
-            "lavfi",
+            "-f", "lavfi",
             "-i",
             f"sine=frequency=164.81:sample_rate=44100:duration={TOTAL_SECONDS}",
-            "-f",
-            "lavfi",
+            "-f", "lavfi",
             "-i",
             f"sine=frequency=220:sample_rate=44100:duration={TOTAL_SECONDS}",
-            "-filter_complex",
-            filter_complex,
-            "-map",
-            "[m]",
-            "-t",
-            str(TOTAL_SECONDS),
-            "-ac",
-            "2",
-            "-ar",
-            "44100",
-            "-c:a",
-            "aac",
-            "-b:a",
-            "96k",
+            "-filter_complex", filter_complex,
+            "-map", "[m]",
+            "-t", str(TOTAL_SECONDS),
+            "-ac", "2",
+            "-ar", "44100",
+            "-c:a", "aac",
+            "-b:a", "96k",
             str(output),
         ],
         timeout=90,
     )
 
-    if not output.exists() or output.stat().st_size < 1000:
+    if (
+        not output.exists()
+        or output.stat().st_size < 1000
+    ):
         raise RuntimeError(
             "تعذر إنشاء الخلفية الصوتية."
         )
@@ -929,7 +945,8 @@ def mux_final_video(
     filter_complex = (
         "[0:a]volume=1.0[v];"
         "[1:a]volume=0.22[b];"
-        "[v][b]amix=inputs=2:duration=first:normalize=0,"
+        "[v][b]"
+        "amix=inputs=2:duration=first:normalize=0,"
         "alimiter=limit=0.95[a]"
     )
 
@@ -937,31 +954,19 @@ def mux_final_video(
         [
             "ffmpeg",
             "-hide_banner",
-            "-loglevel",
-            "error",
+            "-loglevel", "error",
             "-y",
-            "-i",
-            str(narration_path),
-            "-i",
-            str(ambient_path),
-            "-i",
-            str(video_path),
-            "-filter_complex",
-            filter_complex,
-            "-map",
-            "2:v:0",
-            "-map",
-            "[a]",
-            "-t",
-            str(TOTAL_SECONDS),
-            "-c:v",
-            "copy",
-            "-c:a",
-            "aac",
-            "-b:a",
-            "160k",
-            "-movflags",
-            "+faststart",
+            "-i", str(narration_path),
+            "-i", str(ambient_path),
+            "-i", str(video_path),
+            "-filter_complex", filter_complex,
+            "-map", "2:v:0",
+            "-map", "[a]",
+            "-t", str(TOTAL_SECONDS),
+            "-c:v", "copy",
+            "-c:a", "aac",
+            "-b:a", "160k",
+            "-movflags", "+faststart",
             str(output_path),
         ],
         timeout=150,
@@ -979,10 +984,14 @@ def mux_final_video(
     return output_path
 
 
+# =========================================================
+# COMPLETE VIDEO GENERATION
+# =========================================================
+
 def generate_video(story, workdir):
-    if not PEXELS_KEY:
+    if not PIXABAY_API_KEY:
         raise RuntimeError(
-            "PEXELS_KEY غير موجود في إعدادات Render."
+            "PIXABAY_API_KEY غير موجود في إعدادات Render."
         )
 
     captions = make_scene_texts(story)
@@ -1001,8 +1010,13 @@ def generate_video(story, workdir):
             workdir,
         )
 
-        caption_path = workdir / f"caption_{i:02d}.png"
-        scene_path = workdir / f"scene_{i:02d}.mp4"
+        caption_path = (
+            workdir / f"caption_{i:02d}.png"
+        )
+
+        scene_path = (
+            workdir / f"scene_{i:02d}.mp4"
+        )
 
         create_caption_image(
             caption or "",
@@ -1031,18 +1045,16 @@ def generate_video(story, workdir):
         workdir,
     )
 
-    final = workdir / "zil_final.mp4"
-
     return mux_final_video(
         video,
         voice,
         ambient,
-        final,
+        workdir / "zil_final.mp4",
     )
 
 
 # =========================================================
-# TELEGRAM HANDLERS
+# TELEGRAM HELPERS
 # =========================================================
 
 async def reply(update, text):
@@ -1065,6 +1077,10 @@ async def send_video(update, path):
         )
 
 
+# =========================================================
+# GENERATE FOR USER
+# =========================================================
+
 async def generate_for_user(update, story):
     user = update.effective_user
 
@@ -1084,6 +1100,7 @@ async def generate_for_user(update, story):
         busy_users.add(uid)
 
     job_id = uuid.uuid4().hex[:10]
+
     workdir = BASE_DIR / job_id
     workdir.mkdir(parents=True, exist_ok=True)
 
@@ -1103,7 +1120,7 @@ async def generate_for_user(update, story):
             "بدأت صناعة فيديو ظل:\n"
             "• 6 مشاهد\n"
             "• 30 ثانية\n"
-            "• مقاطع فيديو من Pexels\n"
+            "• مقاطع فيديو من Pixabay\n"
             "• نص عربي وراوي عربي\n\n"
             "قد تستغرق العملية عدة دقائق.",
         )
@@ -1130,29 +1147,26 @@ async def generate_for_user(update, story):
 
         message = str(exc)
 
-        if "PEXELS_KEY" in message:
+        if "PIXABAY_API_KEY" in message:
             friendly = (
-                "فشل إنشاء الفيديو: مفتاح PEXELS_KEY "
+                "فشل إنشاء الفيديو: مفتاح PIXABAY_API_KEY "
                 "غير موجود في Render."
             )
 
         elif (
-            "Pexels" in message
+            "Pixabay" in message
             or "تنزيل" in message
             or "مشهد" in message
         ):
             friendly = (
-                "تعذر الحصول على مقاطع فيديو صالحة. "
-                "تحقق من صلاحية PEXELS_KEY ثم جرّب مجددًا."
+                "تعذر الحصول على مقاطع فيديو صالحة من Pixabay. "
+                "تحقق من المفتاح أو حدود API ثم جرّب مجددًا."
             )
 
         elif "القصة أطول" in message:
             friendly = message
 
-        elif (
-            "الراوي" in message
-            or "TTS" in message
-        ):
+        elif "الراوي" in message or "TTS" in message:
             friendly = (
                 "تعذر إنشاء الراوي العربي. "
                 "تحقق من اتصال Render."
@@ -1179,6 +1193,10 @@ async def generate_for_user(update, story):
             ignore_errors=True,
         )
 
+
+# =========================================================
+# TELEGRAM COMMANDS
+# =========================================================
 
 async def start_command(
     update: Update,
@@ -1209,7 +1227,7 @@ async def status_command(
         update,
         f"حالة ظل ZIL\n\n"
         f"البوت: {'مهيأ' if BOT_TOKEN else 'رمز البوت غير موجود'}\n"
-        f"Pexels key: {'موجود' if PEXELS_KEY else 'غير موجود'}\n"
+        f"Pixabay key: {'موجود' if PIXABAY_API_KEY else 'غير موجود'}\n"
         f"FFmpeg: {'جاهز' if check_binary('ffmpeg') else 'غير موجود'}\n"
         f"FFprobe: {'جاهز' if check_binary('ffprobe') else 'غير موجود'}\n"
         f"المشاهد: {SCENES}\n"
@@ -1257,6 +1275,7 @@ async def arabic_zil_handler(
     context: ContextTypes.DEFAULT_TYPE,
 ):
     message = update.effective_message
+
     text = message.text if message else ""
 
     story = re.sub(
@@ -1324,14 +1343,12 @@ async def text_story_handler(
 
 @flask_app.get("/")
 def home():
-    return jsonify(
-        {
-            "service": "ZIL",
-            "status": "online",
-            "video_seconds": TOTAL_SECONDS,
-            "scenes": SCENES,
-        }
-    )
+    return jsonify({
+        "service": "ZIL",
+        "status": "online",
+        "video_seconds": TOTAL_SECONDS,
+        "scenes": SCENES,
+    })
 
 
 @flask_app.get("/health")
@@ -1346,16 +1363,14 @@ def health():
     )
 
     return (
-        jsonify(
-            {
-                "service": "ZIL",
-                "status": "healthy" if ok else "degraded",
-                "ffmpeg": ffmpeg_ok,
-                "ffprobe": ffprobe_ok,
-                "pexels_key_configured": bool(PEXELS_KEY),
-                "video_seconds": TOTAL_SECONDS,
-            }
-        ),
+        jsonify({
+            "service": "ZIL",
+            "status": "healthy" if ok else "degraded",
+            "ffmpeg": ffmpeg_ok,
+            "ffprobe": ffprobe_ok,
+            "pixabay_key_configured": bool(PIXABAY_API_KEY),
+            "video_seconds": TOTAL_SECONDS,
+        }),
         200 if ok else 503,
     )
 
@@ -1385,34 +1400,21 @@ def main():
     )
 
     telegram_app.add_handler(
-        CommandHandler(
-            "start",
-            start_command,
-        )
+        CommandHandler("start", start_command)
     )
 
     telegram_app.add_handler(
-        CommandHandler(
-            "status",
-            status_command,
-        )
+        CommandHandler("status", status_command)
     )
 
     telegram_app.add_handler(
-        CommandHandler(
-            "test",
-            test_command,
-        )
+        CommandHandler("test", test_command)
     )
 
     telegram_app.add_handler(
-        CommandHandler(
-            "zil",
-            zil_command,
-        )
+        CommandHandler("zil", zil_command)
     )
 
-    # Arabic command alias: /ظل
     telegram_app.add_handler(
         MessageHandler(
             filters.Regex(r"^/ظل(?:@\w+)?(?:\s|$)"),
@@ -1420,7 +1422,6 @@ def main():
         )
     )
 
-    # Allow users to send a story as a normal text message.
     telegram_app.add_handler(
         MessageHandler(
             filters.TEXT & ~filters.COMMAND,
