@@ -1,6 +1,7 @@
-python-telegram-bot
+python-telegram-bot==20.7
 flask
 moviepy==1.0.3
 requests
 gtts
-pillow==9.5.0
+pillow
+imageio-ffmpeg
