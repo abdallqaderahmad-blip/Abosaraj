@@ -1,11 +1,4 @@
-import os
-import re
-import uuid
-import shutil
-import logging
-import asyncio
-import threading
-import subprocess
+import os, re, uuid, shutil, logging, asyncio, threading, subprocess
 from pathlib import Path
 
 import requests
@@ -35,9 +28,7 @@ PORT = int(os.getenv("PORT", "10000"))
 
 SCENES = 6
 SECONDS = 5
-W = 720
-H = 1280
-FPS = 25
+W, H, FPS = 720, 1280, 25
 
 TMP = Path("/tmp/zil")
 TMP.mkdir(parents=True, exist_ok=True)
@@ -49,7 +40,7 @@ flask_app = Flask(__name__)
 
 if not BOT_TOKEN:
     raise RuntimeError(
-        "Missing BOT_TOKEN environment variable in Render."
+        "Missing BOT_TOKEN environment variable"
     )
 
 
@@ -66,8 +57,8 @@ def tg(method, data=None, files=None, timeout=30):
         files=files,
         timeout=timeout,
     )
-
     response.raise_for_status()
+
     payload = response.json()
 
     if not payload.get("ok"):
@@ -105,16 +96,16 @@ def ffmpeg(args, timeout=60):
         timeout=timeout,
     )
 
-    if process.returncode != 0:
+    if process.returncode:
         raise RuntimeError(
-            "FFmpeg error: " + process.stderr[-700:]
+            "FFmpeg: " + process.stderr[-700:]
         )
 
     return process
 
 
 # =========================================================
-# ARABIC FONT
+# FONT
 # =========================================================
 
 def get_font():
@@ -161,11 +152,11 @@ def get_font():
 
 def parse_story(raw):
     parts = [
-        re.sub(r"\s+", " ", part).strip()
-        for part in raw.split("|")
+        re.sub(r"\s+", " ", item).strip()
+        for item in raw.split("|")
     ]
 
-    parts = [part for part in parts if part]
+    parts = [item for item in parts if item]
 
     if len(parts) < 2:
         raise ValueError(
@@ -325,14 +316,14 @@ def pexels_search(queries):
             videos = response.json().get("videos", [])
 
             for video in videos:
-                video_files = sorted(
+                files = sorted(
                     video.get("video_files", []),
                     key=lambda item: abs(
                         (item.get("width") or 720) - 720
                     ),
                 )
 
-                for video_file in video_files:
+                for video_file in files:
                     link = video_file.get("link", "")
                     width = video_file.get("width") or 0
 
@@ -349,7 +340,7 @@ def pexels_search(queries):
 
 
 # =========================================================
-# DOWNLOAD VIDEO
+# DOWNLOAD CLIPS
 # =========================================================
 
 def download_clip(
@@ -401,7 +392,7 @@ def download_clip(
 
 
 # =========================================================
-# FALLBACK VIDEO
+# FALLBACK BACKGROUND
 # =========================================================
 
 def fallback_clip(output_path, index):
@@ -464,8 +455,7 @@ def caption_png(text, output_path, font):
     except Exception:
         text = text[:100]
 
-    width = 680
-    height = 230
+    width, height = 680, 230
 
     try:
         image_font = (
@@ -504,7 +494,6 @@ def caption_png(text, output_path, font):
         lines.append(current_line)
 
     lines = lines[:3] or [text]
-
     panel_height = len(lines) * 47 + 25
 
     panel = Image.new(
@@ -590,7 +579,7 @@ async def make_voice(text, output_path):
 
 
 # =========================================================
-# BUILD EACH SCENE
+# BUILD SCENE
 # =========================================================
 
 def build_scene(raw, caption, output_path, index):
@@ -660,7 +649,7 @@ def build_scene(raw, caption, output_path, index):
 
 
 # =========================================================
-# COMPLETE VIDEO JOB
+# VIDEO GENERATION
 # =========================================================
 
 def make_video(chat_id, parts):
@@ -670,8 +659,7 @@ def make_video(chat_id, parts):
     try:
         say(
             chat_id,
-            "🎬 ظل بدأ تجهيز فيديو عمودي من 6 مشاهد "
-            "باستخدام الأدوات المربوطة حاليًا فقط.",
+            "🎬 بدأ ظل تجهيز الفيديو باستخدام الأدوات المتاحة.",
         )
 
         font = get_font()
@@ -760,7 +748,7 @@ def make_video(chat_id, parts):
             timeout=90,
         )
 
-        # Generate Arabic narration clips
+        # Arabic narration
         voices = []
 
         for index, text in enumerate(captions):
@@ -804,7 +792,7 @@ def make_video(chat_id, parts):
             timeout=60,
         )
 
-        # Combine video and Arabic narration
+        # Combine video and audio
         final_video = work_dir / "ZIL_FINAL.mp4"
 
         ffmpeg(
@@ -865,15 +853,15 @@ def make_video(chat_id, parts):
 
         say(
             chat_id,
-            "✅ انتهى الفيديو: 30 ثانية، عمودي 9:16، "
-            "6 مشاهد، صوت عربي ونص عربي.",
+            "✅ انتهى الفيديو: 30 ثانية، 6 مشاهد، "
+            "صوت عربي ونص على الشاشة.",
         )
 
         if not PEXELS_KEY:
             say(
                 chat_id,
                 "ℹ️ لم يتم ضبط PEXELS_KEY في Render؛ "
-                "لذلك ستظهر خلفيات بديلة بدل لقطات Pexels.",
+                "سيستخدم البوت خلفيات بديلة بدل لقطات Pexels.",
             )
 
     except Exception as error:
@@ -881,8 +869,7 @@ def make_video(chat_id, parts):
 
         say(
             chat_id,
-            "❌ فشل إنتاج الفيديو:\n"
-            + str(error)[:600],
+            "❌ فشل إنتاج الفيديو:\n" + str(error)[:600],
         )
 
     finally:
@@ -905,20 +892,19 @@ async def start(
 ):
     message = (
         "🎬 أهلاً بك في ظل!\n\n"
-        "اصنع دراما قصيرة من قصتك باستخدام الأدوات المتاحة.\n\n"
-        "الأوامر:\n"
+        "الأوامر المتاحة:\n"
         "/start — بدء الاستخدام\n"
         "/test — تجربة قصة جاهزة\n"
         "/status — حالة البوت\n\n"
         "لإنشاء فيديو أرسل:\n"
         "/zil بداية القصة|تصاعد الأحداث|المفاجأة أو الخطر\n\n"
-        "يمكنك أيضًا استخدام /ظل متبوعًا بالقصة.\n\n"
+        "يمكنك أيضًا استخدام الأمر العربي /ظل.\n\n"
         "مثال:\n"
         "/zil دخل رجل غامض إلى قصر الملك ووقعت الأميرة "
         "في حبه|رفض الملك زواجه منها وطالبه بإثبات قوته"
         "|ظهر نمر ضخم فتقدم الرجل وكشف جزءًا من قوته\n\n"
         "🎥 مدة الفيديو المستهدفة 30 ثانية، مع صوت عربي "
-        "ولقطات Pexels عند توفر المفتاح، أو خلفيات بديلة.\n\n"
+        "ولقطات Pexels عند توفر المفتاح.\n\n"
         "ملاحظة: هذه النسخة لا تولّد ممثلين جددًا "
         "ولا توفر مزامنة شفاه."
     )
@@ -931,11 +917,10 @@ async def status(
     context: ContextTypes.DEFAULT_TYPE,
 ):
     message = (
-        "✅ حالة ظل: يعمل\n"
+        "حالة ظل: يعمل\n"
         f"Pexels key: {'موجود' if PEXELS_KEY else 'غير موجود'}\n"
         "الفيديو: 30 ثانية / 6 مشاهد\n"
-        "الصوت: عربي عبر Edge TTS مع gTTS كخيار احتياطي\n"
-        "التوليد السينمائي الكامل بالذكاء الاصطناعي "
+        "التوليد الكامل لشخصيات بالذكاء الاصطناعي "
         "غير متاح في الأدوات الحالية."
     )
 
@@ -985,9 +970,7 @@ async def zil(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ):
-    message_text = (
-        update.effective_message.text or ""
-    )
+    message_text = update.effective_message.text or ""
 
     raw = re.sub(
         r"^/(?:ظل|zil)(?:@\w+)?\s*",
@@ -1033,14 +1016,12 @@ bot.add_handler(
     CommandHandler("test", test)
 )
 
-# Telegram command names must be Latin.
-# This official command works: /zil
+# Telegram official commands use Latin characters.
 bot.add_handler(
     CommandHandler("zil", zil)
 )
 
-# Arabic /ظل is processed as a text message.
-# This prevents the invalid-command startup error.
+# Handle Arabic /ظل as a text message instead.
 bot.add_handler(
     MessageHandler(
         filters.Regex(r"^/ظل(?:@\w+)?(?:\s|$)"),
@@ -1060,37 +1041,36 @@ def home():
 
 @flask_app.get("/health")
 def health():
-    return jsonify(
-        {
-            "status": "ok",
-            "project": "ZIL",
-            "version": "1.1",
-            "pexels_key": bool(PEXELS_KEY),
-            "scenes": SCENES,
-            "scene_seconds": SECONDS,
-            "ai_video_generation": False,
-        }
-    )
+    return jsonify({
+        "status": "ok",
+        "project": "ZIL",
+        "version": "1.2",
+        "pexels_key": bool(PEXELS_KEY),
+        "scenes": SCENES,
+        "scene_seconds": SECONDS,
+        "ai_video_generation": False,
+    })
 
 
 # =========================================================
-# START SERVICE
+# START SERVICES
 # =========================================================
 
 def telegram_polling():
     try:
-        requests.post(
+        response = requests.post(
             f"https://api.telegram.org/bot{BOT_TOKEN}/deleteWebhook",
-            data={
-                "drop_pending_updates": "true",
-            },
+            data={"drop_pending_updates": "true"},
             timeout=15,
         )
 
+        response.raise_for_status()
+        log.info("Telegram webhook cleared")
+
     except Exception:
-        log.exception(
-            "Could not clear old webhook"
-        )
+        log.exception("Could not clear old webhook")
+
+    log.info("Starting Telegram polling in the main thread")
 
     bot.run_polling(
         drop_pending_updates=True,
@@ -1099,15 +1079,17 @@ def telegram_polling():
 
 
 if __name__ == "__main__":
+    # Flask runs in the background for Render health checks.
     threading.Thread(
-        target=telegram_polling,
+        target=lambda: flask_app.run(
+            host="0.0.0.0",
+            port=PORT,
+            threaded=True,
+            use_reloader=False,
+        ),
         daemon=True,
-        name="telegram-polling",
+        name="flask-health",
     ).start()
 
-    flask_app.run(
-        host="0.0.0.0",
-        port=PORT,
-        threaded=True,
-        use_reloader=False,
-    )
+    # Telegram polling runs in the main thread.
+    telegram_polling()
