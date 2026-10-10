@@ -3,6 +3,7 @@ flask==3.0.3
 moviepy==1.0.3
 requests==2.32.3
 edge-tts==6.1.10
+gtts==2.5.1
 pillow==10.4.0
 arabic-reshaper==3.0.0
 python-bidi==0.4.2
