@@ -16,11 +16,7 @@ from flask import Flask, jsonify
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
-=====================================================
-
 CONFIGURATION
-
-=====================================================
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 PIXABAY_API_KEY = (
@@ -51,16 +47,11 @@ stream=sys.stdout,
 log = logging.getLogger("ZIL")
 
 app = Flask(name)
-
 JOBS = {}
 JOBS_LOCK = threading.Lock()
 ACTIVE_JOBS = 0
 
-=====================================================
-
 UTILITIES
-
-=====================================================
 
 def command_exists(name):
 try:
@@ -118,32 +109,26 @@ update_job(
 if not ADMIN_CHAT_ID or not BOT_TOKEN:
     return
 
-message = (
-    "ZIL VIDEO ERROR\n\n"
-    f"Job: {job_id}\n"
-    f"Error: {str(error)[:2500]}"
-)
-
 def send():
     try:
         requests.post(
             f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
             json={
                 "chat_id": int(ADMIN_CHAT_ID),
-                "text": message[:3900],
+                "text": (
+                    "ZIL VIDEO ERROR\n\n"
+                    f"Job: {job_id}\n"
+                    f"Error: {str(error)[:2500]}"
+                ),
             },
             timeout=15,
         ).raise_for_status()
     except Exception:
-        log.exception("Admin report failed")
+        log.exception("Admin notification failed")
 
 threading.Thread(target=send, daemon=True).start()
 
-=====================================================
-
-PIXABAY VIDEO SEARCH
-
-=====================================================
+PIXABAY
 
 def search_pixabay_video(query):
 if not PIXABAY_API_KEY:
@@ -164,17 +149,10 @@ response = requests.get(
 )
 response.raise_for_status()
 
-try:
-    data = response.json()
-except Exception as error:
-    raise RuntimeError(
-        "Pixabay returned invalid JSON."
-    ) from error
+data = response.json()
 
 if not isinstance(data, dict) or "hits" not in data:
-    raise RuntimeError(
-        "Unexpected Pixabay API response."
-    )
+    raise RuntimeError("Unexpected Pixabay API response.")
 
 for hit in data.get("hits", []):
     videos = hit.get("videos") or {}
@@ -186,9 +164,7 @@ for hit in data.get("hits", []):
         if url and urlparse(url).scheme == "https":
             return url
 
-raise RuntimeError(
-    f"No downloadable video found for query: {query}"
-)
+raise RuntimeError(f"No downloadable video found for: {query}")
 
 def download_video(url, destination):
 total = 0
@@ -201,13 +177,6 @@ with requests.get(
 ) as response:
     response.raise_for_status()
 
-    content_type = response.headers.get("content-type", "")
-
-    if "text/html" in content_type.lower():
-        raise RuntimeError(
-            "Pixabay returned a webpage instead of a video."
-        )
-
     with open(destination, "wb") as output:
         for chunk in response.iter_content(256 * 1024):
             if not chunk:
@@ -217,7 +186,7 @@ with requests.get(
 
             if total > max_bytes:
                 raise RuntimeError(
-                    "Downloaded video exceeds 150 MB limit."
+                    "Downloaded video exceeds 150 MB."
                 )
 
             output.write(chunk)
@@ -227,11 +196,7 @@ if total < 10000:
 
 return destination
 
-=====================================================
-
 VIDEO PROCESSING
-
-=====================================================
 
 def normalize_scene(source, destination):
 run_command([
@@ -298,7 +263,7 @@ try:
 except Exception:
     log.exception("gTTS failed.")
 
-raise RuntimeError("Both Arabic narration engines failed.")
+raise RuntimeError("Arabic narration generation failed.")
 
 def make_background_music(destination, duration):
 run_command([
@@ -319,7 +284,7 @@ str(destination),
 ], timeout=60)
 
 if not destination.exists() or destination.stat().st_size < 1000:
-    raise RuntimeError("Could not create background audio.")
+    raise RuntimeError("Background audio generation failed.")
 
 return destination
 
@@ -356,11 +321,7 @@ if not output.exists() or output.stat().st_size < 10000:
 
 return output
 
-=====================================================
-
 VIDEO JOB
-
-=====================================================
 
 def build_video(job_id, story):
 global ACTIVE_JOBS
@@ -375,22 +336,18 @@ try:
     update_job(job_id, status="running", stage="preflight")
 
     if not command_exists("ffmpeg"):
-        raise RuntimeError("FFmpeg is missing. Check Dockerfile.")
+        raise RuntimeError("FFmpeg is missing.")
 
     if not PIXABAY_API_KEY:
-        raise RuntimeError(
-            "PIXABAY_API_KEY is not configured in Render."
-        )
+        raise RuntimeError("PIXABAY_API_KEY is missing.")
 
-    if not story or not story.strip():
+    story = (story or "").strip()[:MAX_STORY_LENGTH]
+
+    if not story:
         story = (
             "رجل غامض يصل إلى مملكة قديمة، "
             "فتكتشف الأميرة أن لديه قوة مخفية."
         )
-
-    story = story.strip()[:MAX_STORY_LENGTH]
-
-    update_job(job_id, stage="story")
 
     queries = [
         "cinematic dramatic landscape",
@@ -403,43 +360,34 @@ try:
 
     scenes = []
 
-    for index in range(SCENE_COUNT):
-        query = queries[index]
-
+    for index, query in enumerate(queries, start=1):
         update_job(
             job_id,
-            stage=f"scene_{index + 1}_download",
+            stage=f"scene_{index}_download",
         )
 
         try:
             video_url = search_pixabay_video(query)
-        except Exception as first_error:
-            log.warning(
-                "Query failed for %s: %s",
-                query,
-                first_error,
-            )
+        except Exception as error:
+            log.warning("Search failed: %s", error)
             video_url = search_pixabay_video(
                 "cinematic nature landscape"
             )
 
-        raw_path = workdir / f"raw_{index + 1}.mp4"
-        normalized_path = workdir / f"scene_{index + 1}.mp4"
+        raw_path = workdir / f"raw_{index}.mp4"
+        normalized_path = workdir / f"scene_{index}.mp4"
 
         download_video(video_url, raw_path)
 
         update_job(
             job_id,
-            stage=f"scene_{index + 1}_processing",
+            stage=f"scene_{index}_processing",
         )
 
         normalize_scene(raw_path, normalized_path)
         scenes.append(normalized_path)
 
-        try:
-            raw_path.unlink(missing_ok=True)
-        except OSError:
-            pass
+        raw_path.unlink(missing_ok=True)
 
     update_job(job_id, stage="concatenate")
 
@@ -472,8 +420,7 @@ try:
     update_job(job_id, stage="narration")
 
     narration_text = (
-        story + "\n\n"
-        "تابعوا الجزء القادم لاكتشاف السر."
+        story + "\n\nتابعوا الجزء القادم لاكتشاف السر."
     )
 
     narration_path = workdir / "narration.mp3"
@@ -506,11 +453,7 @@ try:
         size=final_path.stat().st_size,
     )
 
-    log.info(
-        "Job %s completed: %s",
-        job_id,
-        final_path,
-    )
+    log.info("Job %s completed: %s", job_id, final_path)
 
 except Exception as error:
     report_error(job_id, error)
@@ -519,19 +462,14 @@ finally:
     with JOBS_LOCK:
         ACTIVE_JOBS = max(0, ACTIVE_JOBS - 1)
 
-=====================================================
-
 TELEGRAM COMMANDS
 
-=====================================================
-
-async def start_command(update, context):
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 if not update.message:
 return
 
 await update.message.reply_text(
     "أهلًا بك في ظل ZIL.\n\n"
-    "الأوامر:\n"
     "/test - إنشاء فيديو تجريبي\n"
     "/make نص القصة - إنشاء فيديو من قصتك\n"
     "/status - حالة العمليات\n"
@@ -541,24 +479,19 @@ await update.message.reply_text(
 )
 
 async def start_job(update, context, story):
-global ACTIVE_JOBS
+story = (story or "").strip()[:MAX_STORY_LENGTH]
 
 if not update.message:
     return
 
-story = (story or "").strip()[:MAX_STORY_LENGTH]
-
 if not story:
-    await update.message.reply_text(
-        "أرسل نص القصة بعد الأمر /make."
-    )
+    await update.message.reply_text("أرسل نص القصة أولًا.")
     return
 
 with JOBS_LOCK:
     if ACTIVE_JOBS >= MAX_ACTIVE_JOBS:
         await update.message.reply_text(
-            "يوجد فيديو قيد المعالجة حاليًا. "
-            "حاول مرة أخرى بعد اكتماله."
+            "يوجد فيديو قيد المعالجة. حاول مرة أخرى لاحقًا."
         )
         return
 
@@ -573,16 +506,15 @@ with JOBS_LOCK:
         "updated_at": time.time(),
     }
 
-thread = threading.Thread(
+threading.Thread(
     target=build_video,
     args=(job_id, story),
     daemon=True,
-)
-thread.start()
+).start()
 
 await update.message.reply_text(
     "بدأت صناعة فيديو ظل ZIL.\n"
-    f"رقم العملية: {job_id}\n\n"
+    f"رقم العملية: {job_id}\n"
     "6 مشاهد، فيديو عمودي، راوي عربي.\n"
     "استخدم /status لمتابعة العملية."
 )
@@ -642,9 +574,7 @@ if job.get("status") == "failed"
 ]
 
 if not failed:
-    await update.message.reply_text(
-        "لا توجد أخطاء مسجلة في الذاكرة الحالية."
-    )
+    await update.message.reply_text("لا توجد أخطاء مسجلة حاليًا.")
     return
 
 job = failed[-1]
@@ -690,9 +620,7 @@ if PIXABAY_API_KEY:
             )
 
     except Exception as error:
-        results.append(
-            f"Pixabay API: ERROR {str(error)[:300]}"
-        )
+        results.append(f"Pixabay API: ERROR {str(error)[:300]}")
 
 await update.message.reply_text(
     "تشخيص ظل ZIL\n\n" + "\n".join(results)
@@ -703,14 +631,10 @@ await update.message.reply_text(
 "ظل ZIL يعمل.\n"
 f"Python: {sys.version.split()[0]}\n"
 f"FFmpeg: {'OK' if command_exists('ffmpeg') else 'MISSING'}\n"
-f"Pixabay key: {'OK' if PIXABAY_API_KEY else 'MISSING'}"
+f"Pixabay: {'OK' if PIXABAY_API_KEY else 'MISSING'}"
 )
 
-=====================================================
-
-FLASK HEALTH ENDPOINTS
-
-=====================================================
+FLASK ENDPOINTS
 
 @app.get("/")
 def home():
@@ -736,31 +660,22 @@ debug=False,
 use_reloader=False,
 )
 
-=====================================================
-
 STARTUP
-
-=====================================================
 
 def main():
 log.info("Starting ZIL service")
 log.info("Python: %s", sys.version)
 log.info("Port: %s", PORT)
-log.info("FFmpeg available: %s", command_exists("ffmpeg"))
-log.info("Pixabay key configured: %s", bool(PIXABAY_API_KEY))
 
 if not BOT_TOKEN:
     log.critical("BOT_TOKEN is missing in Render Environment.")
     sys.exit(1)
 
 if not command_exists("ffmpeg"):
-    log.critical("FFmpeg is missing. Check the Dockerfile.")
+    log.critical("FFmpeg is missing. Check Dockerfile.")
     sys.exit(1)
 
-threading.Thread(
-    target=run_web,
-    daemon=True,
-).start()
+threading.Thread(target=run_web, daemon=True).start()
 
 telegram_app = (
     Application.builder()
