@@ -29,7 +29,6 @@ from telegram.ext import (
 
 import edge_tts
 
-
 # =========================================================
 # 1. CONFIGURATION
 # =========================================================
@@ -85,14 +84,12 @@ log = logging.getLogger("zil")
 
 app = Flask(__name__)
 
-
 # =========================================================
 # 2. CHECK REQUIRED TOOLS
 # =========================================================
 
 def check_binary(name):
     return shutil.which(name) is not None
-
 
 def run_command(command, timeout=120):
     """
@@ -107,7 +104,7 @@ def run_command(command, timeout=120):
         check=False,
     )
 
-    if result.returncode != 0:
+    if result.returncode!= 0:
         error_text = (result.stderr or "")[-1800:]
         raise RuntimeError(
             f"Command failed ({result.returncode}): "
@@ -115,7 +112,6 @@ def run_command(command, timeout=120):
         )
 
     return result
-
 
 def validate_environment():
     missing = []
@@ -135,7 +131,6 @@ def validate_environment():
             + ", ".join(missing)
         )
 
-
 # =========================================================
 # 3. HTTP SESSION
 # =========================================================
@@ -145,7 +140,6 @@ SESSION = requests.Session()
 SESSION.headers.update({
     "User-Agent": "ZIL-VideoBot/1.0",
 })
-
 
 # =========================================================
 # 4. STORY PROCESSING
@@ -167,7 +161,6 @@ def clean_story(text):
         text = text[:MAX_STORY_LENGTH]
 
     return text
-
 
 def split_sentences(text):
     """
@@ -191,7 +184,6 @@ def split_sentences(text):
     ]
 
     return parts
-
 
 def make_scene_texts(story):
     """
@@ -241,7 +233,6 @@ def make_scene_texts(story):
 
     return result[:SCENES]
 
-
 # =========================================================
 # 5. PEXELS SEARCH
 # =========================================================
@@ -284,7 +275,6 @@ ARABIC_TO_ENGLISH = {
     "سقوط": "dramatic fall",
 }
 
-
 def search_terms(text, scene_index):
     normalized = text.lower()
 
@@ -302,7 +292,6 @@ def search_terms(text, scene_index):
     ]
 
     return defaults[scene_index % len(defaults)]
-
 
 def pexels_search(query):
     if not PEXELS_KEY:
@@ -324,7 +313,7 @@ def pexels_search(query):
         timeout=PEXELS_TIMEOUT,
     )
 
-    if response.status_code != 200:
+    if response.status_code!= 200:
         raise RuntimeError(
             f"Pexels search failed: HTTP {response.status_code}"
         )
@@ -355,7 +344,7 @@ def pexels_search(query):
 
             parsed = urlparse(link)
 
-            if parsed.scheme != "https":
+            if parsed.scheme!= "https":
                 continue
 
             if not parsed.hostname:
@@ -388,7 +377,6 @@ def pexels_search(query):
 
     return candidates[0][1]
 
-
 # =========================================================
 # 6. DOWNLOAD AND VALIDATE VIDEO
 # =========================================================
@@ -418,7 +406,7 @@ def probe_video(path):
 
     stream = streams[0]
 
-    if stream.get("codec_type") != "video":
+    if stream.get("codec_type")!= "video":
         return False
 
     if int(stream.get("width") or 0) < 100:
@@ -428,7 +416,6 @@ def probe_video(path):
         return False
 
     return True
-
 
 def download_clip(url, output_path):
     output_path = Path(output_path)
@@ -504,7 +491,6 @@ def download_clip(url, output_path):
 
         raise
 
-
 def obtain_clip(scene_text, index, workdir):
     """
     Search several queries. Never replace a missing clip
@@ -559,7 +545,6 @@ def obtain_clip(scene_text, index, workdir):
         "تحقق من صلاحية PEXELS_KEY واتصال Render."
     )
 
-
 # =========================================================
 # 7. ARABIC CAPTION RENDERING
 # =========================================================
@@ -574,7 +559,6 @@ def find_font():
         "ثبّت fonts-dejavu-core في Dockerfile."
     )
 
-
 def shape_arabic(text):
     text = (text or "").strip()
 
@@ -584,7 +568,6 @@ def shape_arabic(text):
     except Exception:
         log.exception("Arabic shaping failed.")
         return text
-
 
 def wrap_text(draw, text, font, max_width):
     """
@@ -624,7 +607,6 @@ def wrap_text(draw, text, font, max_width):
         lines.append(current)
 
     return lines
-
 
 def create_caption_image(text, output_path):
     """
@@ -748,7 +730,6 @@ def create_caption_image(text, output_path):
 
     return output_path
 
-
 # =========================================================
 # 8. NORMALIZE EACH VIDEO SCENE
 # =========================================================
@@ -807,7 +788,6 @@ def build_scene(source_path, caption_path, output_path):
 
     return output_path
 
-
 # =========================================================
 # 9. ARABIC NARRATION
 # =========================================================
@@ -820,7 +800,6 @@ async def edge_tts_to_file(text, output_path):
     )
 
     await communicate.save(str(output_path))
-
 
 def make_voice(text, output_path):
     """
@@ -874,7 +853,6 @@ def make_voice(text, output_path):
         "تحقق من اتصال Render ومكتبات الصوت."
     )
 
-
 def normalize_audio(input_path, output_path, duration):
     run_command([
         "ffmpeg",
@@ -898,7 +876,6 @@ def normalize_audio(input_path, output_path, duration):
     ], timeout=120)
 
     return output_path
-
 
 def create_narration(scene_texts, workdir):
     audio_segments = []
@@ -944,7 +921,6 @@ def create_narration(scene_texts, workdir):
     ], timeout=120)
 
     return output_path
-
 
 # =========================================================
 # 10. LOCAL CINEMATIC AMBIENCE
@@ -996,7 +972,6 @@ def create_ambient_audio(workdir):
 
     return output_path
 
-
 # =========================================================
 # 11. FINAL VIDEO AND AUDIO MIX
 # =========================================================
@@ -1034,7 +1009,6 @@ def concatenate_scenes(scene_paths, workdir):
     ], timeout=180)
 
     return output_path
-
 
 def mux_final_video(video_path, narration_path, ambient_path, output_path):
     """
@@ -1084,7 +1058,6 @@ def mux_final_video(video_path, narration_path, ambient_path, output_path):
         )
 
     return output_path
-
 
 # =========================================================
 # 12. VIDEO GENERATION PIPELINE
@@ -1156,7 +1129,6 @@ def generate_video(story, workdir):
 
     return final_path
 
-
 # =========================================================
 # 13. TELEGRAM UTILITIES
 # =========================================================
@@ -1164,7 +1136,6 @@ def generate_video(story, workdir):
 async def send_long_message(update, text):
     if update.message:
         await update.message.reply_text(text)
-
 
 async def safe_send_video(update, video_path):
     if not update.message:
@@ -1179,7 +1150,6 @@ async def safe_send_video(update, video_path):
             write_timeout=120,
             connect_timeout=30,
         )
-
 
 async def generate_for_user(update, story, context):
     if not update.effective_user:
@@ -1207,8 +1177,7 @@ async def generate_for_user(update, story, context):
         if not story:
             await send_long_message(
                 update,
-                "اكتب قصتك بعد الأمر، مثال:\n"
-                "/zil في مملكة بعيدة ظهر بطل غامض وأنقذ الأميرة."
+                "اكتب قصتك بعد الأمر، حتى أستطيع إنشاء المشاهد."
             )
             return
 
@@ -1290,7 +1259,6 @@ async def generate_for_user(update, story, context):
         except Exception:
             pass
 
-
 # =========================================================
 # 14. TELEGRAM COMMANDS
 # =========================================================
@@ -1313,7 +1281,6 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         update,
         message,
     )
-
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     pexels_status = (
@@ -1356,7 +1323,6 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text,
     )
 
-
 async def zil_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     story = " ".join(context.args).strip()
 
@@ -1374,7 +1340,6 @@ async def zil_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context,
     )
 
-
 async def test_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     test_story = (
         "في مملكة بعيدة، ظهر رجل غامض عند أبواب القصر. "
@@ -1391,7 +1356,6 @@ async def test_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context,
     )
 
-
 async def text_story_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text:
         return
@@ -1407,7 +1371,6 @@ async def text_story_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
         context,
     )
 
-
 # =========================================================
 # 15. FLASK HEALTH ENDPOINTS
 # =========================================================
@@ -1420,7 +1383,6 @@ def home():
         "video_seconds": TOTAL_SECONDS,
         "scenes": SCENES,
     })
-
 
 @app.route("/health", methods=["GET"])
 def health():
@@ -1439,7 +1401,6 @@ def health():
         "video_seconds": TOTAL_SECONDS,
     }), (200 if healthy else 503)
 
-
 # =========================================================
 # 16. STARTUP
 # =========================================================
@@ -1451,7 +1412,6 @@ def run_flask():
         threaded=True,
         use_reloader=False,
     )
-
 
 def main():
     validate_environment()
@@ -1465,8 +1425,8 @@ def main():
 
     telegram_app = (
         Application.builder()
-        .token(BOT_TOKEN)
-        .build()
+       .token(BOT_TOKEN)
+       .build()
     )
 
     telegram_app.add_handler(
@@ -1485,13 +1445,8 @@ def main():
         CommandHandler("zil", zil_command)
     )
 
-    # Telegram command names cannot contain Arabic letters.
-    # This handler allows the Arabic alias /ظل.
     telegram_app.add_handler(
-        MessageHandler(
-            filters.Regex(r"^/ظل(?:@\w+)?(?:\s|$)"),
-            text_story_handler,
-        )
+        CommandHandler("ظل", zil_command)
     )
 
     telegram_app.add_handler(
@@ -1515,7 +1470,6 @@ def main():
         drop_pending_updates=True,
         close_loop=True,
     )
-
 
 if __name__ == "__main__":
     main()
