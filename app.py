@@ -13,43 +13,44 @@ WEBHOOK_URL = os.getenv("RENDER_EXTERNAL_URL")
 web_app = Flask(__name__)
 
 def tg_send(chat_id, text):
-    try: requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", data={"chat_id":chat_id,"text":text}, timeout=10)
+    try: requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", data={"chat_id":chat_id,"text":text}, timeout=15)
     except: pass
 
 def tg_send_video(chat_id, path, caption=""):
     try:
         with open(path,"rb") as f:
-            requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendVideo", data={"chat_id":chat_id,"caption":caption}, files={"video":f}, timeout=120)
-    except Exception as e: tg_send(chat_id, f"❌ إرسال فيديو فشل: {e}")
+            requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendVideo", data={"chat_id":chat_id,"caption":caption}, files={"video":f}, timeout=180)
+    except Exception as e: tg_send(chat_id, f"❌ إرسال فشل: {e}")
 
 def get_keyword(t):
     t=t.lower()
     if any(w in t for w in ["ليل","ظلام","وحيدة"]): return "dark night"
     if any(w in t for w in ["مطر","دموع"]): return "rain window"
-    if any(w in t for w in ["أم","نور","دعاء"]): return "sunlight hope"
+    if any(w in t for w in ["أم","نور","دعاء","كلام"]): return "sunlight hope"
     return "sad girl cinematic"
 
 async def make_voice(text,out):
     try:
         comm=edge_tts.Communicate(text,"ar-SA-ZaydNeural",rate="-20%",pitch="-12Hz")
-        await comm.save(out); return out
+        await comm.save(out)
     except:
         from gtts import gTTS
-        gTTS(text=text,lang='ar',slow=True).save(out); return out
+        gTTS(text=text,lang='ar',slow=True).save(out)
+    return out
 
 def download_video(kw,fn):
     try:
         if PIXABAY_KEY:
-            url=f"https://pixabay.com/api/videos/?key={PIXABAY_KEY}&q={kw}&per_page=10"
+            url=f"https://pixabay.com/api/videos/?key={PIXABAY_KEY}&q={kw}&per_page=15"
             r=requests.get(url,timeout=10).json()
             if r.get("hits"):
                 vurl=random.choice(r["hits"])["videos"]["medium"]["url"]
-                with requests.get(vurl,stream=True,timeout=30) as resp:
-                    open(fn,"wb").write(resp.content)
+                data=requests.get(vurl,timeout=40).content
+                open(fn,"wb").write(data)
                 return fn
-    except: pass
+    except Exception as e: print(e)
     url="https://cdn.pixabay.com/video/2020/07/30/45549-442790323_large.mp4"
-    open(fn,"wb").write(requests.get(url,timeout=30).content)
+    open(fn,"wb").write(requests.get(url,timeout=40).content)
     return fn
 
 def build(chat_id, lines):
@@ -61,25 +62,44 @@ def build(chat_id, lines):
             tg_send(chat_id,f"🎬 مشهد {i+1}: {line[:30]}...")
             download_video(get_keyword(line), v)
             asyncio.run(make_voice(line,a))
-            vc=VideoFileClip(v).subclip(0,5).resize((720,1280)).set_duration(5).fx(vfx.colorx,0.9)
+            
             ac=AudioFileClip(a)
+            dur = ac.duration + 0.5 # الفيديو بطول الصوت
+            # لو الفيديو قصير - يعمل loop
+            vc=VideoFileClip(v).resize((720,1280))
+            if vc.duration < dur:
+                vc = vc.loop(duration=dur)
+            else:
+                vc = vc.subclip(0,dur)
+            vc=vc.set_duration(dur).fx(vfx.colorx,0.88)
             vc=vc.set_audio(ac)
             clips.append(vc)
+
+        tg_send(chat_id,"✂️ بقص وبجمع...")
         final=concatenate_videoclips(clips,method="compose")
-        final.write_videofile("FINAL.mp4",fps=24,preset="ultrafast",logger=None,threads=1)
-        tg_send_video(chat_id,"FINAL.mp4","✅ V21 - نظيف بدون كتابة + راوي غامض")
+        tg_send(chat_id,f"💾 بكتب الفيديو النهائي {final.duration:.1f} ثانية...")
+        final.write_videofile("FINAL.mp4",fps=24,preset="ultrafast",codec="libx264",audio_codec="aac",threads=1,logger=None)
+        
+        tg_send(chat_id,"📤 برفع الفيديو...")
+        tg_send_video(chat_id,"FINAL.mp4","✅ V22 نظيف - بدون كتابة - ألوان سينمائية")
+        
+        # تنظيف
+        for c in clips: c.close()
+        final.close()
     except Exception as e:
         import traceback
-        tg_send(chat_id,f"❌ خطأ: {e}\n{traceback.format_exc()[:800]}")
+        err=traceback.format_exc()
+        print(err)
+        tg_send(chat_id,f"❌ {e}\n{err[:1000]}")
 
 async def zel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     txt=re.sub(r'^/(zel|ظل)\s*','',update.message.text or "").strip()
     txt=re.sub(r'^ظل\s*','',txt).strip()
     if not txt or len(txt)<5:
-        lines=["جلست ظل وحيدة في الليل","المطر على النافذة","ثم جاء النور بدعاء أمها"]
+        lines=["جلست وحيدة في الليل","المطر ينزل على النافذة","تذكرت كلام أمها بدعاء يشبه النور"]
     else:
         lines=[l.strip() for l in re.split(r'[.!؟\n]+', txt) if len(l.strip())>3][:3]
-    await update.message.reply_text(f"🎬 V21 - {len(lines)} مشاهد 720p نظيف بدون كتابة\nبياخد دقيقة...")
+    await update.message.reply_text(f"🎬 V22 - {len(lines)} مشاهد متناسقة مع النص\nبدون كتابة + راوي غامض")
     threading.Thread(target=build, args=(update.effective_chat.id, lines), daemon=True).start()
 
 application=Application.builder().token(BOT_TOKEN).build()
@@ -91,7 +111,7 @@ loop=asyncio.new_event_loop(); asyncio.set_event_loop(loop)
 loop.run_until_complete(application.initialize()); loop.run_until_complete(application.start())
 
 @web_app.route('/')
-def home(): return "V21 fixed loop"
+def home(): return "V22"
 
 @web_app.route(f'/{BOT_TOKEN}', methods=['POST'])
 def webhook():
