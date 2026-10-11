@@ -15,6 +15,7 @@ import requests
 from flask import Flask, jsonify, request
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
+
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
 GROQ_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-20b").strip()
@@ -22,6 +23,7 @@ GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 POLLINATIONS_IMAGE_URL = "https://image.pollinations.ai/prompt/"
 PIXABAY_API_KEY = os.getenv("PIXABAY_API_KEY", "").strip()
 PEXELS_API_KEY = os.getenv("PEXELS_API_KEY", "").strip() or os.getenv("PIXABAY_API_KEY", "").strip()
+
 FREE_MODE = True
 ALLOW_PAID_APIS = False
 PORT = int(os.getenv("PORT", "10000"))
@@ -48,6 +50,7 @@ SCENE_TRANSITION_SECONDS = 0.25
 VOICE_VOLUME = 1.0
 SFX_VOLUME = 0.09
 MUSIC_VOLUME = 0.16
+
 DATA_ROOT = Path(os.getenv("ZIL_DATA_DIR", tempfile.gettempdir()))
 BASE_DIR = DATA_ROOT / "zil_video_jobs"
 BASE_DIR.mkdir(parents=True, exist_ok=True)
@@ -55,29 +58,42 @@ STATE_FILE = BASE_DIR / "jobs_state.json"
 STORY_PROGRESS_FILE = BASE_DIR / "story_progress.json"
 CHARACTER_MEMORY_FILE = BASE_DIR / "characters_memory.json"
 THUMBNAIL_DIRNAME = "thumbnails"
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s", handlers=[logging.StreamHandler(sys.stdout), logging.FileHandler(BASE_DIR / "zil.log", encoding="utf-8")])
 log = logging.getLogger("ZIL")
+
 app = Flask(__name__)
 HTTP = requests.Session()
 HTTP.headers.update({"User-Agent": "ZIL-V81-HMISC/9.0"})
+
 JOBS = {}
 JOBS_LOCK = threading.RLock()
 STATE_LOCK = threading.RLock()
 STORY_LOCK = threading.RLock()
 ACTIVE_JOBS = 0
+
 EFFECTS = {"mystery", "castle", "steps", "romance", "tension", "storm", "beast", "fight", "impact", "magic", "cliffhanger"}
-HMISC_EMOTION_MUSIC = {"anxiety": {"freq1": 55, "freq2": 110, "volume": 0.14}, "hope": {"freq1": 196, "freq2": 247, "volume": 0.16}, "loneliness": {"freq1": 82, "freq2": 165, "volume": 0.13}, "comparison": {"freq1": 65, "freq2": 130, "volume": 0.15}, "patience": {"freq1": 72, "freq2": 144, "volume": 0.15}}
+HMISC_EMOTION_MUSIC = {
+    "anxiety": {"freq1": 55, "freq2": 110, "volume": 0.14},
+    "hope": {"freq1": 196, "freq2": 247, "volume": 0.16},
+    "loneliness": {"freq1": 82, "freq2": 165, "volume": 0.13},
+    "comparison": {"freq1": 65, "freq2": 130, "volume": 0.15},
+    "patience": {"freq1": 72, "freq2": 144, "volume": 0.15},
+}
+
 def atomic_json(path, data):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     temp = path.with_suffix(".tmp")
     temp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     temp.replace(path)
+
 def read_json(path, default=None):
     try:
         return json.loads(Path(path).read_text(encoding="utf-8"))
     except:
         return default if default is not None else {}
+
 def load_state():
     global JOBS
     with STATE_LOCK:
@@ -91,8 +107,10 @@ def load_state():
                 job["stage"] = "interrupted"
                 job["message"] = "انقطع التنفيذ بسبب إعادة تشغيل الخدمة"
         atomic_json(STATE_FILE, JOBS)
+
 def save_state_locked():
     atomic_json(STATE_FILE, JOBS)
+
 def update_job(job_id, **fields):
     with JOBS_LOCK:
         job = JOBS.get(job_id)
@@ -102,21 +120,19 @@ def update_job(job_id, **fields):
         job["updated_at"] = time.time()
         with STATE_LOCK:
             save_state_locked()
+
 def load_story_progress():
     data = read_json(STORY_PROGRESS_FILE, {})
     return data if isinstance(data, dict) else {}
-def save_story_progress(data):
-    with STORY_LOCK:
-        atomic_json(STORY_PROGRESS_FILE, data)
+
 def load_character_memory():
     data = read_json(CHARACTER_MEMORY_FILE, {})
     return data if isinstance(data, dict) else {}
-def save_character_memory(data):
-    with STORY_LOCK:
-        atomic_json(CHARACTER_MEMORY_FILE, data)
+
 def get_user_story(user_id):
     progress = load_story_progress()
     return progress.get(str(user_id))
+
 def update_story_after_episode(user_id, episode, package):
     key = str(user_id)
     with STORY_LOCK:
@@ -136,38 +152,43 @@ def update_story_after_episode(user_id, episode, package):
         memory[key] = {"characters": character_memory, "updated_at": time.time()}
         atomic_json(STORY_PROGRESS_FILE, progress)
         atomic_json(CHARACTER_MEMORY_FILE, memory)
+
 def run_command(command, timeout=300):
     result = subprocess.run([str(x) for x in command], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=timeout)
     if result.returncode!= 0:
         error = (result.stderr or result.stdout or "")[-4000:]
         raise RuntimeError(f"Command failed ({result.returncode}): {error}")
     return result
+
 def probe_duration(path):
     result = run_command(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", str(path)], 60)
     try:
         return float(result.stdout.strip())
     except:
         return 0.0
+
 def safe_duration(path, fallback=BASE_SCENE_DURATION):
     duration = probe_duration(path)
     return duration if duration > 0 else fallback
+
 def verify_dependencies():
     missing = [name for name in ("ffmpeg", "ffprobe") if not __import__("shutil").which(name)]
     if missing:
         raise RuntimeError("Missing system dependencies: " + ", ".join(missing))
+
 def telegram_send_message(chat_id, text):
     if not BOT_TOKEN:
         return
-    response = HTTP.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={"chat_id": chat_id, "text": str(text)[:4000]}, timeout=30)
-    response.raise_for_status()
+    HTTP.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={"chat_id": chat_id, "text": str(text)[:4000]}, timeout=30)
+
 def telegram_send_video(chat_id, path, caption):
     with open(path, "rb") as media:
-        response = HTTP.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendVideo", data={"chat_id": chat_id, "caption": caption[:1000]}, files={"video": (Path(path).name, media, "video/mp4")}, timeout=(30, 600))
-    response.raise_for_status()
+        HTTP.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendVideo", data={"chat_id": chat_id, "caption": caption[:1000]}, files={"video": (Path(path).name, media, "video/mp4")}, timeout=(30, 600))
+
 def telegram_send_photo(chat_id, path, caption=""):
     with open(path, "rb") as media:
-        response = HTTP.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto", data={"chat_id": chat_id, "caption": caption[:1000]}, files={"photo": (Path(path).name, media, "image/jpeg")}, timeout=(20, 120))
-    response.raise_for_status()
+        HTTP.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto", data={"chat_id": chat_id, "caption": caption[:1000]}, files={"photo": (Path(path).name, media, "image/jpeg")}, timeout=(20, 120))
+
 def extract_json(text):
     text = (text or "").strip()
     text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.I)
@@ -180,12 +201,12 @@ def extract_json(text):
         if start >= 0 and end > start:
             return json.loads(text[start:end + 1])
         raise RuntimeError("Groq did not return valid JSON")
+
 def groq_chat(messages):
     if not GROQ_API_KEY:
         raise RuntimeError("GROQ_API_KEY is missing")
     headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
     payload = {"model": GROQ_MODEL, "messages": messages, "temperature": 0.8, "max_tokens": GROQ_MAX_TOKENS, "response_format": {"type": "json_object"}}
-    last_error = "Unknown"
     for attempt in range(GROQ_RETRIES):
         try:
             response = HTTP.post(GROQ_API_URL, headers=headers, json=payload, timeout=120)
@@ -194,24 +215,21 @@ def groq_chat(messages):
                 continue
             response.raise_for_status()
             data = response.json()
-            content = data["choices"][0]["message"]["content"]
-            return extract_json(content)
-        except Exception as exc:
-            last_error = str(exc)
+            return extract_json(data["choices"][0]["message"]["content"])
+        except Exception:
             time.sleep(min(10, 2 ** attempt))
-    raise RuntimeError("Groq failed: " + last_error)
+    raise RuntimeError("Groq failed")
+
 def normalize_package(package, episode, idea):
     scenes = package.get("scenes")
     if len(scenes)!= SCENE_COUNT:
         raise RuntimeError(f"Expected {SCENE_COUNT} scenes")
     normalized = []
     for scene in scenes:
-        narration = str(scene.get("narration", "")).strip()
-        action = str(scene.get("action", "")).strip()
         effect = str(scene.get("effect", "mystery")).lower()
         if effect not in EFFECTS:
             effect = "mystery"
-        normalized.append({"narration": narration[:1200], "action": action[:1500], "effect": effect})
+        normalized.append({"narration": str(scene.get("narration", ""))[:1200], "action": str(scene.get("action", ""))[:1500], "effect": effect})
     package["scenes"] = normalized
     package["episode"] = episode
     package["title"] = str(package.get("title", f"الحلقة {episode}"))[:200]
@@ -219,21 +237,23 @@ def normalize_package(package, episode, idea):
     package["story"] = str(package.get("story", idea))[:6000]
     package["cliffhanger"] = str(package.get("cliffhanger", ""))[:1000] or normalized[-1]["narration"]
     return package
+
 def create_story_package(idea, user_id, episode, previous_story=None):
     memory_all = load_character_memory()
     memory = memory_all.get(str(user_id), {}).get("characters", {})
     previous_story = previous_story or {}
-    system_prompt = f"You are ZIL writer. Return JSON. Episode {episode} with EXACTLY {SCENE_COUNT} scenes. Effects {sorted(EFFECTS)}. Hero mysterious, princess loves him, king opposes, white wolf."
+    system_prompt = f"You are ZIL writer. Return JSON. Episode {episode} with EXACTLY {SCENE_COUNT} scenes. Effects {sorted(EFFECTS)}."
     user_prompt = f"IDEA: {idea} PREV: {previous_story.get('last_cliffhanger','')} MEMORY: {json.dumps(memory, ensure_ascii=False)}"
     package = groq_chat([{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}])
     return normalize_package(package, episode, idea)
+
 def generate_hmisc_series_ideas(count=10, theme="رسائل نفسية"):
-    system_prompt = "You are hmisc writer. Return JSON ideas: ar1, ar2 short Arabic, en1, en2 English, bg_prompt parchment illustration split view illusion reality, bg_keyword for Pexels search, emotion anxiety/hope/loneliness/comparison/patience, narration_ar, narration_en"
+    system_prompt = "You are hmisc writer. Return JSON ideas: ar1, ar2 short Arabic, en1, en2 English, bg_prompt parchment illustration split view, bg_keyword, emotion anxiety/hope/loneliness/comparison/patience, narration_ar, narration_en"
     user_prompt = f"Create {count} ideas theme {theme} JSON {{ideas:[...]}}"
     try:
         payload = groq_chat([{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}])
         ideas = payload.get("ideas", payload if isinstance(payload, list) else [])
-        if len(ideas)>=1:
+        if len(ideas) >= 1:
             return ideas[:count]
     except:
         pass
@@ -245,17 +265,15 @@ def generate_hmisc_series_ideas(count=10, theme="رسائل نفسية"):
         {"ar1": "كل هذا سيمر", "en1": "All this will pass", "ar2": "كما مر غيره", "en2": "Like everything before", "bg_prompt": "ocean waves storm top calm bottom parchment", "bg_keyword": "ocean waves", "emotion": "hope", "narration_ar": "كل حزن يمر وكل ضيق يزول", "narration_en": "Every sadness passes"},
     ]
     return fallback[:count]
+
 def build_hmisc_image_prompt(idea):
     base = "Soft hand-drawn illustration old parchment #F5E6C8 yellow character #FFC83D brown ink split-screen top illusion bottom reality emotional psychological vertical 9:16 no text"
     return f"{idea.get('bg_prompt','person alone')}, {base}"
+
 def build_scene_image_prompt(scene, package, index):
     memory = package.get("character_memory", {})
     return f"Photorealistic fantasy vertical 9:16 cinematic {scene['action']} continuity {json.dumps(memory, ensure_ascii=False)}"
-def save_generated_image(url, destination):
-    with requests.get(url, stream=True, timeout=(20, IMAGE_GENERATION_TIMEOUT)) as r:
-        r.raise_for_status()
-        Path(destination).write_bytes(r.content)
-    return destination
+
 def pollinations_generate_image(prompt, destination, seed):
     url = POLLINATIONS_IMAGE_URL + quote(prompt, safe="")
     params = {"width": 768, "height": 1365, "seed": int(seed), "nologo": "true", "safe": "true", "model": "flux"}
@@ -263,6 +281,7 @@ def pollinations_generate_image(prompt, destination, seed):
     response.raise_for_status()
     Path(destination).write_bytes(response.content)
     return destination
+
 def pixabay_generate_image(prompt, destination, index):
     key = PIXABAY_API_KEY
     if not key:
@@ -275,7 +294,10 @@ def pixabay_generate_image(prompt, destination, index):
     if not hits:
         raise RuntimeError("No Pixabay images")
     image_url = hits[0].get("largeImageURL")
-    return save_generated_image(image_url, destination)
+    with requests.get(image_url, stream=True, timeout=20) as r:
+        Path(destination).write_bytes(r.content)
+    return destination
+
 def generate_scene_image(prompt, destination, index):
     for attempt in range(2):
         try:
@@ -283,17 +305,19 @@ def generate_scene_image(prompt, destination, index):
         except:
             time.sleep(1)
     return pixabay_generate_image(prompt, destination, index)
+
 def animate_still_image(source, destination, duration, index):
-    duration = max(1.0, float(duration))
-    frames = max(1, int(duration * VIDEO_FPS))
+    frames = max(1, int(float(duration) * VIDEO_FPS))
     vf = f"scale=1000:1800:force_original_aspect_ratio=increase,crop=1000:1800,zoompan=z='min(zoom+0.001,1.12)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s={VIDEO_WIDTH}x{VIDEO_HEIGHT}:fps={VIDEO_FPS},trim=end_frame={frames},setpts=PTS-STARTPTS,format=yuv420p"
     run_command(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-loop", "1", "-framerate", str(VIDEO_FPS), "-i", str(source), "-vf", vf, "-t", f"{duration:.3f}", "-an", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "27", "-pix_fmt", "yuv420p", "-r", str(VIDEO_FPS), str(destination)], 300)
     return destination
+
 def animate_hmisc_image(source, destination, duration=8.0):
     frames = max(1, int(float(duration) * VIDEO_FPS))
     vf = f"scale=1000:1800:force_original_aspect_ratio=increase,crop=1000:1800,zoompan=z='if(lte(zoom,1.0),1.0,min(zoom+0.0008,1.18))':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s=720x1280:fps=24,trim=end_frame={frames},setpts=PTS-STARTPTS,format=yuv420p"
     run_command(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-loop", "1", "-framerate", str(VIDEO_FPS), "-i", str(source), "-vf", vf, "-t", f"{duration:.3f}", "-an", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "24", "-pix_fmt", "yuv420p", "-r", str(VIDEO_FPS), str(destination)], 300)
     return destination
+
 def obtain_scene_visual(scene, package, workdir, index, duration):
     raw_image = workdir / f"ai_scene_{index+1}.jpg"
     normalized_image = workdir / f"ai_scene_{index+1}.png"
@@ -305,6 +329,7 @@ def obtain_scene_visual(scene, package, workdir, index, duration):
     if not normalized_video.exists():
         animate_still_image(normalized_image, normalized_video, duration, index)
     return normalized_video, normalized_image
+
 def obtain_hmisc_visual(idea, workdir, index, duration):
     raw_image = workdir / f"hmisc_raw_{index}.jpg"
     normalized_image = workdir / f"hmisc_{index}.png"
@@ -316,8 +341,10 @@ def obtain_hmisc_visual(idea, workdir, index, duration):
     if not normalized_video.exists():
         animate_hmisc_image(normalized_image, normalized_video, duration)
     return normalized_video, normalized_image
+
 def add_arabic_caption(source, caption, destination, workdir, index, duration):
     return add_bilingual_nice_caption(source, str(caption), "", "", "", destination, workdir, index, duration)
+
 def add_bilingual_nice_caption(source, ar1, en1, ar2, en2, destination, workdir, index, duration):
     try:
         from PIL import Image, ImageDraw, ImageFont
@@ -376,9 +403,10 @@ def add_bilingual_nice_caption(source, ar1, en1, ar2, en2, destination, workdir,
         run_command(["ffmpeg","-y","-hide_banner","-loglevel","error","-i",str(source),"-loop","1","-framerate",str(VIDEO_FPS),"-i",str(png),"-filter_complex",f"[0:v][1:v]overlay=0:(H-h)/2:format=auto[v]","-map","[v]","-t",f"{duration:.3f}","-an","-c:v","libx264","-preset","ultrafast","-crf","24","-pix_fmt","yuv420p","-r",str(VIDEO_FPS),str(destination)],240)
         if destination.exists():
             return destination
-    except Exception as e:
+    except Exception:
         log.exception("caption failed")
     return source
+
 def create_narration(text, destination):
     if destination.exists() and destination.stat().st_size>1000:
         return destination
@@ -396,6 +424,7 @@ def create_narration(text, destination):
     from gtts import gTTS
     gTTS(text=text,lang="ar",slow=False).save(str(destination))
     return destination
+
 def create_bilingual_narration(ar_text, en_text, destination, workdir, idx):
     ar_file = workdir / f"nar_ar_{idx}.mp3"
     en_file = workdir / f"nar_en_{idx}.mp3"
@@ -429,17 +458,21 @@ def create_bilingual_narration(ar_text, en_text, destination, workdir, idx):
     except:
         pass
     return ar_file
+
 def prepare_synced_voice(source, destination):
     run_command(["ffmpeg","-y","-hide_banner","-loglevel","error","-i",str(source),"-af","aresample=44100,aformat=sample_rates=44100:channel_layouts=stereo,asetpts=PTS-STARTPTS","-ar","44100","-ac","2","-c:a","aac","-b:a","96k",str(destination)],150)
     return probe_duration(destination)
+
 def fit_audio_to_duration(source, destination, duration):
     run_command(["ffmpeg","-y","-hide_banner","-loglevel","error","-i",str(source),"-af",f"aresample=44100,aformat=sample_rates=44100:channel_layouts=stereo,apad=whole_dur={duration:.3f},atrim=duration={duration:.3f},asetpts=PTS-STARTPTS","-ar","44100","-ac","2","-c:a","aac","-b:a","96k",str(destination)],150)
     return destination
+
 def make_scene_sfx(kind, destination, duration):
     source = f"anoisesrc=color=pink:sample_rate=44100:duration={duration:.3f}"
     af = "lowpass=f=700,volume=0.10"
     run_command(["ffmpeg","-y","-hide_banner","-loglevel","error","-f","lavfi","-i",source,"-af",f"{af},afade=t=in:d=0.25,afade=t=out:st={max(0.1,duration-0.5):.3f}:d=0.45,aresample=44100,aformat=sample_rates=44100:channel_layouts=stereo","-t",f"{duration:.3f}","-ar","44100","-ac","2","-c:a","aac","-b:a","48k",str(destination)],150)
     return destination
+
 def prepare_background_music(destination, duration, workdir, package=None):
     emotion = package.get("emotion","anxiety") if package else "anxiety"
     cfg = HMISC_EMOTION_MUSIC.get(emotion, HMISC_EMOTION_MUSIC["anxiety"])
@@ -447,36 +480,43 @@ def prepare_background_music(destination, duration, workdir, package=None):
     filt = f"[0:a]volume=0.45,lowpass=f=180[a0];[1:a]volume=0.30,lowpass=f=650[a1];[2:a]volume=0.15,highpass=f=180,lowpass=f=6500[a2];[a0][a1][a2]amix=inputs=3:duration=longest:normalize=0,alimiter=limit=0.85,afade=t=in:d=2,afade=t=out:st={max(0.1,duration-4):.3f}:d=4,atrim=duration={duration:.3f}[out]"
     run_command(["ffmpeg","-y","-hide_banner","-loglevel","error","-f","lavfi","-i",f"sine=frequency={f1}:sample_rate=44100:duration={duration}","-f","lavfi","-i",f"sine=frequency={f2}:sample_rate=44100:duration={duration}","-f","lavfi","-i",f"anoisesrc=color=pink:sample_rate=44100:duration={duration}","-filter_complex",filt,"-map","[out]","-ar","44100","-ac","2","-c:a","aac","-b:a","80k",str(destination)],300)
     return destination
+
 def prepare_hmisc_music(destination, duration, emotion="anxiety"):
     cfg = HMISC_EMOTION_MUSIC.get(emotion, HMISC_EMOTION_MUSIC["anxiety"])
     f1=cfg["freq1"]; f2=cfg["freq2"]; vol=cfg["volume"]
     filt = f"[0:a]volume={vol},lowpass=f=900,tremolo=f=0.18:d=0.35,afade=t=in:d=1.5,afade=t=out:st={max(0.1,duration-2.5):.3f}:d=2.5[a0];[1:a]volume={vol*0.6},lowpass=f=600[a1];[a0][a1]amix=inputs=2:duration=longest:normalize=0,atrim=duration={duration:.3f}[out]"
     run_command(["ffmpeg","-y","-hide_banner","-loglevel","error","-f","lavfi","-i",f"sine=frequency={f1}:sample_rate=44100:duration={duration}","-f","lavfi","-i",f"sine=frequency={f2}:sample_rate=44100:duration={duration}","-filter_complex",filt,"-map","[out]","-ar","44100","-ac","2","-c:a","aac","-b:a","64k",str(destination)],200)
     return destination
+
 def write_concat_list(paths, destination):
     with open(destination,"w",encoding="utf-8") as o:
         for p in paths:
             o.write(f"file '{Path(p).resolve().as_posix()}'\n")
+
 def concatenate_video(paths, destination, workdir):
     listing = workdir / "video_list.txt"
     write_concat_list(paths, listing)
     run_command(["ffmpeg","-y","-hide_banner","-loglevel","error","-f","concat","-safe","0","-i",str(listing),"-an","-c:v","libx264","-preset","ultrafast","-crf","27","-pix_fmt","yuv420p","-r",str(VIDEO_FPS),"-movflags","+faststart",str(destination)],1200)
     return destination
+
 def concatenate_audio(paths, destination, workdir, label):
     listing = workdir / f"{label}_list.txt"
     write_concat_list(paths, listing)
     run_command(["ffmpeg","-y","-hide_banner","-loglevel","error","-f","concat","-safe","0","-i",str(listing),"-vn","-ar","44100","-ac","2","-c:a","aac","-b:a","96k",str(destination)],900)
     return destination
+
 def mix_final_audio(video, voice, sfx, music, destination):
     duration = probe_duration(video)
     graph = f"[1:a]aresample=44100,aformat=sample_rates=44100:channel_layouts=stereo,volume={VOICE_VOLUME},apad=whole_dur={duration:.3f},atrim=duration={duration:.3f},asetpts=PTS-STARTPTS,asplit=2[voice_sc][voice_mix];[2:a]aresample=44100,aformat=sample_rates=44100:channel_layouts=stereo,volume={SFX_VOLUME},apad=whole_dur={duration:.3f},atrim=duration={duration:.3f},asetpts=PTS-STARTPTS[sfx_mix];[3:a]aresample=44100,aformat=sample_rates=44100:channel_layouts=stereo,volume={MUSIC_VOLUME},apad=whole_dur={duration:.3f},atrim=duration={duration:.3f},asetpts=PTS-STARTPTS[music_raw];[music_raw][voice_sc]sidechaincompress=threshold=0.025:ratio=5:attack=25:release=300[music_ducked];[voice_mix][sfx_mix][music_ducked]amix=inputs=3:duration=longest:dropout_transition=2:normalize=0,alimiter=limit=0.92,atrim=duration={duration:.3f},asetpts=PTS-STARTPTS[aout]"
     run_command(["ffmpeg","-y","-hide_banner","-loglevel","error","-i",str(video),"-i",str(voice),"-i",str(sfx),"-i",str(music),"-filter_complex",graph,"-map","0:v:0","-map","[aout]","-t",f"{duration:.3f}","-c:v","copy","-c:a","aac","-b:a","128k","-movflags","+faststart",str(destination)],900)
     return destination
+
 def mix_hmisc_audio(video, voice, music, destination):
     duration = probe_duration(video)
     graph = f"[1:a]aresample=44100,aformat=sample_rates=44100:channel_layouts=stereo,volume={VOICE_VOLUME},apad=whole_dur={duration:.3f},atrim=duration={duration:.3f},asetpts=PTS-STARTPTS,asplit=2[voice_sc][voice_mix];[2:a]aresample=44100,aformat=sample_rates=44100:channel_layouts=stereo,volume=0.18,apad=whole_dur={duration:.3f},atrim=duration={duration:.3f},asetpts=PTS-STARTPTS[music_raw];[music_raw][voice_sc]sidechaincompress=threshold=0.03:ratio=4:attack=30:release=250[music_ducked];[voice_mix][music_ducked]amix=inputs=2:duration=longest:dropout_transition=2:normalize=0,alimiter=limit=0.90,atrim=duration={duration:.3f},asetpts=PTS-STARTPTS[aout]"
     run_command(["ffmpeg","-y","-hide_banner","-loglevel","error","-i",str(video),"-i",str(voice),"-i",str(music),"-filter_complex",graph,"-map","0:v:0","-map","[aout]","-t",f"{duration:.3f}","-c:v","copy","-c:a","aac","-b:a","96k","-movflags","+faststart",str(destination)],600)
     return destination
+
 def create_thumbnails(workdir):
     try:
         from PIL import Image
@@ -498,6 +538,7 @@ def create_thumbnails(workdir):
         return created
     except:
         return []
+
 def create_video(job_id, idea, user_id, episode):
     workdir = BASE_DIR / job_id
     workdir.mkdir(parents=True, exist_ok=True)
@@ -557,6 +598,7 @@ def create_video(job_id, idea, user_id, episode):
     update_job(job_id, thumbnails=[str(p) for p in thumbnails], output=str(final))
     progress("completed",100,f"اكتملت الحلقة {episode}")
     return final, package, thumbnails
+
 def create_hmisc_video(job_id, idea_dict, user_id, index_in_series=0):
     workdir = BASE_DIR / job_id
     workdir.mkdir(parents=True, exist_ok=True)
@@ -591,6 +633,7 @@ def create_hmisc_video(job_id, idea_dict, user_id, index_in_series=0):
     update_job(job_id, output=str(final_output), title=f"{idea_dict.get('ar1','')} {idea_dict.get('ar2','')}")
     progress("completed",100,"اكتمل")
     return final_output, idea_dict
+
 def job_worker(job_id, chat_id, user_id, idea, episode):
     global ACTIVE_JOBS
     try:
@@ -612,6 +655,7 @@ def job_worker(job_id, chat_id, user_id, idea, episode):
             ACTIVE_JOBS = max(0, ACTIVE_JOBS - 1)
             with STATE_LOCK:
                 save_state_locked()
+
 def hmisc_job_worker(job_id, chat_id, user_id, ideas, series_id):
     global ACTIVE_JOBS
     try:
@@ -642,6 +686,7 @@ def hmisc_job_worker(job_id, chat_id, user_id, ideas, series_id):
             ACTIVE_JOBS = max(0, ACTIVE_JOBS - 1)
             with STATE_LOCK:
                 save_state_locked()
+
 async def launch_job(update, context, idea, episode):
     global ACTIVE_JOBS
     message = update.effective_message; chat = update.effective_chat; user = update.effective_user
@@ -663,6 +708,7 @@ async def launch_job(update, context, idea, episode):
             save_state_locked()
     await message.reply_text(f"🎬 تم بدء الحلقة {episode}\nالعملية: {job_id}")
     threading.Thread(target=job_worker, args=(job_id, chat.id, user.id, idea, episode), daemon=True).start()
+
 async def launch_hmisc_series(update, context, count=5, theme="رسائل نفسية"):
     global ACTIVE_JOBS
     message = update.effective_message; chat = update.effective_chat; user = update.effective_user
@@ -689,9 +735,11 @@ async def launch_hmisc_series(update, context, count=5, theme="رسائل نفس
                 ACTIVE_JOBS=max(0,ACTIVE_JOBS-1)
             telegram_send_message(chat.id, f"❌ فشل توليد الأفكار: {e}")
     threading.Thread(target=gen_and_start, daemon=True).start()
+
 async def cmd_test(update, context):
     idea = " ".join(context.args).strip() or "رجل غامض يصل مملكة قديمة علامة متوهجة قوة سحرية"
     await launch_job(update, context, idea, 1)
+
 async def cmd_next(update, context):
     story=get_user_story(update.effective_user.id)
     if not story:
@@ -700,6 +748,7 @@ async def cmd_next(update, context):
     episode=int(story.get("episode",0))+1
     idea=f"تابع الحلقة {episode-1} ملخص {story.get('full_story_so_far','')[-2000:]} نهاية {story.get('last_cliffhanger','')}"
     await launch_job(update, context, idea, episode)
+
 async def cmd_reset(update, context):
     user_id=str(update.effective_user.id)
     with STORY_LOCK:
@@ -707,12 +756,14 @@ async def cmd_reset(update, context):
         progress.pop(user_id,None); memory.pop(user_id,None)
         atomic_json(STORY_PROGRESS_FILE, progress); atomic_json(CHARACTER_MEMORY_FILE, memory)
     await update.effective_message.reply_text("تم المسح")
+
 async def cmd_status(update, context):
     story=get_user_story(update.effective_user.id)
     if not story:
         await update.effective_message.reply_text("ما عندك مسلسل")
         return
     await update.effective_message.reply_text(f"الحلقة: {story.get('episode')}\n{story.get('last_cliffhanger','')[:300]}")
+
 async def cmd_jobs(update, context):
     user_id=update.effective_user.id
     with JOBS_LOCK:
@@ -724,6 +775,7 @@ async def cmd_jobs(update, context):
     for job in user_jobs[:8]:
         lines.append(f"{job.get('id')} | {job.get('status')} | {job.get('progress',0)}%")
     await update.effective_message.reply_text("\n".join(lines))
+
 async def cmd_resume(update, context):
     if not context.args:
         await update.effective_message.reply_text("استخدم /resume ID")
@@ -736,6 +788,7 @@ async def cmd_resume(update, context):
             return
         episode=int(job.get("episode",1)); idea=job.get("idea","")
     await launch_job(update, context, idea, episode)
+
 async def cmd_hmisc(update, context):
     args=context.args; count=5; theme="رسائل نفسية فانتازيا"
     if args:
@@ -745,14 +798,18 @@ async def cmd_hmisc(update, context):
             theme=" ".join(args)
     count=max(1,min(10,count))
     await launch_hmisc_series(update, context, count=count, theme=theme)
+
 async def cmd_start(update, context):
     await update.effective_message.reply_text("🎬 ZIL V81 HMISC\n/test بدء حلقة\n/next متابعة\n/hmisc 5 سلسلة نفسية بألوان ورقية وزوم متحرك ولغتين وموسيقى وCTA شير")
+
 @app.route("/")
 def home():
     return jsonify({"status":"ZIL V81 HMISC running","episodes":MAX_EPISODES,"scenes":SCENE_COUNT,"hmisc":True})
+
 @app.route("/health")
 def health():
     return jsonify({"ok":True,"groq_configured":bool(GROQ_API_KEY),"bot_configured":bool(BOT_TOKEN),"active_jobs":ACTIVE_JOBS})
+
 @app.route("/generate_hmisc_series", methods=["POST"])
 def generate_hmisc_series_endpoint():
     data=request.get_json(silent=True) or {}
@@ -763,8 +820,10 @@ def generate_hmisc_series_endpoint():
         return jsonify({"ok":True,"count":len(ideas),"ideas":ideas})
     except Exception as e:
         return jsonify({"ok":False,"error":str(e)}),500
+
 def run_flask():
     app.run(host="0.0.0.0", port=PORT, use_reloader=False)
+
 def main():
     global ACTIVE_JOBS
     load_state()
@@ -785,5 +844,6 @@ def main():
     application.add_handler(CommandHandler("resume", cmd_resume))
     application.add_handler(CommandHandler("hmisc", cmd_hmisc))
     application.run_polling(allowed_updates=Update.ALL_TYPES)
+
 if __name__=="__main__":
     main()
