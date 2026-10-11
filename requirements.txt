@@ -1,6 +1,6 @@
-requests
 Flask
-python-telegram-bot>=21,<23
+requests
+python-telegram-bot
 edge-tts
 gTTS
 Pillow
