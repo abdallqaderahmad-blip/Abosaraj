@@ -1,6 +1,4 @@
-Flask==3.0.3
-python-telegram-bot==21.6
-requests==2.32.3
-Pillow==10.4.0
-arabic-reshaper==3.0.0
-python-bidi==0.4.2
+python-telegram-bot==20.7
+python-dotenv==1.0.0
+groq==0.4.2
+requests==2.31.0
