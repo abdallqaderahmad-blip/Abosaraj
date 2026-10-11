@@ -12,10 +12,10 @@ COPY requirements.txt ./requirements.txt
 
 RUN python -m pip install --upgrade pip && pip install --no-cache-dir -r requirements.txt
 
-COPY app.py ./app.py
+COPY . .
 
 RUN mkdir -p /tmp/zil_video_jobs
 
 EXPOSE 10000
 
-CMD ["python", "app.py"]
+CMD ["sh", "-c", "if [ -f app.py ]; then python app.py; elif [ -f main.py ]; then python main.py; else echo 'No app.py or main.py found' && ls -la && exit 1; fi"]
