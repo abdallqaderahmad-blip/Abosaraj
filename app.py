@@ -16,16 +16,18 @@ from urllib.parse import urlparse
 import requests
 from flask import Flask, jsonify
 from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes
-
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    ContextTypes,
+)
 
 # =========================================================
-# ZIL V73 - video + image fallback + motion + synced narration
+# ZIL V74 - Complete Telegram Video Bot
 # =========================================================
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
-
 PIXABAY_API_KEY = (
     os.getenv("PIXABAY_API_KEY", "").strip()
     or os.getenv("PIXABAY_KEY", "").strip()
@@ -35,7 +37,9 @@ GROQ_MODEL = os.getenv(
     "GROQ_MODEL", "openai/gpt-oss-20b"
 ).strip()
 
-GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
+GROQ_API_URL = (
+    "https://api.groq.com/openai/v1/chat/completions"
+)
 
 PIXABAY_VIDEO_URL = "https://pixabay.com/api/videos/"
 PIXABAY_IMAGE_URL = "https://pixabay.com/api/"
@@ -44,8 +48,6 @@ PORT = int(os.getenv("PORT", "10000"))
 
 SCENE_COUNT = 18
 BASE_SCENE_DURATION = 5.0
-TARGET_DURATION = SCENE_COUNT * BASE_SCENE_DURATION
-
 VIDEO_WIDTH = 720
 VIDEO_HEIGHT = 1280
 VIDEO_FPS = 24
@@ -54,24 +56,25 @@ MAX_ACTIVE_JOBS = 1
 MAX_STORY_LENGTH = 2500
 MAX_VIDEO_SIZE = 49 * 1024 * 1024
 
-GROQ_MAX_TOKENS = int(
-    os.getenv("GROQ_MAX_TOKENS", "5000")
-)
 GROQ_RETRIES = int(os.getenv("GROQ_RETRIES", "4"))
 GROQ_MAX_WAIT = int(os.getenv("GROQ_MAX_WAIT", "60"))
+GROQ_MAX_TOKENS = int(os.getenv("GROQ_MAX_TOKENS", "5000"))
 
 TTS_VOICE = os.getenv(
     "TTS_VOICE", "ar-SA-HamedNeural"
-)
-TTS_RATE = os.getenv("TTS_RATE", "-5%")
+).strip()
 
-# Optional direct music URL.
-# Set STORY_MUSIC_URL in Render to use your own licensed audio.
+TTS_RATE = os.getenv("TTS_RATE", "-5%").strip()
+
+SUBTITLES_ENABLED = (
+    os.getenv("SUBTITLES_ENABLED", "true").lower()
+    in ("1", "true", "yes", "on")
+)
+
 STORY_MUSIC_URL = os.getenv(
     "STORY_MUSIC_URL", ""
 ).strip()
 
-# Maximum source download sizes.
 MAX_SOURCE_VIDEO_BYTES = 100 * 1024 * 1024
 MAX_SOURCE_IMAGE_BYTES = 25 * 1024 * 1024
 
@@ -81,10 +84,6 @@ BASE_DIR = (
 )
 BASE_DIR.mkdir(parents=True, exist_ok=True)
 
-MUSIC_DIR = BASE_DIR / "music"
-MUSIC_DIR.mkdir(parents=True, exist_ok=True)
-
-LOG_FILE = BASE_DIR / "zil.log"
 STATE_FILE = BASE_DIR / "jobs_state.json"
 
 logging.basicConfig(
@@ -92,7 +91,10 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     handlers=[
         logging.StreamHandler(sys.stdout),
-        logging.FileHandler(LOG_FILE, encoding="utf-8"),
+        logging.FileHandler(
+            BASE_DIR / "zil.log",
+            encoding="utf-8",
+        ),
     ],
 )
 
@@ -101,75 +103,50 @@ log = logging.getLogger("ZIL")
 app = Flask(__name__)
 
 HTTP = requests.Session()
-HTTP.headers.update({
-    "User-Agent": "ZIL-Video-Bot/4.0"
-})
+HTTP.headers.update({"User-Agent": "ZIL-Video-Bot/4.0"})
 
 JOBS = {}
 JOBS_LOCK = threading.RLock()
 ACTIVE_JOBS = 0
 
 EFFECTS = {
-    "mystery",
-    "castle",
-    "steps",
-    "romance",
-    "tension",
-    "storm",
-    "beast",
-    "fight",
-    "impact",
-    "magic",
-    "cliffhanger",
-}
-
-# These are optional direct audio URLs. Some links may expire or fail.
-# The bot validates the download and falls back to generated ambience.
-MUSIC_DIRECT_LINKS = {
-    "horror": "https://cdn.pixabay.com/download/audio/2022/03/15/audio_c8c8a65012.mp3",
-    "action": "https://cdn.pixabay.com/download/audio/2021/08/04/audio_0625c1539c.mp3",
-    "romance": "https://cdn.pixabay.com/download/audio/2022/10/30/audio_8ef91b2e0e.mp3",
-    "sad": "https://cdn.pixabay.com/download/audio/2021/10/25/audio_7c8d1b8e5a.mp3",
-    "adventure": "https://cdn.pixabay.com/download/audio/2022/06/07/audio_b9bd4170e8.mp3",
-    "mystery": "https://cdn.pixabay.com/download/audio/2022/03/10/audio_7f0c2a0a5e.mp3",
-    "comedy": "https://cdn.pixabay.com/download/audio/2021/11/10/audio_3a3c3e6f1e.mp3",
-    "epic": "https://cdn.pixabay.com/download/audio/2022/01/18/audio_7beec2a0e8.mp3",
+    "mystery", "castle", "steps", "romance",
+    "tension", "storm", "beast", "fight",
+    "impact", "magic", "cliffhanger",
 }
 
 
 # =========================================================
-# Persistence
+# State and job tracking
 # =========================================================
 
 def save_state_locked():
     try:
         safe = {}
 
-        for key, value in JOBS.items():
-            safe[key] = {
-                k: v
-                for k, v in value.items()
-                if k not in {"narration", "idea"}
+        for job_id, job in JOBS.items():
+            safe[job_id] = {
+                key: value
+                for key, value in job.items()
+                if key not in {"idea", "narration"}
             }
 
-        tmp = STATE_FILE.with_suffix(".tmp")
-
-        tmp.write_text(
+        temp = STATE_FILE.with_suffix(".tmp")
+        temp.write_text(
             json.dumps(safe, ensure_ascii=False),
             encoding="utf-8",
         )
-
-        tmp.replace(STATE_FILE)
+        temp.replace(STATE_FILE)
 
     except Exception:
-        log.exception("Could not persist job state")
+        log.exception("Could not save job state")
 
 
 def load_state():
-    try:
-        if not STATE_FILE.exists():
-            return
+    if not STATE_FILE.exists():
+        return
 
+    try:
         data = json.loads(
             STATE_FILE.read_text(encoding="utf-8")
         )
@@ -177,21 +154,21 @@ def load_state():
         if not isinstance(data, dict):
             return
 
-        for key, job in data.items():
+        for job_id, job in data.items():
             if not isinstance(job, dict):
                 continue
 
-            if job.get("status") in {"running", "queued"}:
+            if job.get("status") in ("running", "queued"):
                 job["status"] = "interrupted"
                 job["stage"] = "interrupted_after_restart"
                 job["error"] = (
-                    "Render restarted while this job was running."
+                    "The service restarted before the job finished."
                 )
 
-            JOBS[key] = job
+            JOBS[job_id] = job
 
     except Exception:
-        log.exception("Could not load persisted job state")
+        log.exception("Could not load job state")
 
 
 def update_job(job_id, **kwargs):
@@ -201,11 +178,27 @@ def update_job(job_id, **kwargs):
 
         JOBS[job_id].update(kwargs)
         JOBS[job_id]["updated_at"] = time.time()
-
         save_state_locked()
 
 
-def get_active_jobs():
+def report_error(job_id, error):
+    message = str(error)[:2500]
+
+    log.exception(
+        "Job %s failed: %s",
+        job_id,
+        message,
+    )
+
+    update_job(
+        job_id,
+        status="failed",
+        stage="failed",
+        error=message,
+    )
+
+
+def active_jobs():
     with JOBS_LOCK:
         return ACTIVE_JOBS
 
@@ -214,21 +207,9 @@ def get_active_jobs():
 # Utilities
 # =========================================================
 
-def command_exists(name):
-    try:
-        result = subprocess.run(
-            ["which", name],
-            capture_output=True,
-            timeout=5,
-        )
-        return result.returncode == 0
-    except Exception:
-        return False
-
-
-def run_command(command, timeout=180):
+def run_command(command, timeout=240):
     result = subprocess.run(
-        [str(x) for x in command],
+        [str(item) for item in command],
         capture_output=True,
         text=True,
         timeout=timeout,
@@ -237,7 +218,7 @@ def run_command(command, timeout=180):
     if result.returncode != 0:
         details = (
             result.stderr or result.stdout or "Unknown error"
-        )[-3000:]
+        )[-2500:]
 
         raise RuntimeError(
             f"Command failed ({result.returncode}): {details}"
@@ -250,32 +231,13 @@ def word_count(text):
     return len(re.findall(r"\S+", text or ""))
 
 
-def probe_duration(path):
-    result = run_command([
-        "ffprobe",
-        "-v", "error",
-        "-show_entries", "format=duration",
-        "-of", "default=noprint_wrappers=1:nokey=1",
-        str(path),
-    ], timeout=25)
-
-    try:
-        return float(result.stdout.strip())
-    except (ValueError, TypeError):
-        return None
-
-
-def has_audio_stream(path):
-    result = run_command([
-        "ffprobe",
-        "-v", "error",
-        "-select_streams", "a:0",
-        "-show_entries", "stream=codec_type",
-        "-of", "default=noprint_wrappers=1:nokey=1",
-        str(path),
-    ], timeout=25)
-
-    return "audio" in result.stdout.lower()
+def safe_query(text, maximum=120):
+    text = re.sub(
+        r"[^A-Za-z0-9 ,'-]",
+        "",
+        str(text or ""),
+    )
+    return re.sub(r"\s+", " ", text).strip()[:maximum]
 
 
 def extract_json(text):
@@ -297,39 +259,84 @@ def extract_json(text):
         if start >= 0 and end > start:
             return json.loads(text[start:end + 1])
 
-        raise ValueError(
-            "AI response did not contain valid JSON."
-        )
+        raise ValueError("AI did not return valid JSON.")
 
 
-def report_error(job_id, error):
-    log.error(
-        "Job %s failed: %s",
-        job_id,
-        error,
-        exc_info=True,
-    )
+def probe_duration(path):
+    result = run_command([
+        "ffprobe",
+        "-v", "error",
+        "-show_entries", "format=duration",
+        "-of", "default=noprint_wrappers=1:nokey=1",
+        str(path),
+    ], timeout=30)
 
-    update_job(
-        job_id,
-        status="failed",
-        stage="failed",
-        error=str(error)[:2500],
-    )
+    try:
+        return float(result.stdout.strip())
+    except (TypeError, ValueError):
+        return None
 
 
-def safe_query(text, maximum=100):
-    text = re.sub(
-        r"[^A-Za-z0-9 ,'-]",
-        "",
-        str(text or ""),
-    )
+def has_audio_stream(path):
+    result = run_command([
+        "ffprobe",
+        "-v", "error",
+        "-select_streams", "a:0",
+        "-show_entries", "stream=codec_type",
+        "-of", "default=noprint_wrappers=1:nokey=1",
+        str(path),
+    ], timeout=30)
 
-    return re.sub(r"\s+", " ", text).strip()[:maximum]
+    return "audio" in result.stdout.lower()
+
+
+def download_media(url, destination, maximum_bytes):
+    if urlparse(url).scheme != "https":
+        raise RuntimeError("Media URL must use HTTPS.")
+
+    total = 0
+
+    with HTTP.get(
+        url,
+        stream=True,
+        timeout=(20, 90),
+    ) as response:
+        response.raise_for_status()
+
+        content_type = response.headers.get(
+            "content-type", ""
+        ).lower()
+
+        if any(
+            bad in content_type
+            for bad in ("text/html", "application/json")
+        ):
+            raise RuntimeError(
+                "The URL did not return a media file."
+            )
+
+        with open(destination, "wb") as output:
+            for chunk in response.iter_content(256 * 1024):
+                if not chunk:
+                    continue
+
+                total += len(chunk)
+
+                if total > maximum_bytes:
+                    raise RuntimeError(
+                        "Media file exceeds the configured size limit."
+                    )
+
+                output.write(chunk)
+
+    if total < 5000:
+        raise RuntimeError("Downloaded media is too small.")
+
+    return destination
 
 
 # =========================================================
-# Groq
+# Groq API and rate-limit handling
 # =========================================================
 
 def groq_wait_seconds(response, attempt):
@@ -344,13 +351,11 @@ def groq_wait_seconds(response, attempt):
 
     wait = None
 
-    patterns = (
+    for pattern in (
         r"try again in\s+([0-9.]+)\s*s",
-        r"retry after\s+([0-9.]+)",
         r"wait\s+([0-9.]+)\s*s",
-    )
-
-    for pattern in patterns:
+        r"retry after\s+([0-9.]+)",
+    ):
         match = re.search(pattern, message, re.I)
 
         if match:
@@ -371,14 +376,14 @@ def groq_wait_seconds(response, attempt):
     if wait is None:
         wait = min(8 * (2 ** attempt), GROQ_MAX_WAIT)
 
-    return max(1, min(wait + 1.5, GROQ_MAX_WAIT))
+    return max(1, min(wait + 1, GROQ_MAX_WAIT))
 
 
 def groq_chat(messages, max_tokens=None):
     if not GROQ_API_KEY:
-        raise RuntimeError("GROQ_API_KEY is missing.")
+        raise RuntimeError("GROQ_API_KEY is missing in Render.")
 
-    last_error = "unknown error"
+    last_error = "Unknown error"
 
     for attempt in range(max(1, GROQ_RETRIES)):
         try:
@@ -392,23 +397,20 @@ def groq_chat(messages, max_tokens=None):
                     "model": GROQ_MODEL,
                     "messages": messages,
                     "temperature": 0.25,
-                    "max_tokens": (
-                        max_tokens or GROQ_MAX_TOKENS
-                    ),
+                    "max_tokens": max_tokens or GROQ_MAX_TOKENS,
                 },
                 timeout=(20, 120),
             )
 
             if response.status_code == 429:
                 last_error = (
-                    f"HTTP 429: {response.text[:900]}"
+                    f"Groq rate limit: {response.text[:800]}"
                 )
 
                 wait = groq_wait_seconds(response, attempt)
 
                 log.warning(
-                    "Groq rate limited. Attempt %s/%s; "
-                    "waiting %.1fs",
+                    "Groq rate limit; attempt %s/%s; wait %.1fs",
                     attempt + 1,
                     GROQ_RETRIES,
                     wait,
@@ -424,14 +426,12 @@ def groq_chat(messages, max_tokens=None):
 
             if response.status_code >= 400:
                 last_error = (
-                    f"HTTP {response.status_code}: "
-                    f"{response.text[:1000]}"
+                    f"Groq HTTP {response.status_code}: "
+                    f"{response.text[:800]}"
                 )
 
                 if response.status_code in (400, 401, 403, 404):
-                    raise RuntimeError(
-                        f"Groq API {last_error}"
-                    )
+                    raise RuntimeError(last_error)
 
                 if attempt < GROQ_RETRIES - 1:
                     time.sleep(min(4 * (attempt + 1), 12))
@@ -439,18 +439,14 @@ def groq_chat(messages, max_tokens=None):
 
                 break
 
-            payload = response.json()
-            choices = payload.get("choices") or []
+            data = response.json()
+            choices = data.get("choices") or []
 
             if not choices:
-                raise RuntimeError(
-                    "Groq returned no choices."
-                )
+                raise RuntimeError("Groq returned no choices.")
 
             content = (
-                choices[0]
-                .get("message", {})
-                .get("content", "")
+                choices[0].get("message", {}).get("content", "")
             )
 
             if isinstance(content, list):
@@ -461,9 +457,7 @@ def groq_chat(messages, max_tokens=None):
                 )
 
             if not str(content).strip():
-                raise RuntimeError(
-                    "Groq returned empty content."
-                )
+                raise RuntimeError("Groq returned empty content.")
 
             return str(content)
 
@@ -474,53 +468,46 @@ def groq_chat(messages, max_tokens=None):
                 time.sleep(min(4 * (attempt + 1), 12))
 
     raise RuntimeError(
-        "Groq request failed after retries. "
-        f"Last error: {last_error}"
+        "Groq failed after retries. Last error: "
+        + last_error
     )
 
 
 # =========================================================
-# Automatic story generation
+# Story generation and validation
 # =========================================================
 
 def create_story_package(idea):
     system_prompt = f"""
 أنت كاتب سيناريو محترف لقصص عربية مشوقة.
+اكتب قصة مترابطة من {SCENE_COUNT} مشهدًا بالضبط.
 
-أنشئ قصة مترابطة من {SCENE_COUNT} مشهدًا بالضبط.
-المشهد يستهدف خمس ثوانٍ، لكن يمكن أن تزيد مدته إذا احتاج
-الصوت وقتًا إضافيًا حتى لا ينقطع الكلام.
+كل مشهد يحتوي:
+narration: جملة عربية قصيرة.
+visual_prompt: وصف بصري إنجليزي سينمائي واقعي.
+search_query: كلمات إنجليزية للبحث عن فيديو أو صورة.
+effect: نوع واحد من القائمة المحددة.
 
-لكل مشهد أخرج:
-narration: جملة عربية قصيرة جدًا، واضحة وسهلة النطق.
-visual_prompt: وصف إنجليزي لمشهد واقعي سينمائي.
-search_query: كلمات إنجليزية مناسبة للبحث عن فيديو أو صورة.
-effect: نوع واحد من القائمة التالية:
+الأنواع المسموحة:
 mystery, castle, steps, romance, tension, storm,
 beast, fight, impact, magic, cliffhanger
 
-قواعد مهمة:
-- حافظ على نفس أبطال القصة وتسلسل الأحداث.
-- اجعل لكل مشهد حدثًا بصريًا واضحًا.
-- اجعل السرد قصيرًا، ويفضل 5 إلى 10 كلمات لكل مشهد.
-- لا تجعل المشهد الرابع عشر يعيد أحداث المشهد الثالث.
-- ابدأ بخطاف درامي.
+القواعد:
+- حافظ على تسلسل القصة وهوية الشخصيات.
+- افتح بخطاف درامي قوي.
 - صعّد الخطر تدريجيًا.
+- اجعل كل مشهد مختلفًا بصريًا عن السابق.
+- اجعل السرد واضحًا وقصيرًا.
 - اختم بتشويق يفتح الباب للجزء التالي.
-- لا تكتب أكثر من جملتين قصيرتين في المشهد.
 - لا تضع تعليمات تصوير داخل narration.
-- أخرج JSON صالحًا فقط، دون Markdown.
+- لا تضف ترجمة أو نصوصًا داخل visual_prompt.
+- أخرج JSON صحيحًا فقط دون Markdown.
 
-المفاتيح:
+المفاتيح المطلوبة:
 title, story, scenes
 
-مثال المشهد:
-{{
-  "narration": "وقف الغريب أمام الوحش دون أن يتراجع.",
-  "visual_prompt": "A mysterious hero facing a giant beast, realistic live action, cinematic lighting",
-  "search_query": "man facing giant beast cinematic",
-  "effect": "beast"
-}}
+كل مشهد:
+narration, visual_prompt, search_query, effect
 """
 
     user_prompt = (
@@ -530,44 +517,33 @@ title, story, scenes
 
     last_error = None
 
-    for validation_attempt in range(2):
+    for attempt in range(2):
         messages = [
-            {
-                "role": "system",
-                "content": system_prompt,
-            },
-            {
-                "role": "user",
-                "content": user_prompt,
-            },
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
         ]
 
-        if validation_attempt:
+        if attempt:
             messages.append({
                 "role": "user",
                 "content": (
-                    f"أعد JSON صحيحًا يحتوي على {SCENE_COUNT} مشهدًا. "
-                    "اختصر narration في كل مشهد."
+                    f"أعد JSON صالحًا يحتوي على {SCENE_COUNT} مشهدًا "
+                    "بالضبط، مع سرد عربي قصير في كل مشهد."
                 ),
             })
 
         raw = groq_chat(messages)
+        data = extract_json(raw)
 
         try:
-            data = extract_json(raw)
+            scenes = data.get("scenes")
 
-            scenes = (
-                data.get("scenes")
-                if isinstance(data, dict)
-                else None
-            )
+            if not isinstance(scenes, list):
+                raise ValueError("scenes must be a list")
 
-            if (
-                not isinstance(scenes, list)
-                or len(scenes) != SCENE_COUNT
-            ):
+            if len(scenes) != SCENE_COUNT:
                 raise ValueError(
-                    f"Expected {SCENE_COUNT} scenes."
+                    f"Expected {SCENE_COUNT} scenes, got {len(scenes)}"
                 )
 
             clean = []
@@ -575,18 +551,16 @@ title, story, scenes
             for index, scene in enumerate(scenes):
                 if not isinstance(scene, dict):
                     raise ValueError(
-                        f"Scene {index + 1} is invalid."
+                        f"Invalid scene {index + 1}"
                     )
 
                 narration = re.sub(
-                    r"\s+",
-                    " ",
+                    r"\s+", " ",
                     str(scene.get("narration", "")),
                 ).strip()
 
                 visual = re.sub(
-                    r"\s+",
-                    " ",
+                    r"\s+", " ",
                     str(scene.get("visual_prompt", "")),
                 ).strip()
 
@@ -611,10 +585,7 @@ title, story, scenes
                 if len(query.split()) < 3:
                     query = safe_query(
                         " ".join(
-                            re.findall(
-                                r"[A-Za-z0-9]+",
-                                visual,
-                            )[:8]
+                            re.findall(r"[A-Za-z0-9]+", visual)[:8]
                         )
                     )
 
@@ -631,43 +602,36 @@ title, story, scenes
                     "effect": effect,
                 })
 
-            total = word_count(
-                " ".join(
-                    scene["narration"] for scene in clean
-                )
+            total_words = word_count(
+                " ".join(scene["narration"] for scene in clean)
             )
 
-            if not 45 <= total <= 230:
+            if not 20 <= total_words <= 300:
                 raise ValueError(
-                    f"Narration word count unsuitable: {total}"
+                    f"Unexpected narration length: {total_words}"
                 )
 
             return {
-                "title": str(
-                    data.get("title", "حكاية ظل")
-                )[:100],
-                "story": str(
-                    data.get("story", idea)
-                )[:2000],
+                "title": str(data.get("title", "حكاية ظل"))[:100],
+                "story": str(data.get("story", idea))[:2000],
                 "scenes": clean,
             }
 
         except Exception as exc:
             last_error = exc
-
             log.warning(
-                "Story validation %s failed: %s",
-                validation_attempt + 1,
+                "Story validation attempt %s failed: %s",
+                attempt + 1,
                 exc,
             )
 
     raise RuntimeError(
-        f"Could not validate story JSON: {last_error}"
+        f"Story validation failed: {last_error}"
     )
 
 
 # =========================================================
-# Pixabay video search
+# Pixabay search
 # =========================================================
 
 def search_pixabay_video(query):
@@ -684,11 +648,7 @@ def search_pixabay_video(query):
         },
         timeout=(15, 35),
     )
-
-    if response.status_code >= 400:
-        raise RuntimeError(
-            f"Pixabay video HTTP {response.status_code}"
-        )
+    response.raise_for_status()
 
     data = response.json()
 
@@ -696,24 +656,13 @@ def search_pixabay_video(query):
         videos = hit.get("videos", {})
 
         for quality in ("medium", "large", "small", "tiny"):
-            url = (
-                videos.get(quality, {}).get("url", "")
-            )
+            url = videos.get(quality, {}).get("url", "")
 
-            if (
-                url
-                and urlparse(url).scheme == "https"
-            ):
+            if url and urlparse(url).scheme == "https":
                 return url
 
-    raise RuntimeError(
-        f"No Pixabay video found for: {query}"
-    )
+    raise RuntimeError(f"No video found for query: {query}")
 
-
-# =========================================================
-# Pixabay image fallback
-# =========================================================
 
 def search_pixabay_image(query):
     if not PIXABAY_API_KEY:
@@ -731,94 +680,34 @@ def search_pixabay_image(query):
         },
         timeout=(15, 35),
     )
-
-    if response.status_code >= 400:
-        raise RuntimeError(
-            f"Pixabay image HTTP {response.status_code}"
-        )
+    response.raise_for_status()
 
     data = response.json()
 
     for hit in data.get("hits", []):
-        url = hit.get("largeImageURL") or hit.get("webformatURL")
-
-        if (
-            url
-            and urlparse(url).scheme == "https"
-        ):
-            return url
-
-    raise RuntimeError(
-        f"No Pixabay image found for: {query}"
-    )
-
-
-def download_media(url, destination, maximum_bytes):
-    total = 0
-
-    with HTTP.get(
-        url,
-        stream=True,
-        timeout=(20, 90),
-    ) as response:
-        response.raise_for_status()
-
-        content_type = response.headers.get(
-            "content-type", ""
-        ).lower()
-
-        if (
-            "text/html" in content_type
-            or "application/json" in content_type
-        ):
-            raise RuntimeError(
-                "Media URL returned HTML or JSON, not media."
-            )
-
-        with open(destination, "wb") as output:
-            for chunk in response.iter_content(
-                256 * 1024
-            ):
-                if not chunk:
-                    continue
-
-                total += len(chunk)
-
-                if total > maximum_bytes:
-                    raise RuntimeError(
-                        "Downloaded media exceeds size limit."
-                    )
-
-                output.write(chunk)
-
-    if total < 5000:
-        raise RuntimeError(
-            "Downloaded media is too small."
+        url = (
+            hit.get("largeImageURL")
+            or hit.get("webformatURL")
         )
 
-    return destination
+        if url and urlparse(url).scheme == "https":
+            return url
+
+    raise RuntimeError(f"No image found for query: {query}")
 
 
 # =========================================================
-# Video movement / image Ken Burns motion
+# Scene rendering
 # =========================================================
 
 def normalize_video_scene(source, destination, duration):
-    """
-    Crop video to vertical format and apply subtle zoom movement.
-    """
     duration = max(1.0, float(duration))
 
     vf = (
         "scale=900:1600:force_original_aspect_ratio=increase,"
         "crop=900:1600,"
-        "zoompan="
-        "z='min(zoom+0.00035,1.07)':"
-        "x='iw/2-(iw/zoom/2)':"
-        "y='ih/2-(ih/zoom/2)':"
-        f"d=1:s={VIDEO_WIDTH}x{VIDEO_HEIGHT}:fps={VIDEO_FPS},"
-        f"trim=duration={duration:.3f},"
-        "setpts=PTS-STARTPTS,"
+        f"fps={VIDEO_FPS},"
+        "scale=720:1280,"
         "setsar=1,format=yuv420p"
     )
 
@@ -835,49 +724,33 @@ def normalize_video_scene(source, destination, duration):
         "-pix_fmt", "yuv420p",
         "-r", str(VIDEO_FPS),
         str(destination),
-    ], 240)
+    ], 300)
 
-    if (
-        not destination.exists()
-        or destination.stat().st_size < 1000
-    ):
-        raise RuntimeError(
-            "Video normalization failed."
-        )
+    if not destination.exists() or destination.stat().st_size < 1000:
+        raise RuntimeError("Video normalization failed.")
 
     return destination
 
 
 def animate_still_image(source, destination, duration, index):
-    """
-    Turn a still image into a moving vertical video:
-    slow zoom and alternating pan direction.
-    """
     duration = max(1.0, float(duration))
     total_frames = max(1, int(duration * VIDEO_FPS))
 
     if index % 2:
-        x_expression = (
-            "iw/2-(iw/zoom/2)"
-            "+(iw/zoom/8)*sin(on/45)"
-        )
+        x_expr = "iw/2-(iw/zoom/2)+(iw/zoom/10)*sin(on/40)"
     else:
-        x_expression = (
-            "iw/2-(iw/zoom/2)"
-            "-(iw/zoom/8)*sin(on/45)"
-        )
+        x_expr = "iw/2-(iw/zoom/2)-(iw/zoom/10)*sin(on/40)"
 
     vf = (
         "scale=1000:1800:force_original_aspect_ratio=increase,"
         "crop=1000:1800,"
         "zoompan="
-        "z='min(zoom+0.0010,1.15)':"
-        f"x='{x_expression}':"
+        "z='min(zoom+0.001,1.12)':"
+        f"x='{x_expr}':"
         "y='ih/2-(ih/zoom/2)':"
         f"d=1:s={VIDEO_WIDTH}x{VIDEO_HEIGHT}:fps={VIDEO_FPS},"
         f"trim=end_frame={total_frames},"
-        "setpts=PTS-STARTPTS,"
-        "setsar=1,format=yuv420p"
+        "setpts=PTS-STARTPTS,setsar=1,format=yuv420p"
     )
 
     run_command([
@@ -895,27 +768,15 @@ def animate_still_image(source, destination, duration, index):
         "-pix_fmt", "yuv420p",
         "-r", str(VIDEO_FPS),
         str(destination),
-    ], 240)
+    ], 300)
 
-    if (
-        not destination.exists()
-        or destination.stat().st_size < 1000
-    ):
-        raise RuntimeError(
-            "Could not animate fallback image."
-        )
+    if not destination.exists() or destination.stat().st_size < 1000:
+        raise RuntimeError("Image animation failed.")
 
     return destination
 
 
 def create_fallback_visual(destination, duration, index):
-    """
-    Last-resort background if both video and image search fail.
-    This is an abstract background, not an AI-generated scene.
-    """
-    duration = max(1.0, float(duration))
-
-    # Different dark colors per scene, avoiding a black empty screen.
     colors = [
         "0x172238",
         "0x28203D",
@@ -926,27 +787,17 @@ def create_fallback_visual(destination, duration, index):
 
     color = colors[index % len(colors)]
 
-    vf = (
-        f"scale={VIDEO_WIDTH}:{VIDEO_HEIGHT},"
-        "zoompan="
-        "z='min(zoom+0.0008,1.12)':"
-        "x='iw/2-(iw/zoom/2)':"
-        "y='ih/2-(ih/zoom/2)':"
-        f"d=1:s={VIDEO_WIDTH}x{VIDEO_HEIGHT}:fps={VIDEO_FPS},"
-        "format=yuv420p"
-    )
-
     run_command([
         "ffmpeg", "-y",
         "-hide_banner", "-loglevel", "error",
         "-f", "lavfi",
-        "-i", (
-            f"color=c={color}:"
-            f"s={VIDEO_WIDTH}x{VIDEO_HEIGHT}:"
-            f"r={VIDEO_FPS}:d={duration:.3f}"
+        "-i",
+        (
+            f"color=c={color}:s={VIDEO_WIDTH}x{VIDEO_HEIGHT}:"
+            f"r={VIDEO_FPS}:d={duration}"
         ),
-        "-vf", vf,
-        "-t", f"{duration:.3f}",
+        "-vf", "format=yuv420p",
+        "-t", str(duration),
         "-an",
         "-c:v", "libx264",
         "-preset", "ultrafast",
@@ -959,10 +810,7 @@ def create_fallback_visual(destination, duration, index):
 
 
 def obtain_scene_visual(scene, workdir, index, duration):
-    """
-    Try video first, image second, abstract fallback last.
-    """
-    n = index + 1
+    number = index + 1
 
     query = scene["search_query"]
 
@@ -975,21 +823,19 @@ def obtain_scene_visual(scene, workdir, index, duration):
         )
     )
 
-    raw_video = workdir / f"raw_video_{n}.mp4"
-    raw_image = workdir / f"raw_image_{n}.jpg"
-    normalized = workdir / f"visual_{n}.mp4"
+    raw_video = workdir / f"raw_video_{number}.mp4"
+    raw_image = workdir / f"raw_image_{number}.jpg"
+    normalized = workdir / f"visual_{number}.mp4"
 
     queries = [query]
 
-    if (
-        visual_query
-        and visual_query.lower() != query.lower()
-    ):
+    if visual_query and visual_query.lower() != query.lower():
         queries.append(visual_query)
 
-    for candidate_query in queries:
+    # First choice: real stock video
+    for candidate in queries:
         try:
-            url = search_pixabay_video(candidate_query)
+            url = search_pixabay_video(candidate)
 
             download_media(
                 url,
@@ -1003,26 +849,20 @@ def obtain_scene_visual(scene, workdir, index, duration):
                 duration,
             )
 
-            raw_video.unlink(missing_ok=True)
-            raw_image.unlink(missing_ok=True)
-
-            log.info(
-                "Scene %s uses video source.",
-                n,
-            )
-
+            log.info("Scene %s: video source selected.", number)
             return normalized, "video"
 
         except Exception as exc:
             log.warning(
                 "Scene %s video search failed: %s",
-                n,
+                number,
                 exc,
             )
 
-    for candidate_query in queries:
+    # Second choice: still image with motion
+    for candidate in queries:
         try:
-            url = search_pixabay_image(candidate_query)
+            url = search_pixabay_image(candidate)
 
             download_media(
                 url,
@@ -1037,27 +877,18 @@ def obtain_scene_visual(scene, workdir, index, duration):
                 index,
             )
 
-            raw_video.unlink(missing_ok=True)
-            raw_image.unlink(missing_ok=True)
-
-            log.info(
-                "Scene %s uses animated still image.",
-                n,
-            )
-
+            log.info("Scene %s: animated image selected.", number)
             return normalized, "image"
 
         except Exception as exc:
             log.warning(
                 "Scene %s image search failed: %s",
-                n,
+                number,
                 exc,
             )
 
-    log.warning(
-        "Scene %s uses abstract fallback.",
-        n,
-    )
+    # Last resort: abstract background
+    log.warning("Scene %s: using fallback background.", number)
 
     create_fallback_visual(
         normalized,
@@ -1065,14 +896,11 @@ def obtain_scene_visual(scene, workdir, index, duration):
         index,
     )
 
-    raw_video.unlink(missing_ok=True)
-    raw_image.unlink(missing_ok=True)
-
     return normalized, "fallback"
 
 
 # =========================================================
-# Arabic subtitles
+# Arabic subtitles (optional)
 # =========================================================
 
 def add_arabic_caption(
@@ -1083,36 +911,33 @@ def add_arabic_caption(
     index,
     duration,
 ):
+    if not SUBTITLES_ENABLED:
+        return source
+
     try:
         from PIL import Image, ImageDraw, ImageFont
         import arabic_reshaper
         from bidi.algorithm import get_display
-
     except Exception:
         log.warning(
-            "Subtitle dependencies missing."
+            "Subtitle libraries missing; continuing without subtitles."
         )
         return source
 
     try:
-        font_candidates = [
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-        ]
+        font_path = (
+            "/usr/share/fonts/truetype/dejavu/"
+            "DejaVuSans-Bold.ttf"
+        )
 
-        font = None
-
-        for fp in font_candidates:
-            if Path(fp).exists():
-                font = ImageFont.truetype(fp, 32)
-                break
-
-        if font is None:
+        if Path(font_path).exists():
+            font = ImageFont.truetype(font_path, 30)
+        else:
             font = ImageFont.load_default()
 
         overlay = Image.new(
             "RGBA",
-            (VIDEO_WIDTH, 170),
+            (VIDEO_WIDTH, 150),
             (0, 0, 0, 0),
         )
 
@@ -1123,19 +948,14 @@ def add_arabic_caption(
         current = ""
 
         for word in words:
-            candidate = (
-                current + " " + word
-            ).strip()
+            candidate = (current + " " + word).strip()
 
             shaped = get_display(
                 arabic_reshaper.reshape(candidate)
             )
 
-            width = draw.textbbox(
-                (0, 0),
-                shaped,
-                font=font,
-            )[2]
+            box = draw.textbbox((0, 0), shaped, font=font)
+            width = box[2] - box[0]
 
             if current and width > VIDEO_WIDTH - 80:
                 lines.append(current)
@@ -1146,35 +966,26 @@ def add_arabic_caption(
         if current:
             lines.append(current)
 
-        # Keep subtitles readable. Narration is deliberately short.
         lines = lines[:2]
 
         draw.rounded_rectangle(
-            (16, 8, VIDEO_WIDTH - 16, 158),
-            radius=18,
-            fill=(0, 0, 0, 165),
+            (18, 8, VIDEO_WIDTH - 18, 142),
+            radius=16,
+            fill=(0, 0, 0, 160),
         )
 
-        for i, line in enumerate(lines):
+        for line_index, line in enumerate(lines):
             shaped = get_display(
                 arabic_reshaper.reshape(line)
             )
 
-            box = draw.textbbox(
-                (0, 0),
-                shaped,
-                font=font,
-            )
-
+            box = draw.textbbox((0, 0), shaped, font=font)
             text_width = box[2] - box[0]
 
-            x = max(
-                10,
-                (VIDEO_WIDTH - text_width) // 2,
-            )
+            x = max(10, (VIDEO_WIDTH - text_width) // 2)
 
             draw.text(
-                (x, 25 + i * 48),
+                (x, 20 + line_index * 48),
                 shaped,
                 font=font,
                 fill=(255, 255, 255, 255),
@@ -1193,7 +1004,7 @@ def add_arabic_caption(
             "-framerate", str(VIDEO_FPS),
             "-i", str(png),
             "-filter_complex",
-            "[0:v][1:v]overlay=0:H-170:format=auto[v]",
+            "[0:v][1:v]overlay=0:H-150:format=auto[v]",
             "-map", "[v]",
             "-t", f"{duration:.3f}",
             "-an",
@@ -1205,23 +1016,17 @@ def add_arabic_caption(
             str(destination),
         ], 180)
 
-        if (
-            destination.exists()
-            and destination.stat().st_size > 1000
-        ):
+        if destination.exists() and destination.stat().st_size > 1000:
             return destination
 
     except Exception:
-        log.exception(
-            "Subtitle render failed for scene %s",
-            index,
-        )
+        log.exception("Subtitle render failed.")
 
     return source
 
 
 # =========================================================
-# Arabic voice
+# Arabic text-to-speech
 # =========================================================
 
 def create_narration(text, destination):
@@ -1236,15 +1041,11 @@ def create_narration(text, destination):
                 voice=TTS_VOICE,
                 rate=TTS_RATE,
             )
-
             await communicate.save(str(destination))
 
         asyncio.run(generate())
 
-        if (
-            destination.exists()
-            and destination.stat().st_size > 1000
-        ):
+        if destination.exists() and destination.stat().st_size > 1000:
             return destination
 
     except Exception:
@@ -1259,69 +1060,31 @@ def create_narration(text, destination):
             slow=False,
         ).save(str(destination))
 
-        if (
-            destination.exists()
-            and destination.stat().st_size > 1000
-        ):
+        if destination.exists() and destination.stat().st_size > 1000:
             return destination
 
     except Exception:
         log.exception("gTTS fallback failed.")
 
-    raise RuntimeError(
-        "Arabic text-to-speech failed."
-    )
+    raise RuntimeError("Arabic text-to-speech failed.")
 
 
-def prepare_synced_voice(
-    source,
-    destination,
-    desired_duration,
-):
-    """
-    Keep the complete narration.
-    Speed up gently if needed; never intentionally trim the sentence.
-    The video duration follows the resulting audio duration.
-    """
-    raw_duration = probe_duration(source)
+def prepare_synced_voice(source, destination):
+    duration = probe_duration(source)
 
-    if not raw_duration or raw_duration <= 0:
-        raise RuntimeError(
-            "Could not determine narration duration."
-        )
-
-    desired_duration = max(
-        BASE_SCENE_DURATION,
-        float(desired_duration),
-    )
-
-    # Do not force long speech into a five-second container.
-    if raw_duration > desired_duration * 1.25:
-        desired_duration = raw_duration / 1.25
-
-    speed = min(
-        1.25,
-        max(1.0, raw_duration / desired_duration),
-    )
-
-    filters = []
-
-    if speed > 1.01:
-        filters.append(
-            f"atempo={speed:.4f}"
-        )
-
-    filters += [
-        "aresample=44100",
-        "aformat=sample_rates=44100:channel_layouts=stereo",
-        "asetpts=PTS-STARTPTS",
-    ]
+    if not duration or duration <= 0:
+        raise RuntimeError("Could not determine voice duration.")
 
     run_command([
         "ffmpeg", "-y",
         "-hide_banner", "-loglevel", "error",
         "-i", str(source),
-        "-af", ",".join(filters),
+        "-af",
+        (
+            "aresample=44100,"
+            "aformat=sample_rates=44100:channel_layouts=stereo,"
+            "asetpts=PTS-STARTPTS"
+        ),
         "-ar", "44100",
         "-ac", "2",
         "-c:a", "aac",
@@ -1332,38 +1095,9 @@ def prepare_synced_voice(
     actual = probe_duration(destination)
 
     if not actual or actual <= 0:
-        raise RuntimeError(
-            "Could not prepare narration audio."
-        )
+        raise RuntimeError("Voice conversion failed.")
 
-    # A small audio padding buffer protects against rounding differences.
-    final_duration = max(
-        BASE_SCENE_DURATION,
-        actual + 0.08,
-    )
-
-    padded = destination.with_name(
-        destination.stem + "_padded.m4a"
-    )
-
-    run_command([
-        "ffmpeg", "-y",
-        "-hide_banner", "-loglevel", "error",
-        "-i", str(destination),
-        "-af",
-        f"apad=pad_dur={final_duration:.3f},"
-        f"atrim=duration={final_duration:.3f},"
-        "asetpts=PTS-STARTPTS",
-        "-ar", "44100",
-        "-ac", "2",
-        "-c:a", "aac",
-        "-b:a", "96k",
-        str(padded),
-    ], 120)
-
-    padded.replace(destination)
-
-    return final_duration
+    return actual
 
 
 # =========================================================
@@ -1371,82 +1105,58 @@ def prepare_synced_voice(
 # =========================================================
 
 def make_scene_sfx(kind, destination, duration):
-    """
-    Low-volume synthetic effects. These are not real recordings.
-    """
     duration = max(1.0, float(duration))
 
     if kind == "beast":
         source = (
-            "anoisesrc=color=brown:"
-            f"sample_rate=44100:duration={duration}"
+            f"anoisesrc=color=brown:sample_rate=44100:"
+            f"duration={duration}"
         )
-        af = (
-            "highpass=f=45,lowpass=f=850,"
-            "tremolo=f=5:d=0.75,volume=0.22"
-        )
+        af = "highpass=f=45,lowpass=f=850,tremolo=f=5:d=0.75,volume=0.22"
 
     elif kind in ("fight", "impact"):
         source = (
-            "anoisesrc=color=pink:"
-            f"sample_rate=44100:duration={duration}"
+            f"anoisesrc=color=pink:sample_rate=44100:"
+            f"duration={duration}"
         )
         af = (
-            "highpass=f=50,lowpass=f=1600,"
-            "volume=0.25,"
+            "highpass=f=50,lowpass=f=1600,volume=0.22,"
             "afade=t=in:d=0.02,"
-            "afade=t=out:st=0.65:d=0.8"
+            f"afade=t=out:st={max(0.1, duration-0.8)}:d=0.7"
         )
 
     elif kind == "magic":
         source = (
-            "sine=frequency=95:"
-            f"sample_rate=44100:duration={duration}"
+            f"sine=frequency=95:sample_rate=44100:"
+            f"duration={duration}"
         )
-        af = (
-            "tremolo=f=3:d=0.75,"
-            "volume=0.12,"
-            "afade=t=in:d=0.7,"
-            f"afade=t=out:st={max(0.1, duration-1.2)}:d=1.2"
-        )
+        af = "tremolo=f=3:d=0.75,volume=0.12"
 
     elif kind == "storm":
         source = (
-            "anoisesrc=color=pink:"
-            f"sample_rate=44100:duration={duration}"
+            f"anoisesrc=color=pink:sample_rate=44100:"
+            f"duration={duration}"
         )
-        af = (
-            "lowpass=f=420,"
-            "volume=0.10,"
-            "tremolo=f=0.25:d=0.4"
-        )
+        af = "lowpass=f=420,volume=0.10,tremolo=f=0.25:d=0.4"
 
-    elif kind in (
-        "tension",
-        "mystery",
-        "cliffhanger",
-    ):
+    elif kind in ("tension", "mystery", "cliffhanger"):
         source = (
-            "sine=frequency=72:"
-            f"sample_rate=44100:duration={duration}"
+            f"sine=frequency=72:sample_rate=44100:"
+            f"duration={duration}"
         )
-        af = (
-            "tremolo=f=2:d=0.55,"
-            "lowpass=f=500,"
-            "volume=0.08"
-        )
+        af = "tremolo=f=2:d=0.55,lowpass=f=500,volume=0.08"
 
     elif kind == "romance":
         source = (
-            "sine=frequency=440:"
-            f"sample_rate=44100:duration={duration}"
+            f"sine=frequency=440:sample_rate=44100:"
+            f"duration={duration}"
         )
         af = "lowpass=f=1200,volume=0.025"
 
     else:
         source = (
-            "anoisesrc=color=pink:"
-            f"sample_rate=44100:duration={duration}"
+            f"anoisesrc=color=pink:sample_rate=44100:"
+            f"duration={duration}"
         )
         af = "lowpass=f=1000,volume=0.045"
 
@@ -1461,81 +1171,55 @@ def make_scene_sfx(kind, destination, duration):
         "-c:a", "aac",
         "-b:a", "64k",
         str(destination),
-    ], 90)
+    ], 120)
 
-    if (
-        not destination.exists()
-        or destination.stat().st_size < 1000
-    ):
-        raise RuntimeError(
-            f"Could not create sound effect: {kind}"
-        )
+    if not destination.exists() or destination.stat().st_size < 1000:
+        raise RuntimeError(f"Could not create SFX: {kind}")
 
     return destination
 
 
 # =========================================================
-# Music
+# Background music
 # =========================================================
 
-def detect_mood(package):
-    text = (
-        str(package.get("title", ""))
-        + " "
-        + str(package.get("story", ""))
-    ).lower()
+def prepare_background_music(destination, duration, workdir):
+    if STORY_MUSIC_URL:
+        try:
+            source = workdir / "custom_music_source.mp3"
 
-    if any(x in text for x in (
-        "حب", "أميرة", "عشق", "love", "romance"
-    )):
-        return "romance"
+            download_media(
+                STORY_MUSIC_URL,
+                source,
+                35 * 1024 * 1024,
+            )
 
-    if any(x in text for x in (
-        "رعب", "وحش", "ظلام", "horror"
-    )):
-        return "horror"
+            run_command([
+                "ffmpeg", "-y",
+                "-hide_banner", "-loglevel", "error",
+                "-stream_loop", "-1",
+                "-i", str(source),
+                "-t", f"{duration:.3f}",
+                "-af",
+                (
+                    "volume=0.18,"
+                    "afade=t=in:d=2,"
+                    f"afade=t=out:st={max(0.1, duration-4)}:d=4"
+                ),
+                "-ar", "44100",
+                "-ac", "2",
+                "-c:a", "aac",
+                "-b:a", "96k",
+                str(destination),
+            ], 240)
 
-    if any(x in text for x in (
-        "حزين", "فقد", "وداع", "sad"
-    )):
-        return "sad"
+            if destination.exists() and destination.stat().st_size > 1000:
+                return destination
 
-    if any(x in text for x in (
-        "معركة", "قتال", "حرب", "fight", "battle"
-    )):
-        return "action"
+        except Exception:
+            log.exception("Custom music failed; using generated ambience.")
 
-    if any(x in text for x in (
-        "مملكة", "سحر", "أسطورة", "epic"
-    )):
-        return "epic"
-
-    return "mystery"
-
-
-def download_music(url, destination):
-    if not url:
-        raise RuntimeError("No music URL supplied.")
-
-    if urlparse(url).scheme != "https":
-        raise RuntimeError(
-            "Music URL must use HTTPS."
-        )
-
-    return download_media(
-        url,
-        destination,
-        35 * 1024 * 1024,
-    )
-
-
-def make_generated_music(destination, duration):
-    """
-    Fallback ambience when a direct music URL is unavailable.
-    This is synthesized ambience, not a real licensed soundtrack.
-    """
-    duration = max(1.0, float(duration))
-
+    # Last-resort synthesized ambience.
     run_command([
         "ffmpeg", "-y",
         "-hide_banner", "-loglevel", "error",
@@ -1557,118 +1241,31 @@ def make_generated_music(destination, duration):
         "-c:a", "aac",
         "-b:a", "64k",
         str(destination),
-    ], 120)
+    ], 180)
 
     return destination
 
 
-def prepare_background_music(
-    package,
-    destination,
-    duration,
-    workdir,
-):
-    mood = detect_mood(package)
-
-    candidates = []
-
-    if STORY_MUSIC_URL:
-        candidates.append(STORY_MUSIC_URL)
-
-    if mood in MUSIC_DIRECT_LINKS:
-        candidates.append(
-            MUSIC_DIRECT_LINKS[mood]
-        )
-
-    candidates += [
-        url for key, url in MUSIC_DIRECT_LINKS.items()
-        if key != mood
-    ]
-
-    for index, url in enumerate(candidates):
-        try:
-            downloaded = workdir / f"music_source_{index}.mp3"
-
-            download_music(
-                url,
-                downloaded,
-            )
-
-            run_command([
-                "ffmpeg", "-y",
-                "-hide_banner", "-loglevel", "error",
-                "-stream_loop", "-1",
-                "-i", str(downloaded),
-                "-t", f"{duration:.3f}",
-                "-af",
-                (
-                    "volume=0.20,"
-                    "afade=t=in:d=2,"
-                    f"afade=t=out:st={max(0.1, duration-4)}:d=4"
-                ),
-                "-ar", "44100",
-                "-ac", "2",
-                "-c:a", "aac",
-                "-b:a", "96k",
-                str(destination),
-            ], 180)
-
-            if (
-                destination.exists()
-                and destination.stat().st_size > 1000
-            ):
-                log.info(
-                    "Using downloaded music: %s",
-                    url,
-                )
-                return destination
-
-        except Exception as exc:
-            log.warning(
-                "Music source failed: %s",
-                exc,
-            )
-
-    log.warning(
-        "All music URLs failed; using generated ambience."
-    )
-
-    return make_generated_music(
-        destination,
-        duration,
-    )
-
-
 # =========================================================
-# Concatenation
+# Concatenation and final audio mix
 # =========================================================
 
 def write_concat_list(paths, destination):
-    with open(
-        destination,
-        "w",
-        encoding="utf-8",
-    ) as file:
+    with open(destination, "w", encoding="utf-8") as output:
         for path in paths:
             resolved = Path(path).resolve().as_posix()
 
             if "'" in resolved:
                 raise RuntimeError(
-                    "Media path contains unsupported apostrophe."
+                    "A media path contains an unsupported apostrophe."
                 )
 
-            file.write(
-                f"file '{resolved}'\n"
-            )
+            output.write(f"file '{resolved}'\n")
 
 
 def concatenate_video(paths, destination, workdir):
     listing = workdir / "video_list.txt"
-
-    write_concat_list(
-        paths,
-        listing,
-    )
+    write_concat_list(paths, listing)
 
     run_command([
         "ffmpeg", "-y",
@@ -1677,6 +1274,7 @@ def concatenate_video(paths, destination, workdir):
         "-safe", "0",
         "-i", str(listing),
         "-an",
+        "-vf", "setsar=1,format=yuv420p",
         "-c:v", "libx264",
         "-preset", "ultrafast",
         "-crf", "27",
@@ -1685,24 +1283,15 @@ def concatenate_video(paths, destination, workdir):
         str(destination),
     ], 600)
 
-    if (
-        not destination.exists()
-        or destination.stat().st_size < 10000
-    ):
-        raise RuntimeError(
-            "Video concatenation failed."
-        )
+    if not destination.exists() or destination.stat().st_size < 10000:
+        raise RuntimeError("Video concatenation failed.")
 
     return destination
 
 
 def concatenate_audio(paths, destination, workdir, label):
     listing = workdir / f"{label}_list.txt"
-
-    write_concat_list(
-        paths,
-        listing,
-    )
+    write_concat_list(paths, listing)
 
     run_command([
         "ffmpeg", "-y",
@@ -1718,41 +1307,21 @@ def concatenate_audio(paths, destination, workdir, label):
         str(destination),
     ], 600)
 
-    if (
-        not destination.exists()
-        or destination.stat().st_size < 1000
-    ):
-        raise RuntimeError(
-            f"Audio concatenation failed: {label}"
-        )
+    if not destination.exists() or destination.stat().st_size < 1000:
+        raise RuntimeError(f"Audio concatenation failed: {label}")
 
     return destination
 
 
-# =========================================================
-# Final audio mix
-# =========================================================
-
-def mix_final_audio(
-    video,
-    voice,
-    sfx,
-    music,
-    destination,
-):
+def mix_final_audio(video, voice, sfx, music, destination):
     for label, path in {
         "video": video,
         "voice": voice,
         "sfx": sfx,
         "music": music,
     }.items():
-        if (
-            not Path(path).exists()
-            or Path(path).stat().st_size < 1000
-        ):
-            raise RuntimeError(
-                f"Missing or empty mix input: {label}"
-            )
+        if not Path(path).exists() or Path(path).stat().st_size < 1000:
+            raise RuntimeError(f"Missing mix input: {label}")
 
     for label, path in (
         ("voice", voice),
@@ -1760,44 +1329,36 @@ def mix_final_audio(
         ("music", music),
     ):
         if not has_audio_stream(path):
-            raise RuntimeError(
-                f"No audio stream detected in {label}."
-            )
+            raise RuntimeError(f"No audio stream in {label}")
 
     duration = probe_duration(video)
 
     if not duration or duration <= 0:
-        raise RuntimeError(
-            "Could not determine final video duration."
-        )
+        raise RuntimeError("Could not determine video duration.")
 
     graph = (
-        "[1:a]"
-        "aresample=44100,"
+        "[1:a]aresample=44100,"
         "aformat=sample_rates=44100:channel_layouts=stereo,"
         "volume=1.0,"
         f"apad=whole_dur={duration:.3f},"
         f"atrim=duration={duration:.3f},"
         "asetpts=PTS-STARTPTS[v];"
 
-        "[2:a]"
-        "aresample=44100,"
+        "[2:a]aresample=44100,"
         "aformat=sample_rates=44100:channel_layouts=stereo,"
         "volume=0.22,"
         f"apad=whole_dur={duration:.3f},"
         f"atrim=duration={duration:.3f},"
         "asetpts=PTS-STARTPTS[s];"
 
-        "[3:a]"
-        "aresample=44100,"
+        "[3:a]aresample=44100,"
         "aformat=sample_rates=44100:channel_layouts=stereo,"
         "volume=0.12,"
         f"apad=whole_dur={duration:.3f},"
         f"atrim=duration={duration:.3f},"
         "asetpts=PTS-STARTPTS[m];"
 
-        "[v][s][m]"
-        "amix=inputs=3:duration=longest:"
+        "[v][s][m]amix=inputs=3:duration=longest:"
         "dropout_transition=2:normalize=0,"
         "alimiter=limit=0.92,"
         f"atrim=duration={duration:.3f},"
@@ -1822,12 +1383,660 @@ def mix_final_audio(
         str(destination),
     ], 600)
 
-    if (
-        not destination.exists()
-        or destination.stat().st_size < 10000
-    ):
-        raise RuntimeError(
-            "Final video file is missing or too small."
+    if not destination.exists() or destination.stat().st_size < 10000:
+        raise RuntimeError("Final video file is missing or too small.")
+
+    return destination
+
+
+# =========================================================
+# Main video production pipeline
+# =========================================================
+
+def create_video(job_id, idea, progress_callback=None):
+    workdir = BASE_DIR / job_id
+    workdir.mkdir(parents=True, exist_ok=True)
+
+    def progress(stage, percent, message):
+        update_job(
+            job_id,
+            stage=stage,
+            progress=percent,
+            message=message,
         )
 
-   
+        if progress_callback:
+            try:
+                progress_callback(message)
+            except Exception:
+                log.exception("Progress callback failed.")
+
+    package = create_story_package(idea)
+    scenes = package["scenes"]
+
+    update_job(
+        job_id,
+        title=package["title"],
+        story=package["story"],
+        scene_count=len(scenes),
+    )
+
+    video_paths = []
+    voice_paths = []
+    sfx_paths = []
+    durations = []
+
+    for index, scene in enumerate(scenes):
+        number = index + 1
+
+        progress(
+            "scene_generation",
+            int(5 + (index / SCENE_COUNT) * 65),
+            f"تجهيز المشهد {number}/{SCENE_COUNT}",
+        )
+
+        # Narration first: the scene duration follows the actual audio.
+        raw_voice = workdir / f"voice_raw_{number}.mp3"
+        voice_file = workdir / f"voice_{number}.m4a"
+
+        create_narration(
+            scene["narration"],
+            raw_voice,
+        )
+
+        voice_duration = prepare_synced_voice(
+            raw_voice,
+            voice_file,
+        )
+
+        scene_duration = max(
+            BASE_SCENE_DURATION,
+            voice_duration + 0.20,
+        )
+
+        durations.append(scene_duration)
+
+        visual, visual_type = obtain_scene_visual(
+            scene,
+            workdir,
+            index,
+            scene_duration,
+        )
+
+        update_job(
+            job_id,
+            current_scene=number,
+            current_visual=visual_type,
+        )
+
+        captioned = workdir / f"captioned_{number}.mp4"
+
+        final_scene_visual = add_arabic_caption(
+            visual,
+            scene["narration"],
+            captioned,
+            workdir,
+            index,
+            scene_duration,
+        )
+
+        video_paths.append(final_scene_visual)
+        voice_paths.append(voice_file)
+
+        sfx_file = workdir / f"sfx_{number}.m4a"
+
+        try:
+            make_scene_sfx(
+                scene["effect"],
+                sfx_file,
+                scene_duration,
+            )
+        except Exception:
+            log.exception(
+                "SFX failed in scene %s; creating generic ambience.",
+                number,
+            )
+
+            make_scene_sfx(
+                "mystery",
+                sfx_file,
+                scene_duration,
+            )
+
+        sfx_paths.append(sfx_file)
+
+    progress(
+        "concatenating",
+        75,
+        "تجميع المشاهد والصوت...",
+    )
+
+    final_video_only = workdir / "video_only.mp4"
+    final_voice = workdir / "voice_all.m4a"
+    final_sfx = workdir / "sfx_all.m4a"
+    final_music = workdir / "music.m4a"
+    final_output = workdir / "ZIL_final.mp4"
+
+    concatenate_video(
+        video_paths,
+        final_video_only,
+        workdir,
+    )
+
+    concatenate_audio(
+        voice_paths,
+        final_voice,
+        workdir,
+        "voice",
+    )
+
+    concatenate_audio(
+        sfx_paths,
+        final_sfx,
+        workdir,
+        "sfx",
+    )
+
+    total_duration = sum(durations)
+
+    prepare_background_music(
+        final_music,
+        total_duration,
+        workdir,
+    )
+
+    progress(
+        "audio_mix",
+        90,
+        "موازنة الصوت والموسيقى والمؤثرات...",
+    )
+
+    mix_final_audio(
+        final_video_only,
+        final_voice,
+        final_sfx,
+        final_music,
+        final_output,
+    )
+
+    if final_output.stat().st_size > MAX_VIDEO_SIZE:
+        progress(
+            "compressing",
+            95,
+            "ضغط الفيديو ليتناسب مع إرسال تيليغرام...",
+        )
+
+        compressed = workdir / "ZIL_compressed.mp4"
+
+        run_command([
+            "ffmpeg", "-y",
+            "-hide_banner", "-loglevel", "error",
+            "-i", str(final_output),
+            "-c:v", "libx264",
+            "-preset", "veryfast",
+            "-crf", "31",
+            "-vf", "scale=576:1024",
+            "-c:a", "aac",
+            "-b:a", "96k",
+            "-movflags", "+faststart",
+            str(compressed),
+        ], 600)
+
+        if compressed.exists() and compressed.stat().st_size < final_output.stat().st_size:
+            final_output = compressed
+
+    progress(
+        "completed",
+        100,
+        "اكتمل الفيديو!",
+    )
+
+    return final_output, package
+
+
+# =========================================================
+# Job worker
+# =========================================================
+
+def job_worker(job_id, chat_id, idea, bot):
+    global ACTIVE_JOBS
+
+    with JOBS_LOCK:
+        ACTIVE_JOBS += 1
+
+    async def notify(text):
+        try:
+            await bot.send_message(
+                chat_id=chat_id,
+                text=text,
+            )
+        except Exception:
+            log.exception("Could not send Telegram message.")
+
+    def send_message(text):
+        try:
+            asyncio.run(notify(text))
+        except Exception:
+            log.exception("Telegram notification failed.")
+
+    try:
+        update_job(
+            job_id,
+            status="running",
+            stage="starting",
+            progress=1,
+        )
+
+        send_message(
+            f"🎬 بدأ إنتاج الفيديو.\n"
+            f"رقم العملية: {job_id}\n"
+            f"عدد المشاهد: {SCENE_COUNT}\n"
+            "قد تستغرق العملية وقتًا بحسب توفر الوسائط."
+        )
+
+        output, package = create_video(
+            job_id,
+            idea,
+        )
+
+        update_job(
+            job_id,
+            status="uploading",
+            stage="uploading",
+            progress=98,
+        )
+
+        if not output.exists():
+            raise RuntimeError("Final video was not created.")
+
+        if output.stat().st_size > MAX_VIDEO_SIZE:
+            raise RuntimeError(
+                "The video exceeds the configured Telegram upload limit. "
+                "Try reducing the resolution or CRF settings."
+            )
+
+        send_message(
+            f"✅ اكتمل الفيديو: {package['title']}\n"
+            "جارٍ إرساله الآن..."
+        )
+
+        async def send_video():
+            with open(output, "rb") as video_file:
+                await bot.send_video(
+                    chat_id=chat_id,
+                    video=video_file,
+                    caption=(
+                        f"🎬 {package['title']}\n"
+                        "صناعة: ظل ZIL"
+                    ),
+                    supports_streaming=True,
+                    read_timeout=180,
+                    write_timeout=180,
+                    connect_timeout=30,
+                    pool_timeout=30,
+                )
+
+        asyncio.run(send_video())
+
+        update_job(
+            job_id,
+            status="completed",
+            stage="completed",
+            progress=100,
+            output=str(output),
+            title=package["title"],
+        )
+
+        send_message(
+            f"🎉 انتهى الإنتاج بنجاح!\n"
+            f"العملية: {job_id}"
+        )
+
+    except Exception as exc:
+        log.exception("Video job failed: %s", job_id)
+
+        update_job(
+            job_id,
+            status="failed",
+            stage="failed",
+            error=str(exc)[:2500],
+        )
+
+        send_message(
+            "❌ فشل إنتاج الفيديو.\n"
+            f"العملية: {job_id}\n"
+            f"السبب: {str(exc)[:1200]}\n\n"
+            "إذا استمر الخطأ، أرسل /status "
+            "وافحص Runtime Logs في Render."
+        )
+
+    finally:
+        with JOBS_LOCK:
+            ACTIVE_JOBS = max(0, ACTIVE_JOBS - 1)
+
+
+# =========================================================
+# Telegram commands
+# =========================================================
+
+async def start_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    await update.message.reply_text(
+        "🎬 أهلًا بك في ظل ZIL V74\n\n"
+        "أرسل قصة أو فكرة لتحويلها إلى فيديو رأسي.\n\n"
+        "الأوامر:\n"
+        "/start - تشغيل البوت\n"
+        "/make فكرتك - إنشاء فيديو\n"
+        "/test - تجربة قصة ثابتة\n"
+        "/status - حالة النظام والعمليات\n"
+        "/job رقم_العملية - تفاصيل عملية\n"
+        "/health - فحص الخدمات\n\n"
+        f"الإنتاج يتكون من {SCENE_COUNT} مشهدًا، "
+        "مع سرد عربي وموسيقى ومؤثرات صوتية."
+    )
+
+
+async def status_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    with JOBS_LOCK:
+        jobs = list(JOBS.items())
+
+    if not jobs:
+        await update.message.reply_text(
+            "حالة ظل ZIL\n"
+            f"العمليات النشطة: {active_jobs()}\n"
+            f"Groq: {'مهيأ' if GROQ_API_KEY else 'غير مهيأ'}\n"
+            f"Pixabay: {'مهيأ' if PIXABAY_API_KEY else 'غير مهيأ'}\n"
+            f"FFmpeg: {'جاهز' if shutil_which('ffmpeg') else 'غير موجود'}"
+        )
+        return
+
+    recent = jobs[-5:]
+    lines = [
+        "📊 حالة ظل ZIL",
+        f"العمليات النشطة: {active_jobs()}",
+        "",
+    ]
+
+    for job_id, job in reversed(recent):
+        lines.append(
+            f"{job_id} | "
+            f"{job.get('status', 'unknown')} | "
+            f"{job.get('stage', '-')} | "
+            f"{job.get('progress', 0)}%"
+        )
+
+    await update.message.reply_text("\n".join(lines))
+
+
+def shutil_which(name):
+    from shutil import which
+    return which(name)
+
+
+async def health_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    ffmpeg_ok = bool(shutil_which("ffmpeg"))
+    ffprobe_ok = bool(shutil_which("ffprobe"))
+
+    await update.message.reply_text(
+        "🩺 فحص ظل ZIL\n"
+        f"BOT_TOKEN: {'مهيأ' if BOT_TOKEN else 'مفقود'}\n"
+        f"GROQ_API_KEY: {'مهيأ' if GROQ_API_KEY else 'مفقود'}\n"
+        f"PIXABAY_API_KEY: {'مهيأ' if PIXABAY_API_KEY else 'مفقود'}\n"
+        f"FFmpeg: {'جاهز' if ffmpeg_ok else 'غير موجود'}\n"
+        f"FFprobe: {'جاهز' if ffprobe_ok else 'غير موجود'}\n"
+        f"المهام النشطة: {active_jobs()}"
+    )
+
+
+async def job_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    if not context.args:
+        await update.message.reply_text(
+            "استخدم الأمر هكذا:\n/job رقم_العملية"
+        )
+        return
+
+    job_id = context.args[0].strip()
+
+    with JOBS_LOCK:
+        job = JOBS.get(job_id)
+
+    if not job:
+        await update.message.reply_text(
+            "لم أجد هذه العملية."
+        )
+        return
+
+    await update.message.reply_text(
+        f"العملية: {job_id}\n"
+        f"الحالة: {job.get('status', '-')}\n"
+        f"المرحلة: {job.get('stage', '-')}\n"
+        f"التقدم: {job.get('progress', 0)}%\n"
+        f"المشهد: {job.get('current_scene', '-')}\n"
+        f"الخطأ: {job.get('error', 'لا يوجد')}"
+    )
+
+
+async def launch_job(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    idea: str,
+):
+    global ACTIVE_JOBS
+
+    if not update.effective_chat or not update.effective_user:
+        return
+
+    idea = (idea or "").strip()
+
+    if len(idea) < 5:
+        await update.message.reply_text(
+            "اكتب فكرة أو قصة أطول قليلًا."
+        )
+        return
+
+    if len(idea) > MAX_STORY_LENGTH:
+        idea = idea[:MAX_STORY_LENGTH]
+
+    with JOBS_LOCK:
+        if ACTIVE_JOBS >= MAX_ACTIVE_JOBS:
+            await update.message.reply_text(
+                "⏳ يوجد إنتاج آخر قيد التنفيذ.\n"
+                "انتظر حتى ينتهي قبل بدء فيديو جديد."
+            )
+            return
+
+        job_id = uuid.uuid4().hex[:10]
+
+        JOBS[job_id] = {
+            "status": "queued",
+            "stage": "queued",
+            "progress": 0,
+            "created_at": time.time(),
+            "updated_at": time.time(),
+            "chat_id": update.effective_chat.id,
+            "user_id": update.effective_user.id,
+        }
+
+        save_state_locked()
+
+    # Reserve the slot immediately so two rapid requests cannot start together.
+    with JOBS_LOCK:
+        if ACTIVE_JOBS >= MAX_ACTIVE_JOBS:
+            JOBS[job_id]["status"] = "rejected"
+            JOBS[job_id]["stage"] = "rejected"
+            save_state_locked()
+
+            await update.message.reply_text(
+                "هناك مهمة أخرى بدأت للتو. جرّب لاحقًا."
+            )
+            return
+
+        ACTIVE_JOBS += 1
+
+    # job_worker normally manages the active counter itself.
+    # Release the reservation before launching it.
+    with JOBS_LOCK:
+        ACTIVE_JOBS = max(0, ACTIVE_JOBS - 1)
+
+    await update.message.reply_text(
+        f"🚀 تم تسجيل طلبك.\n"
+        f"رقم العملية: {job_id}\n"
+        "سأبدأ تجهيز القصة والمشاهد."
+    )
+
+    worker = threading.Thread(
+        target=job_worker,
+        args=(
+            job_id,
+            update.effective_chat.id,
+            idea,
+            context.bot,
+        ),
+        daemon=True,
+    )
+    worker.start()
+
+
+async def make_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    idea = " ".join(context.args).strip()
+
+    if not idea:
+        await update.message.reply_text(
+            "استخدم الأمر هكذا:\n"
+            "/make أمير غامض يواجه وحشًا لإنقاذ الأميرة"
+        )
+        return
+
+    await launch_job(update, context, idea)
+
+
+async def test_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    idea = (
+        "قصة خيالية سينمائية: رجل غامض يصل إلى مملكة قديمة، "
+        "وتقع الأميرة في حبه. يرفض الملك علاقتهما لأنه يخفي سرًا "
+        "خطيرًا عن قوة الرجل. يقتحم وحش ضخم ساحة القصر، "
+        "ويتظاهر البطل بالضعف قبل أن يكشف جزءًا من قوته الحقيقية. "
+        "ينقذ الأميرة لكنه يكتشف أن الوحش كان يهرب من خطر أكبر، "
+        "وتنتهي القصة بظهور علامة غامضة على ذراعه."
+    )
+
+    await launch_job(update, context, idea)
+
+
+# =========================================================
+# Flask endpoints
+# =========================================================
+
+@app.get("/")
+def index():
+    return jsonify({
+        "service": "ZIL V74",
+        "status": "online",
+        "active_jobs": active_jobs(),
+    })
+
+
+@app.get("/health")
+def health():
+    return jsonify({
+        "status": "ok",
+        "service": "ZIL V74",
+        "groq_configured": bool(GROQ_API_KEY),
+        "pixabay_configured": bool(PIXABAY_API_KEY),
+        "ffmpeg_available": bool(shutil_which("ffmpeg")),
+        "ffprobe_available": bool(shutil_which("ffprobe")),
+        "active_jobs": active_jobs(),
+    })
+
+
+# =========================================================
+# Application startup
+# =========================================================
+
+def start_flask():
+    app.run(
+        host="0.0.0.0",
+        port=PORT,
+        debug=False,
+        use_reloader=False,
+        threaded=True,
+    )
+
+
+def main():
+    if not BOT_TOKEN:
+        raise RuntimeError(
+            "BOT_TOKEN is missing in Render environment variables."
+        )
+
+    if not GROQ_API_KEY:
+        raise RuntimeError(
+            "GROQ_API_KEY is missing in Render environment variables."
+        )
+
+    if not shutil_which("ffmpeg"):
+        raise RuntimeError("FFmpeg is not installed.")
+
+    if not shutil_which("ffprobe"):
+        raise RuntimeError("FFprobe is not installed.")
+
+    load_state()
+
+    flask_thread = threading.Thread(
+        target=start_flask,
+        daemon=True,
+    )
+    flask_thread.start()
+
+    telegram_app = (
+        Application.builder()
+        .token(BOT_TOKEN)
+        .build()
+    )
+
+    telegram_app.add_handler(
+        CommandHandler("start", start_command)
+    )
+    telegram_app.add_handler(
+        CommandHandler("status", status_command)
+    )
+    telegram_app.add_handler(
+        CommandHandler("health", health_command)
+    )
+    telegram_app.add_handler(
+        CommandHandler("job", job_command)
+    )
+    telegram_app.add_handler(
+        CommandHandler("make", make_command)
+    )
+    telegram_app.add_handler(
+        CommandHandler("test", test_command)
+    )
+
+    log.info("Starting ZIL V74 Telegram bot.")
+
+    telegram_app.run_polling(
+        drop_pending_updates=False,
+        allowed_updates=["message"],
+    )
+
+
+if __name__ == "__main__":
+    main()
