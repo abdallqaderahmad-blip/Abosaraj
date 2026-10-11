@@ -21,19 +21,21 @@ from telegram.error import Conflict
 from telegram.ext import Application, CommandHandler, ContextTypes
 
 # =========================================================
-# ZIL V75 - Complete Telegram Video Bot
+# ZIL V76 - AI-generated scene images + cinematic camera movement
 # =========================================================
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
-PIXABAY_API_KEY = (
-    os.getenv("PIXABAY_API_KEY", "").strip()
-    or os.getenv("PIXABAY_KEY", "").strip()
-)
+# AI image generation replaces random stock videos. FAL is preferred; Pollinations
+# can be used as an optional fallback. No Pixabay media is used in this pipeline.
+FAL_KEY = (os.getenv("FAL_KEY", "").strip() or os.getenv("FAL_API_KEY", "").strip())
+POLLINATIONS_API_KEY = os.getenv("POLLINATIONS_API_KEY", "").strip()
+IMAGE_PROVIDER = os.getenv("IMAGE_PROVIDER", "auto").strip().lower()
+FAL_IMAGE_MODEL = os.getenv("FAL_IMAGE_MODEL", "fal-ai/flux/schnell").strip()
 GROQ_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-20b").strip()
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
-PIXABAY_VIDEO_URL = "https://pixabay.com/api/videos/"
-PIXABAY_IMAGE_URL = "https://pixabay.com/api/"
+FAL_QUEUE_URL = "https://queue.fal.run/"
+POLLINATIONS_IMAGE_URL = "https://image.pollinations.ai/prompt/"
 TELEGRAM_API = "https://api.telegram.org"
 PORT = int(os.getenv("PORT", "10000"))
 
@@ -45,8 +47,9 @@ VIDEO_FPS = 24
 MAX_ACTIVE_JOBS = 1
 MAX_STORY_LENGTH = 2500
 MAX_VIDEO_SIZE = 49 * 1024 * 1024
-MAX_SOURCE_VIDEO_BYTES = 100 * 1024 * 1024
 MAX_SOURCE_IMAGE_BYTES = 25 * 1024 * 1024
+IMAGE_GENERATION_TIMEOUT = max(60, int(os.getenv("IMAGE_GENERATION_TIMEOUT", "240")))
+IMAGE_GENERATION_RETRIES = max(1, min(2, int(os.getenv("IMAGE_GENERATION_RETRIES", "1"))))
 GROQ_RETRIES = max(1, int(os.getenv("GROQ_RETRIES", "4")))
 GROQ_MAX_WAIT = max(5, int(os.getenv("GROQ_MAX_WAIT", "60")))
 # A smaller default reduces the chance of hitting Groq TPM limits.
@@ -312,47 +315,59 @@ def groq_chat(messages, max_tokens=None):
 
 def create_story_package(idea):
     system_prompt = f"""
-أنت كاتب سيناريو محترف لقصص عربية مشوقة. اكتب قصة مترابطة من {SCENE_COUNT} مشهدًا بالضبط.
-كل مشهد يحتوي: narration جملة عربية قصيرة، visual_prompt وصف بصري إنجليزي سينمائي واقعي، search_query كلمات إنجليزية للبحث عن فيديو أو صورة، effect نوع واحد من القائمة.
-الأنواع المسموحة: mystery, castle, steps, romance, tension, storm, beast, fight, impact, magic, cliffhanger
-القواعد: حافظ على تسلسل القصة وهوية الشخصيات. افتح بخطاف قوي، صعّد الخطر تدريجيًا، نوّع المشاهد، اجعل السرد واضحًا وقصيرًا، واختم بتشويق للجزء التالي. لا تضع نصوصًا داخل visual_prompt. أخرج JSON صحيحًا فقط دون Markdown.
-المفاتيح: title, story, scenes. كل مشهد: narration, visual_prompt, search_query, effect.
+أنت كاتب سيناريو ومخرج فني لقصص عربية مشوقة. أنشئ {SCENE_COUNT} مشهدًا بالضبط لفيديو عمودي واقعي سينمائي.
+أخرج JSON صالحًا فقط دون Markdown بالمفاتيح:
+title, story, visual_style, character_bible, scenes.
+visual_style: وصف إنجليزي قصير موحد للون والإضاءة والأسلوب الواقعي.
+character_bible: وصف إنجليزي قصير ثابت للشخصيات الرئيسية (الوجه، الشعر، العمر التقريبي، الملابس، العلامات المميزة). اجعله موجزًا، ولا تضف شخصيات لا تحتاجها القصة.
+كل مشهد يحتوي على narration (جملة عربية قصيرة)، visual_prompt (وصف إنجليزي لما يحدث بصريًا في هذا المشهد فقط)، effect (نوع واحد).
+الأنواع المسموحة: mystery, castle, steps, romance, tension, storm, beast, fight, impact, magic, cliffhanger.
+قواعد إلزامية: تسلسل القصة واضح؛ كل visual_prompt يصف نفس الحدث الذي يقوله narration؛ لا تستخدم استعارات بصرية لا علاقة لها بالجملة؛ لا تضع نصوصًا أو شعارات أو كتابة داخل الصورة؛ صف مكان الحدث والشخصيات الظاهرة وحركتهم وتعبير الوجه وزاوية الكاميرا. كرر أوصاف الشخصيات الثابتة في character_bible ولا تغيّر الملابس والملامح بلا سبب قصصي. أسلوب photorealistic live-action fantasy, cinematic lighting, detailed faces, vertical composition, no text, no logo, no watermark.
+ابدأ بخطاف قوي، صعّد الخطر تدريجيًا، واختم بتشويق للجزء التالي.
 """
     user_prompt = f"فكرة القصة:\n{str(idea)[:MAX_STORY_LENGTH]}\nأنشئ {SCENE_COUNT} مشهدًا مترابطًا."
     last_error = None
     for attempt in range(2):
         messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]
         if attempt:
-            messages.append({"role": "user", "content": f"أعد JSON صالحًا يحتوي على {SCENE_COUNT} مشهدًا بالضبط، مع سرد عربي قصير في كل مشهد."})
+            messages.append({"role": "user", "content": f"أعد JSON صالحًا فقط، وتأكد من وجود {SCENE_COUNT} مشهدًا وvisual_style وcharacter_bible."})
         raw = groq_chat(messages)
         data = extract_json(raw)
         try:
             scenes = data.get("scenes")
             if not isinstance(scenes, list) or len(scenes) != SCENE_COUNT:
                 raise ValueError(f"Expected exactly {SCENE_COUNT} scenes.")
+            visual_style = re.sub(r"\s+", " ", str(data.get("visual_style", "photorealistic live-action fantasy, cinematic lighting, realistic skin texture, vertical composition"))).strip()
+            character_bible = data.get("character_bible", "")
+            if isinstance(character_bible, dict):
+                character_bible = "; ".join(f"{str(k)[:40]}: {str(v)[:180]}" for k, v in character_bible.items())
+            character_bible = re.sub(r"\s+", " ", str(character_bible)).strip()
+            if not character_bible:
+                character_bible = "Keep the same main character faces, hair, clothing, age, and distinctive features across every scene."
             clean = []
             for index, scene in enumerate(scenes):
                 if not isinstance(scene, dict):
                     raise ValueError(f"Invalid scene {index + 1}")
                 narration = re.sub(r"\s+", " ", str(scene.get("narration", ""))).strip()
                 visual = re.sub(r"\s+", " ", str(scene.get("visual_prompt", ""))).strip()
-                query = safe_query(scene.get("search_query", ""))
                 effect = str(scene.get("effect", "mystery")).lower().strip()
                 if not narration:
                     raise ValueError(f"Scene {index + 1} has no narration.")
                 if not visual:
-                    visual = "cinematic realistic dramatic scene"
-                if len(query.split()) < 3:
-                    query = safe_query(" ".join(re.findall(r"[A-Za-z0-9]+", visual)[:8]))
-                if len(query.split()) < 3:
-                    query = "cinematic dramatic scene"
+                    visual = f"Show the exact event described by this narration: {narration}."
                 if effect not in EFFECTS:
                     effect = "mystery"
-                clean.append({"narration": narration[:180], "visual_prompt": visual[:350], "search_query": query[:120], "effect": effect})
+                clean.append({"narration": narration[:180], "visual_prompt": visual[:500], "effect": effect})
             total_words = word_count(" ".join(s["narration"] for s in clean))
             if not 20 <= total_words <= 300:
                 raise ValueError(f"Unexpected narration length: {total_words}")
-            return {"title": str(data.get("title", "حكاية ظل"))[:100], "story": str(data.get("story", idea))[:2000], "scenes": clean}
+            return {
+                "title": str(data.get("title", "حكاية ظل"))[:100],
+                "story": str(data.get("story", idea))[:2000],
+                "visual_style": visual_style[:350],
+                "character_bible": character_bible[:900],
+                "scenes": clean,
+            }
         except Exception as exc:
             last_error = exc
             log.warning("Story validation attempt %s failed: %s", attempt + 1, exc)
@@ -360,33 +375,142 @@ def create_story_package(idea):
 
 
 # =========================================================
-# Pixabay search
+# AI image generation (no random stock footage)
 # =========================================================
 
-def search_pixabay_video(query):
-    if not PIXABAY_API_KEY:
-        raise RuntimeError("PIXABAY_API_KEY is missing.")
-    response = requests.get(PIXABAY_VIDEO_URL, params={"key": PIXABAY_API_KEY, "q": query, "per_page": 10, "safesearch": "true"}, timeout=(15, 35))
-    response.raise_for_status()
-    for hit in response.json().get("hits", []):
-        videos = hit.get("videos", {})
-        for quality in ("medium", "large", "small", "tiny"):
-            url = videos.get(quality, {}).get("url", "")
-            if url and urlparse(url).scheme == "https":
-                return url
-    raise RuntimeError(f"No video found for query: {query}")
+def build_scene_image_prompt(scene, package, index):
+    """Tie the generated image directly to narration and keep character descriptions stable."""
+    scene_description = str(scene.get("visual_prompt", "")).strip()
+    narration = str(scene.get("narration", "")).strip()
+    style = str(package.get("visual_style", "photorealistic live-action fantasy, cinematic lighting")).strip()
+    bible = str(package.get("character_bible", "Keep the same character identity in every scene.")).strip()
+    prompt = (
+        f"Vertical 9:16 cinematic still for scene {index + 1} of one continuous fantasy drama. "
+        f"VISUAL STYLE: {style}. CHARACTER CONTINUITY: {bible}. "
+        f"EXACT SCENE ACTION: {scene_description}. "
+        f"Narration context (depict this literally, do not write these words in the image): {narration}. "
+        "Photorealistic live-action actors, anatomically correct hands, believable expressions, detailed natural skin, "
+        "cinematic composition, coherent medieval fantasy setting, realistic practical lighting, high detail. "
+        "No text, no letters, no subtitles, no logo, no watermark, no collage, no split screen, no infographic, "
+        "no unrelated animals or objects, no modern objects unless explicitly required by the scene."
+    )
+    return prompt[:3500]
 
 
-def search_pixabay_image(query):
-    if not PIXABAY_API_KEY:
-        raise RuntimeError("PIXABAY_API_KEY is missing.")
-    response = requests.get(PIXABAY_IMAGE_URL, params={"key": PIXABAY_API_KEY, "q": query, "image_type": "photo", "orientation": "vertical", "safesearch": "true", "per_page": 15}, timeout=(15, 35))
+def fal_generate_image(prompt, destination):
+    if not FAL_KEY:
+        raise RuntimeError("FAL_KEY is not configured.")
+    headers = {"Authorization": f"Key {FAL_KEY}", "Content-Type": "application/json"}
+    endpoint = FAL_QUEUE_URL.rstrip("/") + "/" + FAL_IMAGE_MODEL.lstrip("/")
+    response = requests.post(
+        endpoint,
+        headers=headers,
+        json={"prompt": prompt, "image_size": "portrait_16_9", "num_images": 1, "enable_safety_checker": True},
+        timeout=(20, 90),
+    )
+    if response.status_code >= 400:
+        raise RuntimeError(f"Fal image request failed ({response.status_code}): {response.text[:700]}")
+    data = response.json()
+    if isinstance(data.get("images"), list) and data["images"]:
+        image_url = data["images"][0].get("url")
+    else:
+        request_id = data.get("request_id")
+        status_url = data.get("status_url")
+        response_url = data.get("response_url")
+        if not request_id or not status_url or not response_url:
+            raise RuntimeError(f"Fal returned an unexpected response: {str(data)[:500]}")
+        deadline = time.time() + IMAGE_GENERATION_TIMEOUT
+        while time.time() < deadline:
+            status_response = requests.get(status_url, headers=headers, timeout=(15, 45))
+            status_response.raise_for_status()
+            status_data = status_response.json()
+            status = str(status_data.get("status", "")).upper()
+            if status == "COMPLETED":
+                result_response = requests.get(response_url, headers=headers, timeout=(15, 60))
+                result_response.raise_for_status()
+                result_data = result_response.json()
+                images = result_data.get("images") or []
+                image_url = images[0].get("url") if images else None
+                break
+            if status in ("FAILED", "CANCELLED"):
+                raise RuntimeError(f"Fal image generation {status.lower()}: {str(status_data)[:500]}")
+            time.sleep(2.5)
+        else:
+            raise TimeoutError("Fal image generation timed out.")
+    if not image_url or urlparse(image_url).scheme != "https":
+        raise RuntimeError("Fal did not return a valid HTTPS image URL.")
+    save_generated_image(image_url, destination)
+    return destination
+
+
+def pollinations_generate_image(prompt, destination, seed):
+    # Pollinations availability and quotas can change; this is only an optional fallback.
+    from urllib.parse import quote
+    url = POLLINATIONS_IMAGE_URL + quote(prompt, safe="")
+    headers = {"User-Agent": "ZIL-Video-Bot/6.0"}
+    if POLLINATIONS_API_KEY:
+        headers["Authorization"] = f"Bearer {POLLINATIONS_API_KEY}"
+    response = requests.get(
+        url,
+        params={"width": 768, "height": 1365, "model": "flux", "seed": int(seed), "nologo": "true", "safe": "true"},
+        headers=headers,
+        timeout=(25, IMAGE_GENERATION_TIMEOUT),
+    )
+    if response.status_code >= 400:
+        raise RuntimeError(f"Pollinations image request failed ({response.status_code}): {response.text[:400]}")
+    content_type = response.headers.get("content-type", "").lower()
+    if not content_type.startswith("image/") or len(response.content) < 5000:
+        raise RuntimeError("Pollinations did not return a valid image. Configure FAL_KEY or check provider availability.")
+    Path(destination).write_bytes(response.content)
+    return destination
+
+
+def save_generated_image(url, destination):
+    response = requests.get(url, stream=True, timeout=(20, 90), headers={"User-Agent": "ZIL-Video-Bot/6.0"})
     response.raise_for_status()
-    for hit in response.json().get("hits", []):
-        url = hit.get("largeImageURL") or hit.get("webformatURL")
-        if url and urlparse(url).scheme == "https":
-            return url
-    raise RuntimeError(f"No image found for query: {query}")
+    content_type = response.headers.get("content-type", "").lower()
+    if not content_type.startswith("image/"):
+        raise RuntimeError(f"Image URL returned non-image content ({content_type or 'unknown'}).")
+    total = 0
+    with open(destination, "wb") as output:
+        for chunk in response.iter_content(256 * 1024):
+            if not chunk:
+                continue
+            total += len(chunk)
+            if total > MAX_SOURCE_IMAGE_BYTES:
+                raise RuntimeError("Generated image exceeds configured size limit.")
+            output.write(chunk)
+    if total < 5000:
+        raise RuntimeError("Generated image is too small or invalid.")
+    return destination
+
+
+def generate_scene_image(prompt, destination, index):
+    provider = IMAGE_PROVIDER
+    last_error = None
+    if provider in ("auto", "fal") and FAL_KEY:
+        for attempt in range(IMAGE_GENERATION_RETRIES):
+            try:
+                return fal_generate_image(prompt, destination)
+            except Exception as exc:
+                last_error = exc
+                log.warning("Fal image generation attempt %s failed for scene %s: %s", attempt + 1, index + 1, exc)
+                if attempt + 1 < IMAGE_GENERATION_RETRIES:
+                    time.sleep(min(3 * (attempt + 1), 8))
+        if provider == "fal":
+            raise RuntimeError(f"Fal image generation failed for scene {index + 1}: {last_error}")
+    if provider in ("auto", "pollinations"):
+        try:
+            return pollinations_generate_image(prompt, destination, seed=7600 + index)
+        except Exception as exc:
+            last_error = exc
+    if not FAL_KEY and not POLLINATIONS_API_KEY and provider == "fal":
+        raise RuntimeError("IMAGE_PROVIDER=fal requires FAL_KEY in Render environment variables.")
+    raise RuntimeError(
+        "تعذر توليد صورة الذكاء الاصطناعي للمشهد " + str(index + 1) + ". "
+        "تأكد من FAL_KEY أو توفر Pollinations. لم نستخدم Pixabay عشوائيًا حتى لا تتكرر مشكلة عدم تطابق الصورة مع الراوي. "
+        + (f"التفاصيل: {last_error}" if last_error else "")
+    )
 
 
 # =========================================================
@@ -423,37 +547,20 @@ def create_fallback_visual(destination, duration, index):
     return destination
 
 
-def obtain_scene_visual(scene, workdir, index, duration):
+def obtain_scene_visual(scene, package, workdir, index, duration):
     number = index + 1
-    query = scene["search_query"]
-    visual_query = safe_query(" ".join(re.findall(r"[A-Za-z0-9]+", scene["visual_prompt"])[:8]))
-    raw_video = workdir / f"raw_video_{number}.mp4"
-    raw_image = workdir / f"raw_image_{number}.jpg"
+    raw_image = workdir / f"ai_scene_{number}.jpg"
     normalized = workdir / f"visual_{number}.mp4"
-    queries = [query]
-    if visual_query and visual_query.lower() != query.lower():
-        queries.append(visual_query)
-    for candidate in queries:
-        try:
-            url = search_pixabay_video(candidate)
-            download_media(url, raw_video, MAX_SOURCE_VIDEO_BYTES)
-            normalize_video_scene(raw_video, normalized, duration)
-            log.info("Scene %s: video source selected", number)
-            return normalized, "video"
-        except Exception as exc:
-            log.warning("Scene %s video search failed: %s", number, exc)
-    for candidate in queries:
-        try:
-            url = search_pixabay_image(candidate)
-            download_media(url, raw_image, MAX_SOURCE_IMAGE_BYTES)
-            animate_still_image(raw_image, normalized, duration, index)
-            log.info("Scene %s: animated image selected", number)
-            return normalized, "image"
-        except Exception as exc:
-            log.warning("Scene %s image search failed: %s", number, exc)
-    log.warning("Scene %s: using abstract fallback background", number)
-    create_fallback_visual(normalized, duration, index)
-    return normalized, "fallback"
+    prompt = build_scene_image_prompt(scene, package, index)
+    generate_scene_image(prompt, raw_image, index)
+    # Re-encode to a predictable JPEG format; some image APIs return PNG/WebP bytes.
+    normalized_image = workdir / f"ai_scene_{number}.png"
+    run_command(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-i", str(raw_image), "-frames:v", "1", "-vf", "scale=1000:1800:force_original_aspect_ratio=increase,crop=1000:1800", str(normalized_image)], 90)
+    if not normalized_image.exists() or normalized_image.stat().st_size < 5000:
+        raise RuntimeError(f"Generated image for scene {number} could not be decoded.")
+    animate_still_image(normalized_image, normalized, duration, index)
+    log.info("Scene %s: AI-generated image animated; provider=%s", number, IMAGE_PROVIDER)
+    return normalized, "ai_image"
 
 
 # =========================================================
@@ -471,8 +578,13 @@ def add_arabic_caption(source, caption, destination, workdir, index, duration):
         log.warning("Subtitle libraries missing; continuing without subtitles")
         return source
     try:
-        font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
-        font = ImageFont.truetype(font_path, 30) if Path(font_path).exists() else ImageFont.load_default()
+        font_candidates = [
+            "/usr/share/fonts/truetype/noto/NotoNaskhArabic-Bold.ttf",
+            "/usr/share/fonts/truetype/noto/NotoNaskhArabic-Regular.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        ]
+        font_path = next((candidate for candidate in font_candidates if Path(candidate).exists()), None)
+        font = ImageFont.truetype(font_path, 34) if font_path else ImageFont.load_default()
         overlay = Image.new("RGBA", (VIDEO_WIDTH, 150), (0, 0, 0, 0))
         draw = ImageDraw.Draw(overlay)
         words, lines, current = (caption or "").split(), [], ""
@@ -686,7 +798,7 @@ def create_video(job_id, idea):
         durations.append(scene_duration)
         # Pad each narration to its own scene duration to prevent later scenes drifting out of sync.
         fit_audio_to_duration(voice_converted, voice_aligned, scene_duration)
-        visual, visual_type = obtain_scene_visual(scene, workdir, index, scene_duration)
+        visual, visual_type = obtain_scene_visual(scene, package, workdir, index, scene_duration)
         update_job(job_id, current_scene=number, current_visual=visual_type)
         captioned = workdir / f"captioned_{number}.mp4"
         final_visual = add_arabic_caption(visual, scene["narration"], captioned, workdir, index, scene_duration)
@@ -770,9 +882,9 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.effective_message:
         return
     await update.effective_message.reply_text(
-        "🎬 أهلًا بك في ظل ZIL V75\n\nأرسل فكرة أو قصة لتحويلها إلى فيديو رأسي.\n\n"
+        "🎬 أهلًا بك في ظل ZIL V76\n\nأرسل فكرة أو قصة لتحويلها إلى فيديو رأسي.\n\n"
         "الأوامر:\n/start - تشغيل البوت\n/make فكرتك - إنشاء فيديو\n/test - تجربة قصة ثابتة\n/status - حالة النظام والعمليات\n/job رقم_العملية - تفاصيل عملية\n/health - فحص الخدمات\n\n"
-        f"الفيديو يستهدف {SCENE_COUNT} مشهدًا، مع سرد عربي ومؤثرات وموسيقى."
+        f"الفيديو يستهدف {SCENE_COUNT} مشهدًا بصور مولدة بالذكاء الاصطناعي وحركة كاميرا، مع سرد عربي ومؤثرات وموسيقى."
     )
 
 
@@ -784,7 +896,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         active = ACTIVE_JOBS
     if not jobs:
         await update.effective_message.reply_text(
-            f"حالة ظل ZIL\nالعمليات النشطة: {active}\nGroq: {'مهيأ' if GROQ_API_KEY else 'غير مهيأ'}\nPixabay: {'مهيأ' if PIXABAY_API_KEY else 'غير مهيأ'}\nFFmpeg: {'جاهز' if shutil_which('ffmpeg') else 'غير موجود'}"
+            f"حالة ظل ZIL V76\nالعمليات النشطة: {active}\nGroq: {'مهيأ' if GROQ_API_KEY else 'غير مهيأ'}\nمولد الصور: {'Fal AI' if FAL_KEY else 'Pollinations (قد لا يتوفر دائمًا)'}\nFFmpeg: {'جاهز' if shutil_which('ffmpeg') else 'غير موجود'}"
         )
         return
     lines = ["📊 حالة ظل ZIL", f"العمليات النشطة: {active}", ""]
@@ -800,7 +912,7 @@ async def health_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🩺 فحص ظل ZIL\n"
         f"BOT_TOKEN: {'مهيأ' if BOT_TOKEN else 'مفقود'}\n"
         f"GROQ_API_KEY: {'مهيأ' if GROQ_API_KEY else 'مفقود'}\n"
-        f"PIXABAY_API_KEY: {'مهيأ' if PIXABAY_API_KEY else 'مفقود'}\n"
+        f"FAL_KEY: {'مهيأ' if FAL_KEY else 'غير مهيأ'}\n"
         f"FFmpeg: {'جاهز' if shutil_which('ffmpeg') else 'غير موجود'}\n"
         f"FFprobe: {'جاهز' if shutil_which('ffprobe') else 'غير موجود'}\n"
         f"المهام النشطة: {active_jobs()}"
@@ -891,15 +1003,16 @@ async def telegram_error_handler(update: object, context: ContextTypes.DEFAULT_T
 
 @app.get("/")
 def index():
-    return jsonify({"service": "ZIL V75", "status": "online", "active_jobs": active_jobs()})
+    return jsonify({"service": "ZIL V76", "status": "online", "active_jobs": active_jobs()})
 
 
 @app.get("/health")
 def health():
     return jsonify({
-        "status": "ok", "service": "ZIL V75",
+        "status": "ok", "service": "ZIL V76",
         "groq_configured": bool(GROQ_API_KEY),
-        "pixabay_configured": bool(PIXABAY_API_KEY),
+        "fal_configured": bool(FAL_KEY),
+        "image_provider": IMAGE_PROVIDER,
         "ffmpeg_available": bool(shutil_which("ffmpeg")),
         "ffprobe_available": bool(shutil_which("ffprobe")),
         "active_jobs": active_jobs(),
@@ -929,7 +1042,7 @@ def main():
     telegram_app.add_handler(CommandHandler("make", make_command))
     telegram_app.add_handler(CommandHandler("test", test_command))
     telegram_app.add_error_handler(telegram_error_handler)
-    log.info("Starting ZIL V75 Telegram bot; model=%s; scenes=%s", GROQ_MODEL, SCENE_COUNT)
+    log.info("Starting ZIL V76 Telegram bot; model=%s; scenes=%s; image_provider=%s; fal_configured=%s", GROQ_MODEL, SCENE_COUNT, IMAGE_PROVIDER, bool(FAL_KEY))
     # Keep only ONE running instance of this bot token. Conflict means another getUpdates poller exists.
     telegram_app.run_polling(drop_pending_updates=False, allowed_updates=["message"])
 
