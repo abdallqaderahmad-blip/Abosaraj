@@ -15,7 +15,6 @@ PORT = int(os.getenv("PORT","10000"))
 RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL","").rstrip("/")
 GROQ_MODEL = os.getenv("GROQ_MODEL","openai/gpt-oss-120b")
 
-# ========== قفل الأوتوماتيك - يدوي فقط ==========
 AUTOMATIC_ENABLED = False
 
 groq=None
@@ -112,12 +111,19 @@ def piapi_wait(tid):
         if status in ("failed","error","canceled"): raise RuntimeError(str(body)[:800])
         time.sleep(3)
     raise TimeoutError("piapi timeout")
-def download_file(url, path):
+
+def download_file(url, path, is_music=False):
     path=Path(path)
-    with requests.get(url, timeout=120, stream=True) as rr:
+    headers={
+        "User-Agent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
+        "Referer":"https://mixkit.co/" if "mixkit" in url else "https://pixabay.com/",
+        "Accept":"audio/mpeg,audio/*,*/*;q=0.9,*/*;q=0.8",
+        "Accept-Language":"en-US,en;q=0.9",
+    } if is_music else {"User-Agent":"Mozilla/5.0"}
+    with requests.get(url, timeout=120, stream=True, headers=headers, allow_redirects=True) as rr:
         rr.raise_for_status()
         with path.open("wb") as f:
-            for c in rr.iter_content(1024*1024):
+            for c in rr.iter_content(1024*256):
                 if c: f.write(c)
     return path
 
@@ -197,15 +203,19 @@ def ensure_fonts():
         except: pass
     return amiri if amiri.exists() and amiri.stat().st_size>5000 else None, dejavu
 
+# ========== موسيقى جديدة - Mixkit شغال بدون 403 + Pixabay Download ==========
 TREND_MUSIC=[
-    "https://cdn.pixabay.com/audio/2022/06/07/audio_b9bd4170e8.mp3",
-    "https://cdn.pixabay.com/download/audio/2022/03/10/audio_c8c8a650a6.mp3",
-    "https://cdn.pixabay.com/audio/2021/08/04/audio_0625c1539c.mp3",
-    "https://cdn.pixabay.com/audio/2022/10/30/audio_8b64a1c5e7.mp3",
-    "https://cdn.pixabay.com/audio/2023/01/01/audio_816821e627.mp3",
-    "https://cdn.pixabay.com/audio/2022/06/25/audio_69f4b7fbc2.mp3",
-    "https://cdn.pixabay.com/audio/2023/06/01/audio_15d2c4c0e7.mp3",
+    "https://assets.mixkit.co/music/preview/mixkit-reflections-22.mp3",
+    "https://assets.mixkit.co/music/preview/mixkit-sad-moment-135.mp3",
+    "https://assets.mixkit.co/music/preview/mixkit-lonely-town-42.mp3",
+    "https://assets.mixkit.co/music/preview/mixkit-deep-urban-623.mp3",
+    "https://assets.mixkit.co/music/preview/mixkit-sleepy-cat-135.mp3",
+    "https://assets.mixkit.co/music/preview/mixkit-cinematic-dramatic-116.mp3",
+    "https://assets.mixkit.co/music/preview/mixkit-a-very-happy-christmas-897.mp3",
+    "https://cdn.pixabay.com/download/audio/2022/06/07/audio_b9bd4170e8.mp3?filename=ambient-piano-11599.mp3",
+    "https://cdn.pixabay.com/download/audio/2022/03/10/audio_c8c8a650a6.mp3?filename=lofi-study-112191.mp3",
 ]
+
 def get_music():
     mem=load_memory(); last=mem.get("last_music","")
     choices=[m for m in TREND_MUSIC if m!=last]
@@ -230,7 +240,6 @@ def create_reels_video(image_path, idea, duration=9):
             return t
         except: return t
 
-    # إصلاح KeyError '-0.0' - لازم رقم صحيح مش نص
     base=ImageClip(str(image_path), duration=duration)
     base=base.resize(lambda t: 1.0 + 0.12*t/duration)
     base=base.set_position(lambda t: ('center', - int((t/duration)*120)))
@@ -284,13 +293,35 @@ def create_reels_video(image_path, idea, duration=9):
     bg_p=Path(tempfile.gettempdir())/f"bg_{random.randint(1,9999)}.jpg"; bg.save(bg_p)
     bg_c=ImageClip(str(bg_p), duration=duration)
     final=CompositeVideoClip([bg_c, base, top_c, mid_c, bottom_c], size=(W,H)).set_duration(duration)
-    music_url=get_music()
+
+    # موسيقى ترند - 5 محاولات - ما توقف الفيديو
     mp=Path(tempfile.gettempdir())/f"mus_{random.randint(1,99999)}.mp3"
-    try:
-        download_file(music_url, mp)
-        audio=AudioFileClip(str(mp)).subclip(0,duration).volumex(0.92).audio_fadein(0.3).audio_fadeout(0.8)
-        final=final.set_audio(audio)
-    except Exception as e: log(f"music {e}")
+    audio_added=False
+    tried=[]
+    for attempt in range(5):
+        music_url=get_music()
+        if music_url in tried: continue
+        tried.append(music_url)
+        try:
+            log(f"try music {attempt+1} {music_url[:60]}")
+            download_file(music_url, mp, is_music=True)
+            if mp.exists() and mp.stat().st_size>15000:
+                audio=AudioFileClip(str(mp)).subclip(0,duration).volumex(0.92).audio_fadein(0.4).audio_fadeout(0.9)
+                final=final.set_audio(audio)
+                audio_added=True
+                log(f"music OK {mp.stat().st_size//1024}KB")
+                break
+            else:
+                mp.unlink(missing_ok=True)
+        except Exception as e:
+            log(f"music attempt {attempt+1} failed {e}")
+            try: mp.unlink(missing_ok=True)
+            except: pass
+            time.sleep(0.5)
+            continue
+    if not audio_added:
+        log("music all failed - video without music")
+
     out=Path(tempfile.gettempdir())/f"reel_{int(time.time())}.mp4"
     final.write_videofile(str(out), fps=30, codec='libx264', audio_codec='aac', preset='ultrafast', bitrate="6000k", logger=None)
     for p in [top_p,bottom_p,mid_p,bg_p,mp]: Path(p).unlink(missing_ok=True)
@@ -371,7 +402,7 @@ def handle_update(upd):
         except: log(f"fatal {e}")
 
 @app.get("/")
-def home(): return f"FINAL 2in1 MANUAL FIXED {len(list(ARCHIVE_DIR.glob('*.jpg')))} AUTO=OFF",200
+def home(): return f"FINAL 2in1 MANUAL MUSIC FIXED {len(list(ARCHIVE_DIR.glob('*.jpg')))} AUTO=OFF",200
 @app.post("/telegram/webhook")
 def wh():
     upd=request.get_json(silent=True) or {}
