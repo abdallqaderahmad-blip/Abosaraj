@@ -3,4 +3,3 @@ groq==0.12.0
 requests==2.31.0
 httpx==0.27.2
 httpcore==1.0.5
-Pillow==10.4.0
