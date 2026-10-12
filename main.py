@@ -1,7 +1,13 @@
-import os, json, time, threading, re, tempfile, random, math, hashlib
+import os, sys, json, time, threading, re, tempfile, random, math, hashlib
 from pathlib import Path
 import requests
 from flask import Flask, request
+
+# ===== FIX LATIN-1 من الجذر =====
+try:
+    sys.stdout.reconfigure(encoding='utf-8', errors='ignore')
+    sys.stderr.reconfigure(encoding='utf-8', errors='ignore')
+except: pass
 
 try:
     from PIL import Image as _PILImage
@@ -28,7 +34,12 @@ app=Flask(__name__)
 PIAPI_BASE="https://api.piapi.ai/api/v1/task"
 MEMORY_FILE=Path("/tmp/hmisc_brain_memory.json")
 
-def log(m): print(f"[SUPER] {m}", flush=True)
+def log(m):
+    try:
+        # آمن 100% ما بيفشل مع العربي
+        print(f"[SUPER] {str(m)[:500]}", flush=True)
+    except:
+        pass
 
 def load_memory():
     if MEMORY_FILE.exists():
@@ -46,6 +57,18 @@ def is_dup(new_scene, mem):
         if s[:35] in new_scene or new_scene[:35] in s: return True
     return False
 
+# ===== الأداة: فحص الرصيد وتوفير =====
+def check_balance_tool():
+    try:
+        r=requests.get("https://api.piapi.ai/api/v1/balance", headers={"X-API-KEY": PIAPI_API_KEY}, timeout=10)
+        j=r.json()
+        bal=j.get("data",{}).get("balance", j)
+        log(f"Balance: {bal}")
+        return bal
+    except Exception as e:
+        log(f"balance err {e}")
+        return "unknown"
+
 def brain_generate():
     mem=load_memory()
     fallback={
@@ -62,16 +85,16 @@ def brain_generate():
         try:
             prompt=f"""Memory: {recent}
 Generate ONE NEW viral idea totally different. Scenarios: hourglass, seed, chain, lighthouse, maze, heavy bag rope, jar, mirror, cliff.
-JSON: {{"hikma_ar":"6 كلمات عربية","full_ar":"25 كلمة عربية","hikma_en":"6 words en","full_en":"25 words en","scene_en":"detailed two panels yellow bean","mood":"hopeful_joy","title":"short"}}"""
+JSON: {{"hikma_ar":"6 كلمات عربية","full_ar":"25 كلمة عربية","hikma_en":"6 words en","full_en":"25 words en","scene_en":"detailed two panels yellow bean","mood":"hopeful_joy","title":"short en only"}}"""
             res=groq.chat.completions.create(model=GROQ_MODEL, temperature=1.1, max_completion_tokens=2000, response_format={"type":"json_object"}, messages=[{"role":"user","content":prompt}])
             j=json.loads(res.choices[0].message.content)
             if not is_dup(j.get("scene_en",""), mem):
-                mem["ideas"].append(j.get("title","")+" "+j.get("hikma_ar",""))
+                mem["ideas"].append(j.get("title",""))
                 mem["scenes"].append(j.get("scene_en",""))
                 save_memory(mem)
                 return j
         except Exception as e:
-            log(f"brain {e}")
+            log(f"brain err {repr(e)[:300]}")
     return fallback
 
 def extract_url(j):
@@ -176,6 +199,7 @@ def create_cinematic_with_music(image_path, mood, duration=10):
     try: download_file(music_url, music_path)
     except: music_path=None
     montage=random.choice(["slow_in","slow_out","pan","breathe"])
+    log(f"Montage {montage} {mood}")
     clip=ImageClip(str(image_path), duration=duration)
     if montage=="slow_in":
         clip=clip.resize(lambda t: 1.0+0.32*t/duration).set_position(lambda t: ('center', f"{52-3*t/duration}%"))
@@ -199,19 +223,24 @@ TELEGRAM_API=f"https://api.telegram.org/bot{BOT_TOKEN}" if BOT_TOKEN else ""
 def send_text(cid,t):
     try:
         requests.post(f"{TELEGRAM_API}/sendMessage", json={"chat_id":cid,"text":t}, timeout=20)
-    except: pass
+    except Exception as e:
+        log(f"send_text fail {e}")
 
 def send_photo(cid,p):
     try:
         with open(p,"rb") as f:
-            requests.post(f"{TELEGRAM_API}/sendPhoto", data={"chat_id":str(cid)}, files={"photo":f}, timeout=120)
-    except Exception as e: log(f"photo {e}")
+            files={"photo": ("image.jpg", f, "image/jpeg")}
+            requests.post(f"{TELEGRAM_API}/sendPhoto", data={"chat_id":str(cid)}, files=files, timeout=120)
+    except Exception as e:
+        log(f"photo fail {repr(e)[:400]}")
 
 def send_video(cid,p):
     try:
         with open(p,"rb") as f:
-            requests.post(f"{TELEGRAM_API}/sendVideo", data={"chat_id":str(cid),"supports_streaming":"True"}, files={"video":f}, timeout=180)
-    except Exception as e: log(f"video {e}")
+            files={"video": ("video.mp4", f, "video/mp4")}
+            requests.post(f"{TELEGRAM_API}/sendVideo", data={"chat_id":str(cid),"supports_streaming":True}, files=files, timeout=180)
+    except Exception as e:
+        log(f"video fail {repr(e)[:400]}")
 
 processing=set(); plock=threading.Lock()
 
@@ -223,22 +252,29 @@ def process(cid, cinematic=False):
                 return
             processing.add(cid)
         send_text(cid,"Brain generating new idea...\nPro image from text...\nCinematic + trending music...")
+        bal=check_balance_tool()
         idea=brain_generate()
+        log(f"idea ok {idea['title']}")
         img=generate_pro_image(idea["scene_en"])
+        log("image ok")
         add_text_with_share(img, idea["hikma_ar"], idea["full_ar"], idea["hikma_en"], idea["full_en"])
+        log("text ok")
         if cinematic:
             vid=create_cinematic_with_music(img, idea["mood"], duration=10)
+            log("video ok")
             send_video(cid, vid)
             Path(vid).unlink(missing_ok=True)
         else:
             send_photo(cid, img)
         Path(img).unlink(missing_ok=True)
-        # النص برسالة منفصلة json يدعم عربي بدون latin-1
         txt=f"{idea['hikma_ar']}\n{idea['hikma_en']}\n\n{idea['full_ar']}\n{idea['full_en']}\n\n{idea['title']} | SHARE"
         send_text(cid, txt)
+        log("done")
     except Exception as e:
-        log(f"ERR {repr(e)}")
-        send_text(cid,f"Error: {str(e)[:800]}")
+        import traceback
+        tb=traceback.format_exc()
+        log(f"ERR {tb[-1000:]}")
+        send_text(cid,f"Error: {repr(e)[:800]}")
     finally:
         with plock: processing.discard(cid)
 
@@ -246,9 +282,11 @@ def handle_update(upd):
     msg=upd.get("message") or {}; chat=(msg.get("chat") or {}).get("id"); text=(msg.get("text") or "").strip()
     if not chat: return
     if text.startswith("/start"):
-        send_text(chat,"Hmisc Super Saver FIXED\n/hikma pro image 0.08$\n/cinema video zoom+music 0.08$\n/brain memory"); return
+        send_text(chat,"Hmisc Super Saver FIXED\n/hikma pro image 0.08$\n/cinema video zoom+music 0.08$\n/balance check\n/brain memory"); return
+    if text.startswith("/balance"):
+        bal=check_balance_tool(); send_text(chat,f"Balance: {bal}\nMode: image only 0.08$ = 65 videos"); return
     if text.startswith("/brain"):
-        mem=load_memory(); send_text(chat,f"Ideas: {len(mem['ideas'])}\n"+"\n".join(mem['ideas'][-3:])); return
+        mem=load_memory(); send_text(chat,f"Ideas: {len(mem['ideas'])}"); return
     if text.startswith("/ping"): send_text(chat,f"OK {len(load_memory()['ideas'])} Save 84% no latin-1"); return
     if "/cinema" in text: threading.Thread(target=process, args=(chat, True), daemon=True).start(); return
     if "/hikma" in text: threading.Thread(target=process, args=(chat, False), daemon=True).start(); return
