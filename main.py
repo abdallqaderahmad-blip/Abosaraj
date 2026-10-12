@@ -3,6 +3,17 @@ from pathlib import Path
 import requests
 from flask import Flask, request
 
+# ===== FIX ANTIALIAS - لازم قبل اي شي =====
+try:
+    from PIL import Image as _PILImage
+    if not hasattr(_PILImage, 'ANTIALIAS'):
+        _PILImage.ANTIALIAS = _PILImage.LANCZOS
+    # ل moviepy
+    try:
+        _PILImage.ANTIALIAS = _PILImage.Resampling.LANCZOS
+    except: pass
+except: pass
+
 BOT_TOKEN = os.environ.get("BOT_TOKEN","").strip()
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY","").strip()
 PIAPI_API_KEY = (os.getenv("PIAPI_API_KEY","") or "").strip()
@@ -22,7 +33,6 @@ MEMORY_FILE=Path("/tmp/hmisc_brain_memory.json")
 
 def log(m): print(f"[FINAL] {m}", flush=True)
 
-# ========== ذاكرة العقل ==========
 def load_memory():
     if MEMORY_FILE.exists():
         try: return json.loads(MEMORY_FILE.read_text())
@@ -39,7 +49,6 @@ def is_dup(new_scene, mem):
         if s[:30] in new_scene or new_scene[:30] in s: return True
     return False
 
-# ========== العقل المولد ==========
 def brain_generate():
     mem=load_memory()
     fallback={
@@ -69,7 +78,6 @@ JSON only: {{"hikma_ar":"6 كلمات عربية","full_ar":"25 كلمة عرب�
             log(f"brain retry {e}")
     return fallback
 
-# ========== PiAPI ==========
 def extract_url(j):
     import json as js; s=js.dumps(j)
     m=re.search(r'https?://[^\s"\']+\.(?:jpg|jpeg|png|webp)[^\s"\']*', s)
@@ -115,7 +123,6 @@ def generate_pro_image(scene_en):
     download_file(url, tmp)
     return tmp
 
-# ========== خط عربي + نص + share ==========
 def ensure_arabic_font():
     base=Path("/tmp/fonts"); base.mkdir(exist_ok=True)
     bold=base/"Amiri-Bold.ttf"
@@ -162,7 +169,6 @@ def add_text_with_share(image_path, ar_short, ar_full, en_short, en_full):
     img.save(image_path, quality=98)
     return image_path
 
-# ========== زوم سينمائي حي + موسيقى ترند عالية ==========
 def create_cinematic_with_music(image_path, mood, duration=10):
     from moviepy.editor import ImageClip, AudioFileClip
     MUSIC={
@@ -204,7 +210,6 @@ def create_cinematic_with_music(image_path, mood, duration=10):
     log(f"Video {out} {out.stat().st_size//1024}KB")
     return out
 
-# ========== تليجرام ==========
 TELEGRAM_API=f"https://api.telegram.org/bot{BOT_TOKEN}" if BOT_TOKEN else ""
 def send_text(cid,t):
     try: requests.post(f"{TELEGRAM_API}/sendMessage", data={"chat_id":cid,"text":t}, timeout=20)
@@ -224,7 +229,7 @@ def process(cid, cinematic=False):
         with plock:
             if cid in processing: send_text(cid,"⏳ العقل لسه بيفكر..."); return
             processing.add(cid)
-        send_text(cid,"🧠 العقل بيولد فكرة جديدة...\n🎨 صورة احترافية...\n🎬 مونتاج مختلف + موسيقى ترند عالية...")
+        send_text(cid,"🧠 عقل بيولد فكرة جديدة...\n🎨 صورة احترافية...\n🎬 مونتاج مختلف + موسيقى ترند عالية...")
         idea=brain_generate()
         img=generate_pro_image(idea["scene_en"])
         add_text_with_share(img, idea["hikma_ar"], idea["full_ar"], idea["hikma_en"], idea["full_en"])
