@@ -1,3 +1,7 @@
 Flask
 python-telegram-bot
 groq
+moviepy
+Pillow
+requests
+imageio-ffmpeg
