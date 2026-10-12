@@ -25,7 +25,7 @@ MEMORY_FILE=Path("/tmp/hmisc_brain_memory.json")
 LAST_IMAGE_PATH=Path("/tmp/last_final.jpg")
 TELEGRAM_API=f"https://api.telegram.org/bot{BOT_TOKEN}" if BOT_TOKEN else ""
 
-def log(m): print(f"[V22.2] {str(m)[:900]}", flush=True)
+def log(m): print(f"[V23] {str(m)[:900]}", flush=True)
 
 def load_memory():
     if MEMORY_FILE.exists():
@@ -142,72 +142,55 @@ def generate_two_in_one(idea, force_new=False):
         return LAST_IMAGE_PATH, "CACHED 0$ - مجاني"
     return generate_two_in_one_original(idea)
 
-def ensure_arabic_font():
+def get_font_force(size, is_english=False):
     from PIL import ImageFont
-    for p in [
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-    ]:
-        try:
-            if Path(p).exists():
-                ImageFont.truetype(p, 20)
-                return Path(p)
-        except: continue
     base=Path("/tmp/fonts"); base.mkdir(exist_ok=True)
-    noto=base/"NotoNaskhArabic-Bold.ttf"
-    if noto.exists():
-        try:
-            ImageFont.truetype(str(noto), 20)
-            return noto
-        except:
-            try: noto.unlink()
-            except: pass
-    try:
-        r=requests.get("https://github.com/googlefonts/noto-fonts/raw/main/hinted/ttf/NotoNaskhArabic/NotoNaskhArabic-Bold.ttf", timeout=15)
-        if r.status_code==200 and len(r.content)>50000:
-            noto.write_bytes(r.content)
-            ImageFont.truetype(str(noto), 20)
-            log(f"Downloaded Noto Arabic {len(r.content)}")
-            return noto
-    except Exception as e:
-        log(f"noto download fail {e}")
-    amiri=base/"Amiri-Bold.ttf"
-    if amiri.exists():
-        try:
-            ImageFont.truetype(str(amiri), 20)
-            return amiri
-        except:
-            try: amiri.unlink()
-            except: pass
-    try:
-        r=requests.get("https://github.com/google/fonts/raw/main/ofl/amiri/Amiri-Bold.ttf", timeout=10)
-        if r.status_code==200 and len(r.content)>20000:
-            amiri.write_bytes(r.content)
-            ImageFont.truetype(str(amiri), 20)
-            return amiri
-    except: pass
-    return None
 
-def get_font(size, need_arabic=False):
-    from PIL import ImageFont
-    if need_arabic:
-        p=ensure_arabic_font()
-        if p:
-            try:
-                return ImageFont.truetype(str(p), size)
-            except Exception as e:
-                log(f"arabic font fail {p} {e}")
-    candidates=[
+    # جرب المسارات المحلية اولا
+    local_paths=[
         "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
         "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/TTF/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf",
         "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
     ]
-    for p in candidates:
+    for p in local_paths:
         try:
-            if Path(p).exists():
-                return ImageFont.truetype(p, size)
-        except: continue
-    return ImageFont.load_default()
+            if Path(p).exists() and Path(p).stat().st_size>10000:
+                f=ImageFont.truetype(p, size)
+                log(f"Font OK local {p} size {size}")
+                return f
+        except Exception as e:
+            log(f"font local fail {p} {e}")
+            continue
+
+    # نزل خط غصب - للانجليزي والعربي
+    if is_english:
+        target=base/f"DejaVuSans-Bold-{size}.ttf"
+        url="https://github.com/dejavu-fonts/dejavu-fonts/raw/master/ttf/DejaVuSans-Bold.ttf"
+    else:
+        target=base/f"NotoNaskhArabic-Bold-{size}.ttf"
+        url="https://github.com/googlefonts/noto-fonts/raw/main/hinted/ttf/NotoNaskhArabic/NotoNaskhArabic-Bold.ttf"
+
+    try:
+        if not target.exists() or target.stat().st_size<10000:
+            log(f"Downloading font {url}")
+            r=requests.get(url, timeout=20)
+            if r.status_code==200 and len(r.content)>20000:
+                target.write_bytes(r.content)
+        if target.exists():
+            f=ImageFont.truetype(str(target), size)
+            log(f"Font OK downloaded {target} size {size}")
+            return f
+    except Exception as e:
+        log(f"download font fail {e}")
+
+    # fallback اخير - حاول بدون حجم
+    try:
+        return ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", size)
+    except:
+        log("CRITICAL using load_default")
+        return ImageFont.load_default()
 
 def create_reels_video(image_path, idea, duration=9):
     from moviepy.editor import ImageClip, CompositeVideoClip, AudioClip
@@ -225,7 +208,7 @@ def create_reels_video(image_path, idea, duration=9):
             except: return t
         return t
     W,H=1080,1920
-    BOX_H=380
+    BOX_H=400
     IMG_H=600
     from PIL import Image as PILImage
     full=PILImage.open(image_path).convert("RGB")
@@ -236,58 +219,73 @@ def create_reels_video(image_path, idea, duration=9):
     top_img.save(top_tmp, quality=98)
     bottom_img.save(bottom_tmp, quality=98)
     top_clip=ImageClip(str(top_tmp), duration=duration).resize(lambda t: 1.0 + 0.06*t/duration).set_position(('center', BOX_H))
-    bottom_clip=ImageClip(str(bottom_tmp), duration=duration).resize(lambda t: 1.0 + 0.06*t/duration).set_position(('center', BOX_H+IMG_H+6))
+    bottom_clip=ImageClip(str(bottom_tmp), duration=duration).resize(lambda t: 1.0 + 0.06*t/duration).set_position(('center', BOX_H+IMG_H+8))
+
     def make_box(ar_text, en_text, is_top=True):
         bg=(242,230,195) if is_top else (18,18,18)
         img=Image.new('RGB',(W,BOX_H),bg)
         d=ImageDraw.Draw(img)
-        f_ar = get_font(78, need_arabic=True)
-        f_en = get_font(62, need_arabic=False)
-        f_share = get_font(28, need_arabic=False)
+        f_ar = get_font_force(80, is_english=False)
+        f_en = get_font_force(80, is_english=True)
+        f_share = get_font_force(28, is_english=True)
+
         ar_fixed=fix_ar(ar_text)
         en_clean=str(en_text).strip().upper()
+
+        # عربي 80px
         try:
             bbox=d.textbbox((0,0), ar_fixed, font=f_ar)
             x=(W-(bbox[2]-bbox[0]))//2
-            d.text((x, 55), ar_fixed, font=f_ar, fill=(10,10,10) if is_top else (245,230,190))
+            d.text((x, 40), ar_fixed, font=f_ar, fill=(10,10,10) if is_top else (245,230,190))
         except Exception as e:
-            log(f"ar fail {e} font={f_ar}")
-            try:
-                d.text((W//2-200, 55), ar_text, font=f_ar, fill=(10,10,10) if is_top else (245,230,190))
-            except:
-                d.text((W//2-100, 55), "ARABIC", fill=(0,0,0))
+            log(f"ar draw {e}")
+            d.text((100, 40), ar_text, fill=(0,0,0))
+
+        # انجليزي 80px + خلفية عشان يبين
         try:
             bbox2=d.textbbox((0,0), en_clean, font=f_en)
-            x2=(W-(bbox2[2]-bbox2[0]))//2
+            w2=bbox2[2]-bbox2[0]
+            h2=bbox2[3]-bbox2[1]
+            x2=(W-w2)//2
+            y2=200
+            # خلفية
+            pad=20
             if is_top:
-                d.text((x2, 210), en_clean, font=f_en, fill=(20,20,20), stroke_width=2, stroke_fill=(255,255,255))
+                d.rectangle([x2-pad, y2-10, x2+w2+pad, y2+h2+20], fill=(0,0,0))
+                d.text((x2, y2), en_clean, font=f_en, fill=(255,255,255))
             else:
-                d.text((x2, 210), en_clean, font=f_en, fill=(255,255,255), stroke_width=3, stroke_fill=(0,0,0))
+                d.rectangle([x2-pad, y2-10, x2+w2+pad, y2+h2+20], fill=(255,255,255))
+                d.text((x2, y2), en_clean, font=f_en, fill=(0,0,0))
         except Exception as e:
-            log(f"en fail {e}")
-            try:
-                d.text((W//2-150, 210), en_clean, font=f_en, fill=(20,20,20) if is_top else (255,255,255))
-            except:
-                d.text((W//2-150, 210), en_clean, fill=(0,0,0))
+            log(f"en draw {e}")
+            d.text((100, 200), en_clean, fill=(255,0,0))
+
         try:
-            d.text((W-175, 20), "> SHARE", font=f_share, fill=(100,100,100) if is_top else (120,120,120))
+            d.text((W-175, 15), "> SHARE", font=f_share, fill=(100,100,100) if is_top else (120,120,120))
         except: pass
+
         p=Path(tempfile.gettempdir())/f"b_{random.randint(1,9999999)}.png"
         img.save(p, quality=98)
         return p
+
     top_box_p=make_box(idea["action_ar"], idea["action_en"], True)
     bottom_box_p=make_box(idea["reaction_ar"], idea["reaction_en"], False)
     top_box=ImageClip(str(top_box_p), duration=duration).set_position((0,0))
-    bottom_box=ImageClip(str(bottom_box_p), duration=duration).set_position((0, BOX_H+IMG_H*2+12))
+    bottom_box=ImageClip(str(bottom_box_p), duration=duration).set_position((0, BOX_H+IMG_H*2+16))
     final=CompositeVideoClip([top_clip, bottom_clip, top_box, bottom_box], size=(W,H)).set_duration(duration)
+
+    # موسيقى عالية جدا 4.0
     try:
-        log("Music NEW sad arpeggio")
+        log("Music LOUD 4.0")
         def piano_note(freq, t_offset):
-            env = np.exp(-3.5*t_offset) * (1 - np.exp(-20*t_offset)) if t_offset>=0 else 0
-            v = 0.6*np.sin(2*np.pi*freq*t_offset)
-            v+= 0.3*np.sin(2*np.pi*freq*2*t_offset)*np.exp(-t_offset*2)
-            v+= 0.15*np.sin(2*np.pi*freq*3*t_offset)*np.exp(-t_offset*3)
-            return v*env*0.8
+            if t_offset<0: return 0
+            env = np.exp(-2.8*t_offset) * (1 - np.exp(-25*t_offset))
+            v = 1.0*np.sin(2*np.pi*freq*t_offset)
+            v+= 0.5*np.sin(2*np.pi*freq*2*t_offset)*np.exp(-t_offset*1.5)
+            v+= 0.25*np.sin(2*np.pi*freq*3*t_offset)*np.exp(-t_offset*2)
+            v+= 0.15*np.sin(2*np.pi*freq*4*t_offset)*np.exp(-t_offset*2.5)
+            return v*env
+
         chords = [
             [220.00, 261.63, 329.63, 440.00],
             [174.61, 220.00, 261.63, 349.23],
@@ -302,29 +300,30 @@ def create_reels_video(image_path, idea, duration=9):
                 pos_in_chord = tt % 2.25
                 v=0.0
                 for i, f in enumerate(chord):
-                    note_start = i*0.38
+                    note_start = i*0.35
                     if pos_in_chord >= note_start:
-                        v+= piano_note(f, pos_in_chord - note_start)* [1.0,0.7,0.5,0.35][i]
+                        v+= piano_note(f, pos_in_chord - note_start)* [1.2,0.9,0.6,0.4][i]
                     if i==0:
-                        v+= piano_note(f*0.5, pos_in_chord)*0.45
-                if pos_in_chord>0.6:
-                    v+= v*0.25*np.exp(-(pos_in_chord-0.6)*2)
-                return np.array([v*1.2, v*1.2], dtype=np.float32)
+                        v+= piano_note(f*0.5, pos_in_chord)*0.8
+                # reverb
+                if pos_in_chord>0.5:
+                    v+= v*0.35*np.exp(-(pos_in_chord-0.5)*1.5)
+                return np.array([v*1.5, v*1.5], dtype=np.float32)
             else:
                 arr=np.atleast_1d(t).astype(float)
-                out=[]
-                for x in arr:
-                    out.append(make_frame(float(x))[0])
+                out=[make_frame(float(x))[0] for x in arr]
                 vals=np.array(out, dtype=np.float32)
                 return np.column_stack([vals, vals])
-        music=AudioClip(make_frame, duration=duration).volumex(1.8).audio_fadein(0.5).audio_fadeout(1.5)
+
+        music=AudioClip(make_frame, duration=duration).volumex(4.0).audio_fadein(0.3).audio_fadeout(1.0)
         final=final.set_audio(music)
         has_audio=True
-        log("Music OK new loud")
+        log("Music OK 4.0 LOUD")
     except Exception as e:
         import traceback
         log(f"music fail {e} {traceback.format_exc()[-300:]}")
         has_audio=False
+
     out=Path(tempfile.gettempdir())/f"reel_{int(time.time())}.mp4"
     final.write_videofile(str(out), fps=30, codec='libx264', audio_codec='aac' if has_audio else None, preset='ultrafast', bitrate="9000k", logger=None)
     for p in [top_tmp,bottom_tmp,top_box_p,bottom_box_p]:
@@ -349,7 +348,7 @@ def process(cid, cinematic=False, force_new=False):
             if cid in processing: send_text(cid,"⏳ يولد..."); return
             processing.add(cid)
         if force_new:
-            send_text(cid,"✨ V22.2 NEW\nEN واضح + Noto Arabic + 🎵 Arpeggio عالي")
+            send_text(cid,"✨ V23 LOUD\nEN 80px خلفية + 🎵 4.0 عالي جدا")
             idea=brain_generate_smart()
             send_text(cid,f"✅ {idea['action_ar']} -> {idea['reaction_ar']}\nEN {idea['action_en']} -> {idea['reaction_en']}")
             combined,qmsg=generate_two_in_one(idea, force_new=True)
@@ -362,17 +361,17 @@ def process(cid, cinematic=False, force_new=False):
                 idea={"action_ar":"تحفظهم ككلمة مرور","reaction_ar":"فينسونك كإعلان","action_en":"SAVE AS PASSWORD","reaction_en":"FORGOTTEN LIKE ADS"}
                 combined=LAST_IMAGE_PATH
                 qmsg="CACHED 0$"
-                send_text(cid,"🧪 TEST مجاني V22.2")
+                send_text(cid,"🧪 TEST مجاني V23")
         send_text(cid,f"✅ صور | {qmsg}")
         if cinematic:
             vid,has_audio=create_reels_video(combined, idea, 9)
-            send_text(cid,f"✅ فيديو {'🎵 Arpeggio عالي' if has_audio else '🔇'} | EN واضح + Noto")
+            send_text(cid,f"✅ فيديو {'🎵 4.0 عالي جدا' if has_audio else '🔇'} | EN 80px + خلفية")
             send_video(cid, vid)
             if vid and Path(vid).exists() and Path(vid)!=LAST_IMAGE_PATH:
                 Path(vid).unlink(missing_ok=True)
         else:
             send_photo(cid, combined)
-        send_text(cid,"✅ جاهز V22.2")
+        send_text(cid,"✅ جاهز V23")
     except Exception as e:
         import traceback; log(traceback.format_exc()[-900:])
         send_text(cid,f"❌ فشل {str(e)[:300]}")
@@ -385,9 +384,9 @@ def handle_update(upd):
         if not chat: return
         if text.startswith("/start"):
             has=LAST_IMAGE_PATH.exists() and LAST_IMAGE_PATH.stat().st_size>50000
-            send_text(chat,f"V22.2 FIX ✅\nlatin-1 مصلح نهائي - Noto Arabic\nEN 62px + Stroke واضح\n🎵 Arpeggio حزين عالي 1.8\n\n/cinema جديد\n/test_video مجاني {'✅' if has else '⚠️'}\n/ping")
+            send_text(chat,f"V23 LOUD ✅\nEN 80px + خلفية سوداء/بيضاء واضح\n🎵 4.0 عالي جدا\nموسيقى بيانو قوية\n\n/cinema جديد\n/test_video مجاني {'✅' if has else '⚠️'}\n/ping")
             return
-        if text.startswith("/ping"): send_text(chat,f"V22.2 | cache:{'نعم' if LAST_IMAGE_PATH.exists() else 'لا'}"); return
+        if text.startswith("/ping"): send_text(chat,f"V23 | cache:{'نعم' if LAST_IMAGE_PATH.exists() else 'لا'}"); return
         if "/test_video" in text:
             if LAST_IMAGE_PATH.exists() and LAST_IMAGE_PATH.stat().st_size>50000:
                 threading.Thread(target=process, args=(chat, True, False), daemon=True).start()
@@ -399,7 +398,7 @@ def handle_update(upd):
     except Exception as e: log(f"handle {e}")
 
 @app.get("/")
-def home(): return f"V22.2 FINAL cached={LAST_IMAGE_PATH.exists()}",200
+def home(): return f"V23 FINAL cached={LAST_IMAGE_PATH.exists()}",200
 @app.post("/telegram/webhook")
 def wh():
     upd=request.get_json(silent=True) or {}
