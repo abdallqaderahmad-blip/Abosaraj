@@ -26,7 +26,7 @@ MEMORY_FILE=Path("/tmp/hmisc_brain_memory.json")
 LAST_IMAGE_PATH=Path("/tmp/last_final.jpg")
 TELEGRAM_API=f"https://api.telegram.org/bot{BOT_TOKEN}" if BOT_TOKEN else ""
 
-def log(m): print(f"[V19-FINAL] {str(m)[:900]}", flush=True)
+def log(m): print(f"[V20-FINAL] {str(m)[:900]}", flush=True)
 
 def load_memory():
     if MEMORY_FILE.exists():
@@ -168,10 +168,12 @@ def ensure_fonts():
             except: continue
     return amiri if amiri.exists() and amiri.stat().st_size>10000 else None, dejavu
 
+# موسيقى تريند حزينة - روابط مضمونة على Render
 REAL_MUSIC = [
-    "https://cdn.pixabay.com/audio/2022/06/07/audio_b9bd4170e8.mp3",
-    "https://cdn.pixabay.com/audio/2021/08/04/audio_0625c1539c.mp3",
-    "https://cdn.pixabay.com/audio/2022/10/30/audio_fbd82ff3ef.mp3",
+    "https://cdn.pixabay.com/download/audio/2022/03/24/audio_2a9aafb6cb.mp3?filename=sad-background-music-111451.mp3",
+    "https://cdn.pixabay.com/download/audio/2022/10/30/audio_fbd82ff3ef.mp3?filename=sad-piano-120696.mp3",
+    "https://cdn.pixabay.com/download/audio/2021/08/04/audio_0625c1539c.mp3?filename=lonely-8526.mp3",
+    "https://cdn.pixabay.com/download/audio/2022/06/07/audio_b9bd4170e8.mp3?filename=lofi-study-112191.mp3",
 ]
 
 def get_music():
@@ -181,7 +183,7 @@ def get_music():
     if not avail: avail=REAL_MUSIC; hist=[]
     pick=random.choice(avail)
     hist.append(pick)
-    mem["music_history"]=hist[-8:]
+    mem["music_history"]=hist[-10:]
     save_memory(mem)
     return pick
 
@@ -209,14 +211,14 @@ def create_reels_video(image_path, idea, duration=9):
     base=ImageClip(str(image_path), duration=duration).resize(lambda t: 1.0 + 0.25*t/duration).set_position('center')
 
     def make_box(ar_text, en_text, is_top=True):
-        h=500
+        h=540
         bg=(242,230,195) if is_top else (14,14,14)
         img=Image.new('RGB',(W,h),bg)
         d=ImageDraw.Draw(img)
         try:
-            f_ar=ImageFont.truetype(str(amiri_path), 78) if has_ar else ImageFont.truetype(str(dejavu_path), 70) if dejavu_path.exists() else ImageFont.load_default()
-            f_en=ImageFont.truetype(str(dejavu_path), 58) if dejavu_path.exists() else ImageFont.load_default()
-            f_share=ImageFont.truetype(str(dejavu_path), 32) if dejavu_path.exists() else ImageFont.load_default()
+            f_ar=ImageFont.truetype(str(amiri_path), 82) if has_ar else ImageFont.truetype(str(dejavu_path), 72) if dejavu_path.exists() else ImageFont.load_default()
+            f_en=ImageFont.truetype(str(dejavu_path), 60) if dejavu_path.exists() else ImageFont.load_default()
+            f_share=ImageFont.truetype(str(dejavu_path), 34) if dejavu_path.exists() else ImageFont.load_default()
         except:
             f_ar=f_en=f_share=ImageFont.load_default()
 
@@ -224,14 +226,14 @@ def create_reels_video(image_path, idea, duration=9):
         en_clean=str(en_text).strip().upper()
         try:
             bbox_ar=d.textbbox((0,0), ar_fixed, font=f_ar)
-            d.text(((W-(bbox_ar[2]-bbox_ar[0]))//2, 55), ar_fixed, font=f_ar, fill=(15,15,15) if is_top else (242,230,195))
+            d.text(((W-(bbox_ar[2]-bbox_ar[0]))//2, 80), ar_fixed, font=f_ar, fill=(15,15,15) if is_top else (242,230,195))
             bbox_en=d.textbbox((0,0), en_clean, font=f_en)
-            d.text(((W-(bbox_en[2]-bbox_en[0]))//2, 200), en_clean, font=f_en, fill=(50,50,50) if is_top else (220,220,220))
-            d.text((W-180, 18), "> SHARE", font=f_share, fill=(100,100,100) if is_top else (120,120,120))
+            d.text(((W-(bbox_en[2]-bbox_en[0]))//2, 240), en_clean, font=f_en, fill=(60,60,60) if is_top else (200,200,200))
+            d.text((W-190, 25), "> SHARE", font=f_share, fill=(90,90,90) if is_top else (110,110,110))
         except Exception as ex:
             log(f"box fail {ex}")
-            d.text((80,60), str(ar_text), fill=(0,0,0))
-            d.text((80,200), en_clean, fill=(50,50,50))
+            d.text((80,80), str(ar_text), fill=(0,0,0))
+            d.text((80,240), en_clean, fill=(50,50,50))
         p=Path(tempfile.gettempdir())/f"b_{random.randint(1,9999999)}.png"
         img.save(p, quality=98)
         return p
@@ -239,34 +241,45 @@ def create_reels_video(image_path, idea, duration=9):
     top_p=make_box(idea["action_ar"], idea["action_en"], True)
     bottom_p=make_box(idea["reaction_ar"], idea["reaction_en"], False)
     top_c=ImageClip(str(top_p), duration=duration).set_position((0,0))
-    bottom_c=ImageClip(str(bottom_p), duration=duration).set_position((0, H-500))
+    bottom_c=ImageClip(str(bottom_p), duration=duration).set_position((0, H-540))
     final=CompositeVideoClip([base, top_c, bottom_c], size=(W,H)).set_duration(duration)
 
     mp=Path(tempfile.gettempdir())/f"m_{random.randint(1,99999)}.mp3"
     audio_added=False
-    for _ in range(5):
+    for _ in range(8):
         try:
             url=get_music()
-            log(f"music {url[-30:]}")
-            r=requests.get(url, timeout=30, headers={"User-Agent":"Mozilla/5.0"}, stream=True)
-            if r.status_code!=200: continue
+            log(f"music try {url[-50:]}")
+            headers={"User-Agent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36","Referer":"https://pixabay.com/","Accept":"audio/mpeg"}
+            r=requests.get(url, timeout=45, headers=headers, stream=True)
+            if r.status_code!=200:
+                log(f"music status {r.status_code}")
+                continue
             with open(mp,'wb') as f:
-                for ch in r.iter_content(8192): f.write(ch)
-            if not mp.exists() or mp.stat().st_size<15000:
+                for ch in r.iter_content(16384):
+                    if ch: f.write(ch)
+            if not mp.exists() or mp.stat().st_size<20000:
+                log(f"music small {mp.stat().st_size if mp.exists() else 0}")
                 if mp.exists(): mp.unlink(missing_ok=True)
                 continue
             full_audio=AudioFileClip(str(mp))
-            if full_audio.duration < 0.8: full_audio.close(); mp.unlink(missing_ok=True); continue
-            audio=full_audio.subclip(0,duration) if full_audio.duration>=duration else full_audio
+            if full_audio.duration < 1.0:
+                full_audio.close()
+                mp.unlink(missing_ok=True)
+                continue
             if full_audio.duration < duration:
                 from moviepy.audio.fx.all import audio_loop
                 try: audio=audio_loop(full_audio, duration=duration)
                 except:
                     from moviepy.editor import concatenate_audioclips
-                    audio=concatenate_audioclips([full_audio]*3).subclip(0,duration)
-            audio=audio.volumex(0.9).audio_fadein(0.4).audio_fadeout(0.6)
+                    audio=concatenate_audioclips([full_audio]*4).subclip(0,duration)
+            else:
+                start = max(0, (full_audio.duration-duration)/2)
+                audio=full_audio.subclip(start, start+duration)
+            audio=audio.volumex(0.85).audio_fadein(0.8).audio_fadeout(1.2)
             final=final.set_audio(audio)
             audio_added=True
+            log("music OK real sad trending")
             break
         except Exception as e:
             log(f"music err {e}")
@@ -275,11 +288,27 @@ def create_reels_video(image_path, idea, duration=9):
 
     if not audio_added:
         try:
-            def make_frame(t): return np.array([0.15*np.sin(2*np.pi*220*t)]).T
-            fallback_audio=AudioClip(make_frame, duration=duration).volumex(0.6).audio_fadein(0.5).audio_fadeout(1.0)
+            log("music FALLBACK sad piano Am-F-C-G")
+            def make_frame_stereo(t):
+                # progression حزين حقيقي - مش نغمة جوال
+                cycle = t % 9
+                if cycle < 2.25: freq=220.0 # A
+                elif cycle < 4.5: freq=174.61 # F
+                elif cycle < 6.75: freq=261.63 # C
+                else: freq=196.0 # G
+                # decay + harmonics = بيانو
+                pos_in_chord = cycle % 2.25
+                decay = np.exp(-pos_in_chord*1.2)
+                val = 0.22*np.sin(2*np.pi*freq*t)*decay
+                val += 0.11*np.sin(2*np.pi*freq*2*t)*decay*0.6
+                val += 0.05*np.sin(2*np.pi*freq*3*t)*decay*0.3
+                # stereo
+                return np.array([val*0.9, val*0.9])
+            fallback_audio=AudioClip(make_frame_stereo, duration=duration).volumex(0.75).audio_fadein(1.0).audio_fadeout(1.5)
             final=final.set_audio(fallback_audio)
             audio_added=True
-        except: pass
+        except Exception as e:
+            log(f"fallback fail {e}")
 
     out=Path(tempfile.gettempdir())/f"reel_{int(time.time())}.mp4"
     final.write_videofile(str(out), fps=30, codec='libx264', audio_codec='aac' if audio_added else None, preset='ultrafast', bitrate="8000k", logger=None)
@@ -301,13 +330,12 @@ def send_video(cid,p):
 processing=set(); plock=threading.Lock()
 
 def process(cid, cinematic=False, force_new=False):
-    combined=None; vid=None
     try:
         with plock:
             if cid in processing: send_text(cid,"⏳ يولد..."); return
             processing.add(cid)
         if force_new:
-            send_text(cid,"✨ V19 NEW - بفلوس\nزوم 25% | EN 58px = AR 78px واضح\n🎵 موسيقى | SHARE")
+            send_text(cid,"✨ V20 NEW - بفلوس\nزوم 25% | EN 60px = AR 82px\n🎵 موسيقى حزينة تريند | SHARE")
             idea=brain_generate_smart()
             send_text(cid,f"✅ {idea['action_ar']} -> {idea['reaction_ar']}\nEN {idea['action_en']} -> {idea['reaction_en']}")
             combined,qmsg=generate_two_in_one(idea, force_new=True)
@@ -318,11 +346,11 @@ def process(cid, cinematic=False, force_new=False):
             idea={"action_ar":"تحفظهم ككلمة مرور","reaction_ar":"فينسونك كإعلان","action_en":"SAVE AS PASSWORD","reaction_en":"FORGOTTEN LIKE ADS"}
             combined=LAST_IMAGE_PATH
             qmsg="CACHED 0$ - مجاني"
-            send_text(cid,"🧪 TEST مجاني 0$ - نفس الصورة\nزوم 25% + EN كبير + موسيقى")
+            send_text(cid,"🧪 TEST مجاني 0$ - نفس الصورة\nزوم 25% + EN كبير + موسيقى حزينة")
         send_text(cid,f"✅ صور | {qmsg}")
         if cinematic:
             vid,has_audio=create_reels_video(combined, idea, 9)
-            send_text(cid,f"✅ فيديو {'🎵 بموسيقى' if has_audio else '🔇'} | زوم 25% | بدون خربشة")
+            send_text(cid,f"✅ فيديو {'🎵 حزينة تريند' if has_audio else '🔇 بدون'} | زوم 25% | بدون خربشة")
             send_video(cid, vid)
             if vid and Path(vid).exists() and Path(vid)!=LAST_IMAGE_PATH:
                 Path(vid).unlink(missing_ok=True)
@@ -341,16 +369,16 @@ def handle_update(upd):
         if not chat: return
         if text.startswith("/start"):
             has=LAST_IMAGE_PATH.exists()
-            send_text(chat,f"V19 FINAL FIXED ✅\nزوم 25% واضح\nEN 58px قد AR 78px\n🎵 موسيقى مضمونة\nSHARE واضح\nبدون خربشة\n\n/cinema = جديد بفلوس\n/test_video = مجاني 0$ {'✅ جاهز' if has else '❌ /cinema أول'}\n/ping")
+            send_text(chat,f"V20 FINAL ✅\nزوم 25%\nEN 60px = AR 82px واضح\n🎵 موسيقى حزينة تريند\nSHARE واضح\nبدون خربشة\nبدون latin-1\n\n/cinema = جديد بفلوس\n/test_video = مجاني 0$ {'✅ جاهز' if has else '❌ /cinema أول'}\n/ping")
             return
-        if text.startswith("/ping"): send_text(chat,f"V19 | cache:{'نعم' if LAST_IMAGE_PATH.exists() else 'لا'}"); return
+        if text.startswith("/ping"): send_text(chat,f"V20 | cache:{'نعم' if LAST_IMAGE_PATH.exists() else 'لا'}"); return
         if "/test_video" in text: threading.Thread(target=process, args=(chat, True, False), daemon=True).start(); return
         if "/cinema" in text: threading.Thread(target=process, args=(chat, True, True), daemon=True).start(); return
         if "/hikma" in text: threading.Thread(target=process, args=(chat, False, True), daemon=True).start(); return
     except Exception as e: log(f"handle {e}")
 
 @app.get("/")
-def home(): return f"V19 FINAL cached={LAST_IMAGE_PATH.exists()}",200
+def home(): return f"V20 FINAL cached={LAST_IMAGE_PATH.exists()}",200
 @app.post("/telegram/webhook")
 def wh():
     upd=request.get_json(silent=True) or {}
