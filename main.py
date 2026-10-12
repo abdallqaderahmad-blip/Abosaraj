@@ -10,15 +10,12 @@ logging.basicConfig(level=logging.INFO)
 
 TOKEN = os.getenv("BOT_TOKEN")
 GROQ_KEY = os.getenv("GROQ_API_KEY")
-WEBHOOK_URL = os.getenv("RENDER_EXTERNAL_URL") # Render بيحطه لوحده
 
 flask_app = Flask(__name__)
-
-# --- Telegram App ---
 telegram_app = ApplicationBuilder().token(TOKEN).build()
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("البوت شغال ✅ Webhook\n\nجرب /hmisc 1")
+    await update.message.reply_text("البوت شغال ✅\nجرب /hmisc 1")
 
 async def hmisc(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
@@ -46,22 +43,28 @@ telegram_app.add_handler(CommandHandler("hmisc", hmisc))
 def home():
     return "Bot Webhook Live ✅"
 
+# هنا شلنا async
 @flask_app.route(f'/{TOKEN}', methods=['POST'])
-async def webhook():
-    update = Update.de_json(request.get_json(force=True), telegram_app.bot)
-    await telegram_app.process_update(update)
-    return "ok"
+def webhook():
+    try:
+        data = request.get_json(force=True)
+        update = Update.de_json(data, telegram_app.bot)
+        asyncio.run(telegram_app.process_update(update))
+    except Exception as e:
+        print(f"Webhook error: {e}")
+    return "ok", 200
 
-async def set_webhook():
-    url = f"{WEBHOOK_URL}/{TOKEN}"
-    await telegram_app.bot.set_webhook(url)
-    print(f"Webhook set to: {url}")
+@flask_app.route('/setwebhook')
+def setwebhook():
+    try:
+        url = f"{request.host_url}{TOKEN}"
+        # نشيل / الاخيرة
+        url = url.rstrip('/')
+        asyncio.run(telegram_app.bot.set_webhook(url))
+        return f"Webhook set to {url} ✅"
+    except Exception as e:
+        return f"Error: {e}"
 
 if __name__ == "__main__":
-    # set webhook
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    loop.run_until_complete(set_webhook())
-
     port = int(os.environ.get("PORT", 10000))
     flask_app.run(host='0.0.0.0', port=port)
