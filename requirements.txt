@@ -3,7 +3,7 @@ requests
 groq
 httpx
 gunicorn
-Pillow
+Pillow==9.5.0
 arabic-reshaper
 python-bidi
 moviepy==1.0.3
