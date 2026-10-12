@@ -3,7 +3,7 @@ from pathlib import Path
 import requests
 from flask import Flask, request
 
-# ===== FIX LATIN-1 من الجذر =====
+# FIX 1: اجبار utf-8 عشان latin-1 ما يصير
 try:
     sys.stdout.reconfigure(encoding='utf-8', errors='ignore')
     sys.stderr.reconfigure(encoding='utf-8', errors='ignore')
@@ -36,8 +36,7 @@ MEMORY_FILE=Path("/tmp/hmisc_brain_memory.json")
 
 def log(m):
     try:
-        # آمن 100% ما بيفشل مع العربي
-        print(f"[SUPER] {str(m)[:500]}", flush=True)
+        print(f"[SUPER] {str(m)[:400]}", flush=True)
     except:
         pass
 
@@ -56,18 +55,6 @@ def is_dup(new_scene, mem):
     for s in mem["scenes"]:
         if s[:35] in new_scene or new_scene[:35] in s: return True
     return False
-
-# ===== الأداة: فحص الرصيد وتوفير =====
-def check_balance_tool():
-    try:
-        r=requests.get("https://api.piapi.ai/api/v1/balance", headers={"X-API-KEY": PIAPI_API_KEY}, timeout=10)
-        j=r.json()
-        bal=j.get("data",{}).get("balance", j)
-        log(f"Balance: {bal}")
-        return bal
-    except Exception as e:
-        log(f"balance err {e}")
-        return "unknown"
 
 def brain_generate():
     mem=load_memory()
@@ -94,7 +81,7 @@ JSON: {{"hikma_ar":"6 كلمات عربية","full_ar":"25 كلمة عربية",
                 save_memory(mem)
                 return j
         except Exception as e:
-            log(f"brain err {repr(e)[:300]}")
+            log(f"brain {repr(e)[:300]}")
     return fallback
 
 def extract_url(j):
@@ -145,43 +132,70 @@ def generate_pro_image(scene_en):
 def ensure_arabic_font():
     base=Path("/tmp/fonts"); base.mkdir(exist_ok=True)
     bold=base/"Amiri-Bold.ttf"
-    if not bold.exists():
+    if not bold.exists() or bold.stat().st_size < 5000:
         try:
-            rr=requests.get("https://github.com/google/fonts/raw/main/ofl/amiri/Amiri-Bold.ttf", timeout=30)
-            bold.write_bytes(rr.content)
-        except: return None
-    return bold
+            rr=requests.get("https://github.com/google/fonts/raw/main/ofl/amiri/Amiri-Bold.ttf", timeout=40)
+            if rr.status_code==200 and len(rr.content)>5000:
+                bold.write_bytes(rr.content)
+                log(f"font downloaded {bold.stat().st_size}")
+        except Exception as e:
+            log(f"font dl {e}")
+            return None
+    return bold if bold.exists() and bold.stat().st_size>5000 else None
 
 def add_text_with_share(image_path, ar_short, ar_full, en_short, en_full):
     from PIL import Image, ImageDraw, ImageFont
     import arabic_reshaper
     from bidi.algorithm import get_display
     font_file=ensure_arabic_font()
+    has_arabic = font_file and font_file.exists()
+
     img=Image.open(image_path).convert("RGB")
     W,H=img.size
     draw=ImageDraw.Draw(img)
     beige=(245,233,201)
     draw.rectangle([0,0,W,195], fill=beige)
     draw.rectangle([0,H-155,W,H], fill=beige)
+
     def fix_ar(t):
-        try: return get_display(arabic_reshaper.reshape(t))
-        except: return t
+        try:
+            if not has_arabic: return ""
+            return get_display(arabic_reshaper.reshape(t))
+        except:
+            return ""
+
     try:
-        if font_file and font_file.exists():
+        if has_arabic:
             f_ar_big=ImageFont.truetype(str(font_file), 56)
             f_ar_small=ImageFont.truetype(str(font_file), 34)
         else:
-            f_ar_big=ImageFont.load_default(); f_ar_small=f_ar_big
+            f_ar_big=None
+            f_ar_small=None
         f_en_big=ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 36)
         f_en_small=ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 24)
         f_share=ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 16)
-    except:
-        f_ar_big=ImageFont.load_default(); f_ar_small=f_ar_big; f_en_big=f_ar_big; f_en_small=f_ar_big; f_share=f_ar_big
-    draw.text((W//2, 85), fix_ar(ar_short), font=f_ar_big, fill="#0f0f0f", anchor="mm", align="center")
-    draw.text((W//2, 148), en_short, font=f_en_big, fill="#222", anchor="mm")
-    draw.text((W//2, H-108), fix_ar(ar_full), font=f_ar_small, fill="#111", anchor="mm", align="center")
-    draw.text((W//2, H-58), en_full, font=f_en_small, fill="#2a2a2a", anchor="mm", align="center")
-    draw.text((W-20, H-16), "share hmisc", font=f_share, fill="#8a7a5a", anchor="rb")
+    except Exception as e:
+        log(f"font load {e}")
+        f_ar_big=None; f_ar_small=None
+        f_en_big=ImageFont.load_default()
+        f_en_small=f_en_big; f_share=f_en_big
+        has_arabic=False
+
+    try:
+        if has_arabic and f_ar_big:
+            draw.text((W//2, 85), fix_ar(ar_short), font=f_ar_big, fill="#0f0f0f", anchor="mm", align="center")
+        else:
+            draw.text((W//2, 85), en_short, font=f_en_big, fill="#0f0f0f", anchor="mm", align="center")
+
+        if has_arabic:
+            draw.text((W//2, 148), en_short, font=f_en_big, fill="#222", anchor="mm")
+            draw.text((W//2, H-108), fix_ar(ar_full), font=f_ar_small, fill="#111", anchor="mm", align="center")
+
+        draw.text((W//2, H-58), en_full, font=f_en_small, fill="#2a2a2a", anchor="mm", align="center")
+        draw.text((W-20, H-16), "share hmisc", font=f_share, fill="#8a7a5a", anchor="rb")
+    except Exception as e:
+        log(f"draw err {repr(e)[:400]}")
+
     img.save(image_path, quality=98)
     return image_path
 
@@ -199,7 +213,6 @@ def create_cinematic_with_music(image_path, mood, duration=10):
     try: download_file(music_url, music_path)
     except: music_path=None
     montage=random.choice(["slow_in","slow_out","pan","breathe"])
-    log(f"Montage {montage} {mood}")
     clip=ImageClip(str(image_path), duration=duration)
     if montage=="slow_in":
         clip=clip.resize(lambda t: 1.0+0.32*t/duration).set_position(lambda t: ('center', f"{52-3*t/duration}%"))
@@ -223,24 +236,21 @@ TELEGRAM_API=f"https://api.telegram.org/bot{BOT_TOKEN}" if BOT_TOKEN else ""
 def send_text(cid,t):
     try:
         requests.post(f"{TELEGRAM_API}/sendMessage", json={"chat_id":cid,"text":t}, timeout=20)
-    except Exception as e:
-        log(f"send_text fail {e}")
+    except: pass
 
 def send_photo(cid,p):
     try:
         with open(p,"rb") as f:
             files={"photo": ("image.jpg", f, "image/jpeg")}
             requests.post(f"{TELEGRAM_API}/sendPhoto", data={"chat_id":str(cid)}, files=files, timeout=120)
-    except Exception as e:
-        log(f"photo fail {repr(e)[:400]}")
+    except Exception as e: log(f"photo {repr(e)[:300]}")
 
 def send_video(cid,p):
     try:
         with open(p,"rb") as f:
             files={"video": ("video.mp4", f, "video/mp4")}
             requests.post(f"{TELEGRAM_API}/sendVideo", data={"chat_id":str(cid),"supports_streaming":True}, files=files, timeout=180)
-    except Exception as e:
-        log(f"video fail {repr(e)[:400]}")
+    except Exception as e: log(f"video {repr(e)[:300]}")
 
 processing=set(); plock=threading.Lock()
 
@@ -252,16 +262,11 @@ def process(cid, cinematic=False):
                 return
             processing.add(cid)
         send_text(cid,"Brain generating new idea...\nPro image from text...\nCinematic + trending music...")
-        bal=check_balance_tool()
         idea=brain_generate()
-        log(f"idea ok {idea['title']}")
         img=generate_pro_image(idea["scene_en"])
-        log("image ok")
         add_text_with_share(img, idea["hikma_ar"], idea["full_ar"], idea["hikma_en"], idea["full_en"])
-        log("text ok")
         if cinematic:
             vid=create_cinematic_with_music(img, idea["mood"], duration=10)
-            log("video ok")
             send_video(cid, vid)
             Path(vid).unlink(missing_ok=True)
         else:
@@ -269,12 +274,11 @@ def process(cid, cinematic=False):
         Path(img).unlink(missing_ok=True)
         txt=f"{idea['hikma_ar']}\n{idea['hikma_en']}\n\n{idea['full_ar']}\n{idea['full_en']}\n\n{idea['title']} | SHARE"
         send_text(cid, txt)
-        log("done")
     except Exception as e:
         import traceback
         tb=traceback.format_exc()
-        log(f"ERR {tb[-1000:]}")
-        send_text(cid,f"Error: {repr(e)[:800]}")
+        log(f"ERR {tb[-800:]}")
+        send_text(cid,f"Error: {repr(e)[:700]}")
     finally:
         with plock: processing.discard(cid)
 
@@ -282,9 +286,7 @@ def handle_update(upd):
     msg=upd.get("message") or {}; chat=(msg.get("chat") or {}).get("id"); text=(msg.get("text") or "").strip()
     if not chat: return
     if text.startswith("/start"):
-        send_text(chat,"Hmisc Super Saver FIXED\n/hikma pro image 0.08$\n/cinema video zoom+music 0.08$\n/balance check\n/brain memory"); return
-    if text.startswith("/balance"):
-        bal=check_balance_tool(); send_text(chat,f"Balance: {bal}\nMode: image only 0.08$ = 65 videos"); return
+        send_text(chat,"Hmisc Super Saver FIXED\n/hikma pro image 0.08$\n/cinema video zoom+music 0.08$\n/brain memory"); return
     if text.startswith("/brain"):
         mem=load_memory(); send_text(chat,f"Ideas: {len(mem['ideas'])}"); return
     if text.startswith("/ping"): send_text(chat,f"OK {len(load_memory()['ideas'])} Save 84% no latin-1"); return
