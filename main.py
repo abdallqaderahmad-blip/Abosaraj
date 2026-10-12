@@ -2,7 +2,6 @@ import os, sys, json, time, threading, re, tempfile, random, hashlib, shutil
 from pathlib import Path
 import requests
 from flask import Flask, request
-
 try:
     sys.stdout.reconfigure(encoding='utf-8', errors='ignore')
     sys.stderr.reconfigure(encoding='utf-8', errors='ignore')
@@ -26,20 +25,20 @@ MEMORY_FILE=Path("/tmp/hmisc_brain_memory.json")
 LAST_IMAGE_PATH=Path("/tmp/last_final.jpg")
 TELEGRAM_API=f"https://api.telegram.org/bot{BOT_TOKEN}" if BOT_TOKEN else ""
 
-def log(m): print(f"[V20.4] {str(m)[:900]}", flush=True)
+def log(m): print(f"[V20.5] {str(m)[:900]}", flush=True)
 
 def load_memory():
     if MEMORY_FILE.exists():
         try:
             mem=json.loads(MEMORY_FILE.read_text(encoding='utf-8'))
-            for k in ["music_history","ideas","scenes"]:
+            for k in ["ideas","scenes"]:
                 if k not in mem: mem[k]=[]
             return mem
         except: pass
-    return {"ideas":[],"scenes":[],"music_history":[]}
+    return {"ideas":[],"scenes":[]}
 
 def save_memory(mem):
-    mem["ideas"]=mem["ideas"][-300:]; mem["scenes"]=mem["scenes"][-300:]; mem["music_history"]=mem.get("music_history",[])[-15:]
+    mem["ideas"]=mem["ideas"][-300:]; mem["scenes"]=mem["scenes"][-300:]
     MEMORY_FILE.write_text(json.dumps(mem, ensure_ascii=False), encoding='utf-8')
 
 def is_dup(s, mem): return any(old[:12] in s[:12] for old in mem["scenes"][-150:])
@@ -155,44 +154,23 @@ def ensure_fonts():
     base=Path("/tmp/fonts"); base.mkdir(exist_ok=True)
     amiri=base/"Amiri-Bold.ttf"
     dejavu=Path("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf")
-    dejavu_extra=base/"DejaVuSans-Bold.ttf"
-    # حمل DejaVu لو مش موجود
-    if not dejavu.exists() and not dejavu_extra.exists():
+    dejavu2=base/"DejaVuSans-Bold.ttf"
+    if not amiri.exists() or amiri.stat().st_size<10000:
+        try:
+            r=requests.get("https://github.com/google/fonts/raw/main/ofl/amiri/Amiri-Bold.ttf", timeout=30)
+            if r.status_code==200: amiri.write_bytes(r.content)
+        except: pass
+    if not dejavu.exists() and not dejavu2.exists():
         try:
             r=requests.get("https://github.com/dejavu-fonts/dejavu-fonts/raw/master/ttf/DejaVuSans-Bold.ttf", timeout=30)
-            if r.status_code==200: dejavu_extra.write_bytes(r.content)
+            if r.status_code==200: dejavu2.write_bytes(r.content)
         except: pass
-    if not amiri.exists() or amiri.stat().st_size<10000:
-        for url in ["https://github.com/google/fonts/raw/main/ofl/amiri/Amiri-Bold.ttf"]:
-            try:
-                r=requests.get(url, timeout=30)
-                if r.status_code==200 and len(r.content)>10000:
-                    amiri.write_bytes(r.content); break
-            except: continue
-    d_path = dejavu if dejavu.exists() else dejavu_extra if dejavu_extra.exists() else None
-    a_path = amiri if amiri.exists() and amiri.stat().st_size>10000 else None
-    return a_path, d_path
-
-REAL_MUSIC = [
-    "https://assets.mixkit.co/music/preview/mixkit-sad-piano-1071.mp3",
-    "https://assets.mixkit.co/music/preview/mixkit-reflections-09-124.mp3",
-    "https://assets.mixkit.co/music/preview/mixkit-lost-in-dreams-159.mp3",
-    "https://assets.mixkit.co/music/preview/mixkit-sad-moment-1213.mp3",
-]
-
-def get_music():
-    mem=load_memory()
-    hist=mem.get("music_history",[])
-    avail=[m for m in REAL_MUSIC if m not in hist]
-    if not avail: avail=REAL_MUSIC; hist=[]
-    pick=random.choice(avail)
-    hist.append(pick)
-    mem["music_history"]=hist[-12:]
-    save_memory(mem)
-    return pick
+    a=amiri if amiri.exists() else None
+    d=dejavu if dejavu.exists() else dejavu2 if dejavu2.exists() else None
+    return a,d
 
 def create_reels_video(image_path, idea, duration=9):
-    from moviepy.editor import ImageClip, AudioFileClip, CompositeVideoClip, AudioClip
+    from moviepy.editor import ImageClip, CompositeVideoClip, AudioClip
     from PIL import Image, ImageDraw, ImageFont
     import numpy as np
     try:
@@ -200,6 +178,7 @@ def create_reels_video(image_path, idea, duration=9):
         from bidi.algorithm import get_display
         HAS_AR=True
     except: HAS_AR=False
+
     amiri_path, dejavu_path = ensure_fonts()
     has_ar = amiri_path and amiri_path.exists() and HAS_AR
 
@@ -211,29 +190,17 @@ def create_reels_video(image_path, idea, duration=9):
         return t
 
     W,H=1080,1920
-    # زوم 40% واضح
     base=ImageClip(str(image_path), duration=duration).resize(lambda t: 1.0 + 0.40*t/duration).set_position('center')
 
     def make_box(ar_text, en_text, is_top=True):
-        h=620 # اكبر عشان الانجليزي
+        h=620
         bg=(242,230,195) if is_top else (14,14,14)
         img=Image.new('RGB',(W,h),bg)
         d=ImageDraw.Draw(img)
         try:
-            # AR 90px EN 72px كبير جدا - زي الصورة اللي فوق
-            if amiri_path and amiri_path.exists():
-                f_ar=ImageFont.truetype(str(amiri_path), 92)
-            elif dejavu_path and Path(dejavu_path).exists():
-                f_ar=ImageFont.truetype(str(dejavu_path), 78)
-            else:
-                f_ar=ImageFont.load_default()
-
-            if dejavu_path and Path(dejavu_path).exists():
-                f_en=ImageFont.truetype(str(dejavu_path), 72)
-                f_share=ImageFont.truetype(str(dejavu_path), 36)
-            else:
-                f_en=ImageFont.load_default()
-                f_share=ImageFont.load_default()
+            f_ar=ImageFont.truetype(str(amiri_path), 92) if amiri_path and amiri_path.exists() else ImageFont.truetype(str(dejavu_path), 80) if dejavu_path else ImageFont.load_default()
+            f_en=ImageFont.truetype(str(dejavu_path), 74) if dejavu_path and Path(dejavu_path).exists() else ImageFont.load_default()
+            f_share=ImageFont.truetype(str(dejavu_path), 34) if dejavu_path else ImageFont.load_default()
         except:
             f_ar=f_en=f_share=ImageFont.load_default()
 
@@ -241,21 +208,17 @@ def create_reels_video(image_path, idea, duration=9):
         en_clean=str(en_text).strip().upper()
 
         try:
-            # عربي فوق كبير
+            # AR 92px
             bbox_ar=d.textbbox((0,0), ar_fixed, font=f_ar)
-            ar_x=(W-(bbox_ar[2]-bbox_ar[0]))//2
-            d.text((ar_x, 85), ar_fixed, font=f_ar, fill=(15,15,15) if is_top else (242,230,195))
-
-            # انجليزي تحت - كبير جدا 72px - زي الصورة
+            d.text(((W-(bbox_ar[2]-bbox_ar[0]))//2, 85), ar_fixed, font=f_ar, fill=(12,12,12) if is_top else (242,230,195))
+            # EN 74px كبير جدا
             bbox_en=d.textbbox((0,0), en_clean, font=f_en)
-            en_x=(W-(bbox_en[2]-bbox_en[0]))//2
-            d.text((en_x, 285), en_clean, font=f_en, fill=(20,20,20) if is_top else (245,245,245))
-
-            d.text((W-210, 22), "> SHARE", font=f_share, fill=(90,90,90) if is_top else (130,130,130))
+            d.text(((W-(bbox_en[2]-bbox_en[0]))//2, 295), en_clean, font=f_en, fill=(25,25,25) if is_top else (240,240,240))
+            d.text((W-205, 22), "> SHARE", font=f_share, fill=(90,90,90) if is_top else (120,120,120))
         except Exception as ex:
-            log(f"box fail {ex}")
-            d.text((80,100), str(ar_text), fill=(0,0,0))
-            d.text((80,300), en_clean, fill=(20,20,20))
+            log(f"box {ex}")
+            d.text((60,80), ar_text, fill=(0,0,0))
+            d.text((60,300), en_clean, fill=(0,0,0))
 
         p=Path(tempfile.gettempdir())/f"b_{random.randint(1,9999999)}.png"
         img.save(p, quality=98)
@@ -267,91 +230,51 @@ def create_reels_video(image_path, idea, duration=9):
     bottom_c=ImageClip(str(bottom_p), duration=duration).set_position((0, H-620))
     final=CompositeVideoClip([base, top_c, bottom_c], size=(W,H)).set_duration(duration)
 
-    mp=Path(tempfile.gettempdir())/f"m_{random.randint(1,99999)}.mp3"
-    audio_added=False
+    # ===== موسيقى مضمونة 100% - توليد داخلي بدون تحميل - مستحيل تفشل =====
+    try:
+        log("Generating Sad Piano Lo-fi internally - guaranteed")
+        def _single(tt):
+            cycle = tt % 9.0
+            pos = cycle % 2.25
+            if cycle < 2.25: freqs=[220.00, 261.63, 329.63] # Am
+            elif cycle < 4.5: freqs=[174.61, 220.00, 261.63] # F
+            elif cycle < 6.75: freqs=[130.81, 164.81, 196.00] # C low sad
+            else: freqs=[196.00, 246.94, 293.66] # G
+            decay = max(0.06, float(np.exp(-pos*1.7)))
+            v=0.0
+            for i,f in enumerate(freqs):
+                amp=[0.55,0.32,0.22][i]
+                n=amp*np.sin(2*np.pi*f*tt)*decay
+                n+=amp*0.35*np.sin(2*np.pi*f*2*tt)*decay*0.45
+                n+=amp*0.12*np.sin(2*np.pi*f*3*tt)*decay*0.18
+                n*= (1.0 + 0.012*np.sin(2*np.pi*5.2*tt))
+                v+=n
+            return v*0.40
 
-    # محاولة موسيقى حقيقية
-    for _ in range(8):
-        try:
-            url=get_music()
-            log(f"music try {url[-40:]}")
-            headers={"User-Agent":"Mozilla/5.0","Referer":"https://mixkit.co/","Accept":"*/*"}
-            r=requests.get(url, timeout=50, headers=headers, stream=True)
-            if r.status_code!=200: continue
-            with open(mp,'wb') as f:
-                for ch in r.iter_content(32768):
-                    if ch: f.write(ch)
-            size=mp.stat().st_size if mp.exists() else 0
-            if size < 30000:
-                if mp.exists(): mp.unlink(missing_ok=True)
-                continue
-            full_audio=AudioFileClip(str(mp))
-            if full_audio.duration < 1.5:
-                full_audio.close(); mp.unlink(missing_ok=True); continue
-            if full_audio.duration > duration:
-                start = max(0, (full_audio.duration-duration)/2.5)
-                audio=full_audio.subclip(start, start+duration)
+        def sad_frame(t):
+            if isinstance(t, (int,float,np.floating)):
+                v=_single(float(t))
+                return np.array([v, v], dtype=np.float32)
             else:
-                from moviepy.audio.fx.all import audio_loop
-                try: audio=audio_loop(full_audio, duration=duration)
-                except:
-                    from moviepy.editor import concatenate_audioclips
-                    audio=concatenate_audioclips([full_audio]*5).subclip(0,duration)
-            audio=audio.volumex(0.75).audio_fadein(0.9).audio_fadeout(1.4)
-            final=final.set_audio(audio)
-            audio_added=True
-            log("music OK REAL")
-            break
-        except Exception as e:
-            log(f"music err {e}")
-            if mp.exists(): mp.unlink(missing_ok=True)
-            continue
+                arr=np.atleast_1d(t).astype(float)
+                vals=np.array([_single(float(x)) for x in arr], dtype=np.float32)
+                return np.column_stack([vals, vals])
 
-    # Fallback بيانو Lo-fi حقيقي - مصلح ambiguous
-    if not audio_added:
-        try:
-            log("FALLBACK Sad Piano")
-            def _single(tt):
-                cycle = tt % 9.0
-                pos = cycle % 2.25
-                if cycle < 2.25: freqs=[220.0,261.63,329.63]
-                elif cycle < 4.5: freqs=[174.61,220.0,261.63]
-                elif cycle < 6.75: freqs=[261.63,329.63,392.0]
-                else: freqs=[196.0,246.94,293.66]
-                decay = max(0.05, float(np.exp(-pos*1.8)))
-                val=0.0
-                for i,f in enumerate(freqs):
-                    amp=[0.5,0.3,0.2][i]
-                    note = amp*np.sin(2*np.pi*f*tt)*decay
-                    note += amp*0.4*np.sin(2*np.pi*f*2*tt)*decay*0.5
-                    val+=note
-                val*=0.38
-                return val
-
-            def sad_frame(t):
-                # مصلح: يتعامل مع array و single
-                if isinstance(t, (int,float,np.floating)):
-                    v=_single(float(t))
-                    return np.array([v, v], dtype=np.float32)
-                else:
-                    arr=np.atleast_1d(t).astype(float)
-                    vals=np.array([_single(float(x)) for x in arr], dtype=np.float32)
-                    return np.column_stack([vals, vals])
-
-            fallback_audio=AudioClip(sad_frame, duration=duration).volumex(0.85).audio_fadein(0.8).audio_fadeout(1.6)
-            final=final.set_audio(fallback_audio)
-            audio_added=True
-            log("FALLBACK OK")
-        except Exception as e:
-            import traceback
-            log(f"fallback fail {e}")
+        music=AudioClip(sad_frame, duration=duration).volumex(0.9).audio_fadein(0.8).audio_fadeout(1.6)
+        final=final.set_audio(music)
+        has_audio=True
+        log("Music OK - internal piano")
+    except Exception as e:
+        import traceback
+        log(f"music fail {e} {traceback.format_exc()[-400:]}")
+        has_audio=False
 
     out=Path(tempfile.gettempdir())/f"reel_{int(time.time())}.mp4"
-    final.write_videofile(str(out), fps=30, codec='libx264', audio_codec='aac' if audio_added else None, preset='ultrafast', bitrate="8000k", logger=None)
-    for p in [top_p,bottom_p,mp]:
+    final.write_videofile(str(out), fps=30, codec='libx264', audio_codec='aac' if has_audio else None, preset='ultrafast', bitrate="8000k", logger=None)
+    for p in [top_p,bottom_p]:
         try: Path(p).unlink(missing_ok=True)
         except: pass
-    return out, audio_added
+    return out, has_audio
 
 def send_text(cid,t):
     try: requests.post(f"{TELEGRAM_API}/sendMessage", json={"chat_id":cid,"text":str(t)}, timeout=30)
@@ -371,24 +294,24 @@ def process(cid, cinematic=False, force_new=False):
             if cid in processing: send_text(cid,"⏳ يولد..."); return
             processing.add(cid)
         if force_new:
-            send_text(cid,"✨ V20.4 NEW\nEN 72px AR 92px كبير\n🎵 حزينة تريند | زوم 40%")
+            send_text(cid,"✨ V20.5 NEW\nEN 74px AR 92px | 🎵 بيانو داخلي مضمون")
             idea=brain_generate_smart()
             send_text(cid,f"✅ {idea['action_ar']} -> {idea['reaction_ar']}\nEN {idea['action_en']} -> {idea['reaction_en']}")
             combined,qmsg=generate_two_in_one(idea, force_new=True)
         else:
             if not LAST_IMAGE_PATH.exists() or LAST_IMAGE_PATH.stat().st_size<50000:
-                send_text(cid,"⚠️ ما في cache - بولد جديد مرة وحدة")
+                send_text(cid,"⚠️ ما في cache - بولد جديد")
                 idea=brain_generate_smart()
                 combined,qmsg=generate_two_in_one(idea, force_new=True)
             else:
                 idea={"action_ar":"تحفظهم ككلمة مرور","reaction_ar":"فينسونك كإعلان","action_en":"SAVE AS PASSWORD","reaction_en":"FORGOTTEN LIKE ADS"}
                 combined=LAST_IMAGE_PATH
-                qmsg="CACHED 0$ - مجاني"
-                send_text(cid,"🧪 TEST مجاني 0$ | EN 72px كبير | موسيقى حزينة")
+                qmsg="CACHED 0$"
+                send_text(cid,"🧪 TEST مجاني | EN كبير 74px | موسيقى مضمونة")
         send_text(cid,f"✅ صور | {qmsg}")
         if cinematic:
             vid,has_audio=create_reels_video(combined, idea, 9)
-            send_text(cid,f"✅ فيديو {'🎵 حزينة' if has_audio else '🔇'} | 9ث | EN كبير")
+            send_text(cid,f"✅ فيديو {'🎵 حزينة مضمونة' if has_audio else '🔇'} | 9ث")
             send_video(cid, vid)
             if vid and Path(vid).exists() and Path(vid)!=LAST_IMAGE_PATH:
                 Path(vid).unlink(missing_ok=True)
@@ -407,9 +330,9 @@ def handle_update(upd):
         if not chat: return
         if text.startswith("/start"):
             has=LAST_IMAGE_PATH.exists() and LAST_IMAGE_PATH.stat().st_size>50000
-            send_text(chat,f"V20.4 FINAL ✅\nEN 72px AR 92px - كبير زي الصورة\n🎵 حزينة تريند - مصلح صامت\nزوم 40%\n\n/cinema جديد\n/test_video مجاني {'✅' if has else '⚠️ اول مرة بفلوس'}\n/ping")
+            send_text(chat,f"V20.5 FINAL ✅\nEN 74px AR 92px كبير\n🎵 بيانو داخلي مضمون - مش صامت\nزوم 40%\n\n/cinema جديد\n/test_video مجاني {'✅' if has else '⚠️'}\n/ping")
             return
-        if text.startswith("/ping"): send_text(chat,f"V20.4 | cache:{'نعم' if LAST_IMAGE_PATH.exists() else 'لا'}"); return
+        if text.startswith("/ping"): send_text(chat,f"V20.5 | cache:{'نعم' if LAST_IMAGE_PATH.exists() else 'لا'}"); return
         if "/test_video" in text:
             if LAST_IMAGE_PATH.exists() and LAST_IMAGE_PATH.stat().st_size>50000:
                 threading.Thread(target=process, args=(chat, True, False), daemon=True).start()
@@ -421,7 +344,7 @@ def handle_update(upd):
     except Exception as e: log(f"handle {e}")
 
 @app.get("/")
-def home(): return f"V20.4 FINAL cached={LAST_IMAGE_PATH.exists()}",200
+def home(): return f"V20.5 FINAL cached={LAST_IMAGE_PATH.exists()}",200
 @app.post("/telegram/webhook")
 def wh():
     upd=request.get_json(silent=True) or {}
