@@ -1,6 +1,7 @@
 import os
 import requests
 import json
+import time
 from flask import Flask, request
 
 TOKEN = (os.getenv("BOT_TOKEN") or "").strip()
@@ -8,7 +9,6 @@ GROQ_KEY = (os.getenv("GROQ_API_KEY") or "").strip()
 
 flask_app = Flask(__name__)
 
-# حماية من مشكلة groq
 groq_client = None
 if GROQ_KEY:
     try:
@@ -16,7 +16,7 @@ if GROQ_KEY:
         groq_client = Groq(api_key=GROQ_KEY)
         print("✅ Groq OK")
     except Exception as e:
-        print(f"⚠️ Groq failed: {e} - سيعمل بدون AI")
+        print(f"⚠️ Groq fail: {e}")
         groq_client = None
 
 def tele_api():
@@ -39,8 +39,8 @@ def generate_hikma():
         "ar_top": "لا تنتظر ما في أيدي الناس",
         "ar_bottom": "فما كتبه الله لك سيأتيك",
         "en": "Don't wait for what is in people's hands",
-        "scene_top": "cute yellow blob character sitting alone sad looking at empty hands of crowd",
-        "scene_bottom": "same yellow blob character happy, small gift box falling from sky",
+        "scene_top": "small yellow blob character sitting alone sad, crowd empty hands, minimal doodle",
+        "scene_bottom": "same yellow blob character looking at sky peaceful, gift from sky",
         "full": "لا تنتظر ما في أيدي الناس فما كتبه الله لك سيأتيك"
     }
     if not groq_client:
@@ -48,7 +48,7 @@ def generate_hikma():
     try:
         r = groq_client.chat.completions.create(
             model="llama3-70b-8192",
-            messages=[{"role":"user","content":'Write JSON only: {"ar_top":"سطر عربي قصير","ar_bottom":"سطر ثاني","en":"english","scene_top":"top scene yellow blob sad","scene_bottom":"bottom scene yellow blob happy","full":"كاملة"}'}],
+            messages=[{"role":"user","content":'Write JSON only: {"ar_top":"سطر عربي قصير 5 كلمات","ar_bottom":"سطر ثاني 5 كلمات","en":"english short","scene_top":"top scene description simple yellow blob sad","scene_bottom":"bottom scene description same yellow blob happy","full":"الحكمة كاملة عربية"}'}],
             response_format={"type":"json_object"}
         )
         return json.loads(r.choices[0].message.content)
@@ -57,20 +57,27 @@ def generate_hikma():
         return fallback
 
 def gen_img(desc):
-    prompt = f"hmisc style, cozy minimalist illustration, cute little yellow blob character with thin black outline dot eyes, hand drawn watercolor on textured beige paper, {desc}"
-    url = f"https://image.pollinations.ai/prompt/{requests.utils.quote(prompt)}?width=1024&height=1280&model=turbo&nologo=true&enhance=true&seed={abs(hash(desc)) % 100000}"
+    # ستايل Hmisc الحقيقي المسطح 2D - مو 3D
+    prompt = f"hmisc illustration style, flat 2d doodle, cute simple yellow blob character with tiny black dot eyes and thin black outline, hand drawn childish doodle, soft watercolor flat colors, textured off-white paper background, minimal cozy story, NOT 3d, NOT clay, NOT realistic, NOT shiny, NOT plastic, {desc}, by hmisc"
+    # flux يعطي رسم مسطح - turbo يعطي 3d
+    url = f"https://image.pollinations.ai/prompt/{requests.utils.quote(prompt)}?width=1024&height=1280&model=flux&nologo=true&seed={abs(hash(desc)) % 999999}"
     try:
-        res = requests.get(url, timeout=60)
-        if res.status_code!= 200: return None
+        print(f"Generating: {desc[:50]}")
+        res = requests.get(url, timeout=90)
+        if res.status_code!= 200:
+            print(f"Image failed {res.status_code}")
+            return None
         p = f"/tmp/{abs(hash(desc))}.jpg"
-        with open(p, "wb") as f: f.write(res.content)
+        with open(p, "wb") as f:
+            f.write(res.content)
         return p
-    except: return None
+    except Exception as e:
+        print(f"gen_img error: {e}")
+        return None
 
 @flask_app.route('/')
 def home():
-    if not TOKEN:
-        return "❌ BOT_TOKEN missing", 500
+    if not TOKEN: return "❌ BOT_TOKEN missing", 500
     return f"✅ Live - Groq: {bool(groq_client)} - /setwebhook"
 
 @flask_app.route('/setwebhook')
@@ -91,23 +98,31 @@ def webhook_handler(token):
         text = data["message"].get("text", "")
 
         if "/start" in text:
-            send_msg(chat_id, "🎨 شغال ✅\n/hikma - حكمة\n/idea - فكرة")
+            send_msg(chat_id, "🎨 Hmisc Factory شغال ✅\n\n/hikma - يصنع حكمة بصورتين\n/idea - فكرة نصية")
 
         elif "/idea" in text:
             d = generate_hikma()
-            send_msg(chat_id, f"{d['full']}\n\n{d['en']}")
+            send_msg(chat_id, f"💡 {d['full']}\n\n{d['en']}")
 
         elif "/hikma" in text:
-            send_msg(chat_id, "⏳ بصنع... 20 ثانية")
+            send_msg(chat_id, "⏳ بصنع الفكرة... 20 ثانية ⏳")
             d = generate_hikma()
-            send_msg(chat_id, f"💡 {d['full']}\n🎨 بصنع الصور...")
+            send_msg(chat_id, f"💡 {d['full']}\nEN: {d['en']}\n\n🎨 بصنع الصورتين ستايل hmisc الأصلي...")
+
             p1 = gen_img(d['scene_top'])
+            if p1:
+                send_photo(chat_id, p1, d['ar_top'])
+                time.sleep(2)
+
             p2 = gen_img(d['scene_bottom'])
-            if p1: send_photo(chat_id, p1, d['ar_top'])
-            if p2: send_photo(chat_id, p2, d['ar_bottom'])
+            if p2:
+                send_photo(chat_id, p2, f"{d['ar_bottom']}\n\n{d['en']}\n\n#حكمة")
+
+            if not p1 and not p2:
+                send_msg(chat_id, "❌ فشل الصور جرب /hikma تاني")
 
     except Exception as e:
-        print(e)
+        print(f"Error: {e}")
     return "ok", 200
 
 if __name__ == "__main__":
