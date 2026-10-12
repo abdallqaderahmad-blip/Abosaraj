@@ -1,5 +1,11 @@
-flask==3.0.3
-requests==2.32.3
-groq==0.11.0
-httpx==0.27.2
-gunicorn==22.0.0
+flask
+requests
+groq
+httpx
+gunicorn
+Pillow
+arabic-reshaper
+python-bidi
+moviepy==1.0.3
+imageio-ffmpeg
+numpy
