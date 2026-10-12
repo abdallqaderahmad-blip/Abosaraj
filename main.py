@@ -28,12 +28,11 @@ MEMORY_FILE=Path("/tmp/hmisc_brain_memory.json")
 ARCHIVE_DIR=Path("/tmp/archive_images"); ARCHIVE_DIR.mkdir(exist_ok=True)
 TELEGRAM_API=f"https://api.telegram.org/bot{BOT_TOKEN}" if BOT_TOKEN else ""
 
-def log(m): print(f"[V11-SHA] {str(m)[:900]}", flush=True)
+def log(m): print(f"[V12-FIXED-AUDIO] {str(m)[:900]}", flush=True)
 
 def send_error_report(cid, where, error, extra=""):
     import traceback
     tb=traceback.format_exc()[-1000:]
-    # لا ترسل سبام للموسيقى - سجل بس
     if "موسيقى" in where or "music" in where.lower():
         log(f"music warn {where} {error}")
         return
@@ -79,12 +78,7 @@ def piapi_wait(tid):
 def download_file(url, path, is_music=False):
     path=Path(path)
     if is_music:
-        headers={
-            "User-Agent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Referer":"https://pixabay.com/",
-            "Accept":"*/*",
-            "Accept-Language":"en-US,en;q=0.9",
-        }
+        headers={"User-Agent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36","Referer":"https://pixabay.com/","Accept":"*/*"}
     else:
         headers={"User-Agent":"Mozilla/5.0"}
     with requests.get(url, timeout=120, stream=True, headers=headers, allow_redirects=True) as rr:
@@ -126,9 +120,6 @@ SPECIAL_VIRAL_HOOKS = [
     "تترك مشاعرك متصلة -> فيستهلكون بطاريتك ويرحلون",
     "تجعلهم المفضلة -> فيجعلونك سجل المكالمات",
     "تكتبهم في ملاحظاتك -> فيكتبونك في المنسيات",
-    "تفتح لهم نافذة قلبك -> فيفتحون نافذة أخرى بجانبك",
-    "تضعهم في الواجهة -> فيضعونك في الخلفية",
-    "تحفظهم في السحابة -> فيحذفونك من الذاكرة"
 ]
 
 def brain_generate_smart(cid=None):
@@ -146,12 +137,12 @@ def brain_generate_smart(cid=None):
     }
     if not groq: return fallback
     recent=", ".join(mem["ideas"][-60:]) or "none"
-    hooks_sample = random.sample(SPECIAL_VIRAL_HOOKS, 4)
+    hooks_sample = random.sample(SPECIAL_VIRAL_HOOKS, 3)
     for attempt in range(15):
         try:
             prompt=f"""Avoid: {recent}
 Inspiration: {"; ".join(hooks_sample)}
-Create viral unseen proverb 3-4 words each for Reels 9 sec hook. Modern: archive, password, mute, favorite, airplane mode, cloud
+Create viral unseen proverb 3-4 words each for Reels 9 sec hook. Modern: archive, password, mute, favorite
 Return JSON ONLY: {{"action_ar":"فعل 3-4 كلمات","reaction_ar":"رد فعل 3-4 كلمات","action_en":"cause 3-4 words","reaction_en":"effect 3-4 words","character":"same young man 28yo male white t-shirt short black hair light beard same face - LOCKED","location":"same small apartment evening warm light window left - LOCKED","scene_action_en":"sitting upright on sofa holding phone close to chest hopeful bright","scene_reaction_en":"TOTALLY DIFFERENT lying on floor head in hands crying phone far away dark","mood":"sad_deep","title":"two words"}}"""
             content=""
             for model_try in ["llama-3.3-70b-versatile","llama3-70b-8192","mixtral-8x7b-32768"]:
@@ -182,7 +173,6 @@ Return JSON ONLY: {{"action_ar":"فعل 3-4 كلمات","reaction_ar":"رد فع
             log(f"HOOK OK {ar1} -> {ar2}")
             return j
         except: time.sleep(0.6); continue
-    if cid: send_text(cid,"⚠️ استخدم مثل احتياطي Special")
     return fallback
 
 def generate_two_in_one(idea, cid=None):
@@ -273,27 +263,63 @@ def create_reels_video(image_path, idea, duration=9, cid=None):
     bottom_c=ImageClip(str(bottom_p), duration=duration).set_position((0, H-270))
     final=CompositeVideoClip([base, top_c, bottom_c], size=(W,H)).set_duration(duration)
 
-    # موسيقى - لو فشلت يكمل بدون صوت بدون سبام غلط
+    # === حل غلط الموسيقى 3 ثواني ===
     mp=Path(tempfile.gettempdir())/f"mus_{random.randint(1,99999)}.mp3"
     audio_added=False
     for _ in range(5):
         try:
             music_url=get_music(idea.get("mood","sad_deep"))
             download_file(music_url, mp, is_music=True)
-            if mp.exists() and mp.stat().st_size>15000:
-                audio=AudioFileClip(str(mp)).subclip(0,duration).volumex(0.88).audio_fadein(0.5).audio_fadeout(0.8)
-                final=final.set_audio(audio)
-                audio_added=True
-                log(f"music OK {music_url[:50]}")
-                break
+            if not mp.exists() or mp.stat().st_size < 15000:
+                if mp.exists(): mp.unlink(missing_ok=True)
+                continue
+
+            full_audio = AudioFileClip(str(mp))
+            dur = full_audio.duration
+            log(f"music file dur={dur}s size={mp.stat().st_size//1024}KB url={music_url[:40]}")
+
+            # لو الملف تالف أو قصير جدا <0.8 ثانية تخطاه
+            if dur < 0.8:
+                full_audio.close()
+                mp.unlink(missing_ok=True)
+                continue
+
+            # حل الغلط: لو أقصر من 9 ثواني اعمل loop
+            if dur < duration:
+                try:
+                    from moviepy.audio.fx.all import audio_loop
+                    audio = audio_loop(full_audio, duration=duration)
+                except:
+                    # fallback قديم: كرر يدوي
+                    from moviepy.editor import concatenate_audioclips
+                    loops = int(duration // dur) + 1
+                    clips = [full_audio]*loops
+                    audio = concatenate_audioclips(clips).subclip(0, duration)
+            else:
+                # طويلة - قص 9 ثواني فقط
+                audio = full_audio.subclip(0, duration)
+
+            audio = audio.volumex(0.88).audio_fadein(0.4).audio_fadeout(0.7)
+            final = final.set_audio(audio)
+            audio_added=True
+            log(f"music OK dur {dur} -> {duration}")
+            break
+
         except Exception as e:
-            log(f"music try fail {e}")
+            log(f"music attempt fail {e}")
+            try:
+                if 'full_audio' in locals(): full_audio.close()
+            except: pass
             if mp.exists(): mp.unlink(missing_ok=True)
+            time.sleep(0.3)
             continue
 
     out=Path(tempfile.gettempdir())/f"reel9s_{int(time.time())}.mp4"
+    # لو ما في صوت استخدم None عشان ما يعلق
     final.write_videofile(str(out), fps=30, codec='libx264', audio_codec='aac' if audio_added else None, preset='ultrafast', bitrate="9000k", logger=None)
-    for p in [top_p,bottom_p,mp]: Path(p).unlink(missing_ok=True)
+    for p in [top_p,bottom_p,mp]:
+        try: Path(p).unlink(missing_ok=True)
+        except: pass
     return out, audio_added
 
 def send_text(cid,t):
@@ -316,9 +342,9 @@ def process(cid, cinematic=False):
         with plock:
             if cid in processing: send_text(cid,"⏳ يولد..."); return
             processing.add(cid)
-        send_text(cid,"✨ V11 شامل 9ث Special\n🎯 فعل ورد فعل غريب غير منتشر\n🎨 صورتين مختلفتين جذريا\n🎵 بدون علامة بدون راوي\n📱 1080x1920 ريلز + شورت")
+        send_text(cid,"✨ V12 FIXED AUDIO 9ث Special\n🎯 فعل ورد فعل غريب غير منتشر\n🎨 صورتين مختلفتين جذريا\n🎵 بدون علامة بدون راوي\n📱 1080x1920 ريلز + شورت")
 
-        send_text(cid,"⏳ 1/3 بحث ذكي مدفوع عن مثل hook يجذب مشاهدات...")
+        send_text(cid,"⏳ 1/3 بحث ذكي عن مثل hook...")
         idea=brain_generate_smart(cid)
         send_text(cid,f"✅ HOOK:\n🔹 {idea['action_ar']}\n🔸 {idea['reaction_ar']}\nEN: {idea['action_en']} -> {idea['reaction_en']}")
 
@@ -327,9 +353,9 @@ def process(cid, cinematic=False):
         send_text(cid,f"✅ صورتين | {qmsg}")
 
         if cinematic:
-            send_text(cid,"⏳ 3/3 مونتاج 9 ثواني زوم حلو...")
+            send_text(cid,"⏳ 3/3 مونتاج 9 ثواني زوم حلو (مصلح غلط 3 ثواني)...")
             vid, has_audio=create_reels_video(combined, idea, duration=9, cid=cid)
-            send_text(cid,f"✅ رفع 9ث {'🎵 بموسيقى' if has_audio else '🔇 بدون موسيقى - pixabay محجوب'}...")
+            send_text(cid,f"✅ رفع 9ث {'🎵 بموسيقى' if has_audio else '🔇 بدون موسيقى'}...")
             send_video(cid, vid)
         else:
             send_photo(cid, combined)
@@ -352,8 +378,8 @@ def handle_update(upd):
     try:
         msg=upd.get("message") or {}; chat=(msg.get("chat") or {}).get("id"); text=(msg.get("text") or "").strip()
         if not chat: return
-        if text.startswith("/start"): send_text(chat,"V11 شامل 9ث 🔒\n✅ فعل ورد فعل غريب غير منتشر 3-4 كلمات\n✅ بحث ذكي مدفوع hook يجذب مشاهدات\n✅ صورتين مختلفتين جذريا بصورة وحدة\n✅ بدون علامة مائية بدون راوي\n✅ 9 ثواني 1080x1920 ريلز + شورت\n✅ أي غلط حقيقي ببين بالبوت - الموسيقى لو فشلت بيكمل\n/hikma صورة\n/cinema فيديو 9ث"); return
-        if text.startswith("/ping"): send_text(chat,f"✅ V11 {len(list(ARCHIVE_DIR.glob('*.jpg')))}"); return
+        if text.startswith("/start"): send_text(chat,"V12 FIXED AUDIO 9ث 🔒\n✅ فعل ورد فعل غريب 3-4 كلمات\n✅ بحث ذكي hook يجذب مشاهدات\n✅ صورتين مختلفتين جذريا\n✅ بدون علامة بدون راوي\n✅ 9ث ريلز + شورت مصلح غلط الموسيقى 3ث\n/hikma صورة\n/cinema فيديو 9ث"); return
+        if text.startswith("/ping"): send_text(chat,f"✅ V12 {len(list(ARCHIVE_DIR.glob('*.jpg')))}"); return
         if "/cinema" in text: threading.Thread(target=process, args=(chat, True), daemon=True).start(); return
         if "/hikma" in text: threading.Thread(target=process, args=(chat, False), daemon=True).start(); return
     except Exception as e:
@@ -363,7 +389,7 @@ def handle_update(upd):
         except: log(f"fatal {e}")
 
 @app.get("/")
-def home(): return f"V11 SHA 9SEC {len(list(ARCHIVE_DIR.glob('*.jpg')))} AUTO=OFF",200
+def home(): return f"V12 FIXED AUDIO 9SEC {len(list(ARCHIVE_DIR.glob('*.jpg')))} AUTO=OFF",200
 @app.post("/telegram/webhook")
 def wh():
     upd=request.get_json(silent=True) or {}
