@@ -3,7 +3,6 @@ from pathlib import Path
 import requests
 from flask import Flask, request
 
-# FIX PIL
 try:
     from PIL import Image as _PILImage
     if not hasattr(_PILImage, 'ANTIALIAS'):
@@ -62,7 +61,7 @@ def brain_generate():
     for _ in range(4):
         try:
             prompt=f"""Memory: {recent}
-Generate ONE NEW viral idea totally different. Scenarios: hourglass, seed planting, broken chain, lighthouse, maze, heavy bag rope, empty jar, mirror, cliff.
+Generate ONE NEW viral idea totally different. Scenarios: hourglass, seed, chain, lighthouse, maze, heavy bag rope, jar, mirror, cliff.
 JSON: {{"hikma_ar":"6 كلمات عربية","full_ar":"25 كلمة عربية","hikma_en":"6 words en","full_en":"25 words en","scene_en":"detailed two panels yellow bean","mood":"hopeful_joy","title":"short"}}"""
             res=groq.chat.completions.create(model=GROQ_MODEL, temperature=1.1, max_completion_tokens=2000, response_format={"type":"json_object"}, messages=[{"role":"user","content":prompt}])
             j=json.loads(res.choices[0].message.content)
@@ -202,28 +201,17 @@ def send_text(cid,t):
         requests.post(f"{TELEGRAM_API}/sendMessage", json={"chat_id":cid,"text":t}, timeout=20)
     except: pass
 
-def send_photo(cid,p,c=""):
+def send_photo(cid,p):
     try:
         with open(p,"rb") as f:
-            requests.post(f"{TELEGRAM_API}/sendPhoto", data={"chat_id":str(cid),"caption":c.encode('utf-8') if isinstance(c,str) else c}, files={"photo":f}, timeout=120)
-    except Exception as e:
-        log(f"photo {e}")
-        # fallback english only caption
-        try:
-            with open(p,"rb") as f:
-                requests.post(f"{TELEGRAM_API}/sendPhoto", data={"chat_id":str(cid),"caption":"hmisc pro image - share"}, files={"photo":f}, timeout=120)
-        except: pass
+            requests.post(f"{TELEGRAM_API}/sendPhoto", data={"chat_id":str(cid)}, files={"photo":f}, timeout=120)
+    except Exception as e: log(f"photo {e}")
 
-def send_video(cid,p,c=""):
+def send_video(cid,p):
     try:
         with open(p,"rb") as f:
-            requests.post(f"{TELEGRAM_API}/sendVideo", data={"chat_id":str(cid),"caption":c.encode('utf-8') if isinstance(c,str) else c,"supports_streaming":"True"}, files={"video":f}, timeout=180)
-    except Exception as e:
-        log(f"video {e}")
-        try:
-            with open(p,"rb") as f:
-                requests.post(f"{TELEGRAM_API}/sendVideo", data={"chat_id":str(cid),"caption":"hmisc cinematic - share","supports_streaming":"True"}, files={"video":f}, timeout=180)
-        except: pass
+            requests.post(f"{TELEGRAM_API}/sendVideo", data={"chat_id":str(cid),"supports_streaming":"True"}, files={"video":f}, timeout=180)
+    except Exception as e: log(f"video {e}")
 
 processing=set(); plock=threading.Lock()
 
@@ -240,14 +228,14 @@ def process(cid, cinematic=False):
         add_text_with_share(img, idea["hikma_ar"], idea["full_ar"], idea["hikma_en"], idea["full_en"])
         if cinematic:
             vid=create_cinematic_with_music(img, idea["mood"], duration=10)
-            # Caption ENGLISH ONLY to avoid latin-1 error - Arabic inside image
-            cap=f"{idea['hikma_en']}\n\n{idea['full_en']}\n\nTitle: {idea['title']} | Mood: {idea['mood']} | SHARE hmisc"
-            send_video(cid, vid, cap)
+            send_video(cid, vid)
             Path(vid).unlink(missing_ok=True)
         else:
-            cap=f"{idea['hikma_en']}\n\n{idea['full_en']}\n\nTitle: {idea['title']} | share"
-            send_photo(cid, img, cap)
+            send_photo(cid, img)
         Path(img).unlink(missing_ok=True)
+        # النص برسالة منفصلة json يدعم عربي بدون latin-1
+        txt=f"{idea['hikma_ar']}\n{idea['hikma_en']}\n\n{idea['full_ar']}\n{idea['full_en']}\n\n{idea['title']} | SHARE"
+        send_text(cid, txt)
     except Exception as e:
         log(f"ERR {repr(e)}")
         send_text(cid,f"Error: {str(e)[:800]}")
@@ -258,15 +246,15 @@ def handle_update(upd):
     msg=upd.get("message") or {}; chat=(msg.get("chat") or {}).get("id"); text=(msg.get("text") or "").strip()
     if not chat: return
     if text.startswith("/start"):
-        send_text(chat,"Hmisc Super Saver\n/hikma pro image (0.08$)\n/cinema video zoom+music (same 0.08$)\n/brain memory"); return
+        send_text(chat,"Hmisc Super Saver FIXED\n/hikma pro image 0.08$\n/cinema video zoom+music 0.08$\n/brain memory"); return
     if text.startswith("/brain"):
         mem=load_memory(); send_text(chat,f"Ideas: {len(mem['ideas'])}\n"+"\n".join(mem['ideas'][-3:])); return
-    if text.startswith("/ping"): send_text(chat,f"OK {len(load_memory()['ideas'])} ideas Save 84%"); return
+    if text.startswith("/ping"): send_text(chat,f"OK {len(load_memory()['ideas'])} Save 84% no latin-1"); return
     if "/cinema" in text: threading.Thread(target=process, args=(chat, True), daemon=True).start(); return
     if "/hikma" in text: threading.Thread(target=process, args=(chat, False), daemon=True).start(); return
 
 @app.get("/")
-def home(): return f"Super Saver {len(load_memory()['ideas'])}",200
+def home(): return f"Super Saver FIXED {len(load_memory()['ideas'])}",200
 
 @app.post("/telegram/webhook")
 def wh():
