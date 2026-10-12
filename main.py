@@ -25,7 +25,7 @@ MEMORY_FILE=Path("/tmp/hmisc_brain_memory.json")
 LAST_IMAGE_PATH=Path("/tmp/last_final.jpg")
 TELEGRAM_API=f"https://api.telegram.org/bot{BOT_TOKEN}" if BOT_TOKEN else ""
 
-def log(m): print(f"[V20.5] {str(m)[:900]}", flush=True)
+def log(m): print(f"[V20.6] {str(m)[:900]}", flush=True)
 
 def load_memory():
     if MEMORY_FILE.exists():
@@ -152,22 +152,27 @@ def generate_two_in_one(idea, force_new=False):
 
 def ensure_fonts():
     base=Path("/tmp/fonts"); base.mkdir(exist_ok=True)
+    # DejaVu موجود جاهز على Render
+    possible=[
+        Path("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"),
+        Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
+        Path("/usr/share/fonts/TTF/DejaVuSans-Bold.ttf"),
+    ]
+    dejavu=None
+    for p in possible:
+        if p.exists() and p.stat().st_size>10000:
+            dejavu=p
+            break
     amiri=base/"Amiri-Bold.ttf"
-    dejavu=Path("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf")
-    dejavu2=base/"DejaVuSans-Bold.ttf"
     if not amiri.exists() or amiri.stat().st_size<10000:
         try:
-            r=requests.get("https://github.com/google/fonts/raw/main/ofl/amiri/Amiri-Bold.ttf", timeout=30)
-            if r.status_code==200: amiri.write_bytes(r.content)
+            r=requests.get("https://github.com/google/fonts/raw/main/ofl/amiri/Amiri-Bold.ttf", timeout=15)
+            if r.status_code==200 and len(r.content)>10000:
+                amiri.write_bytes(r.content)
         except: pass
-    if not dejavu.exists() and not dejavu2.exists():
-        try:
-            r=requests.get("https://github.com/dejavu-fonts/dejavu-fonts/raw/master/ttf/DejaVuSans-Bold.ttf", timeout=30)
-            if r.status_code==200: dejavu2.write_bytes(r.content)
-        except: pass
-    a=amiri if amiri.exists() else None
-    d=dejavu if dejavu.exists() else dejavu2 if dejavu2.exists() else None
-    return a,d
+    a_path = amiri if amiri.exists() and amiri.stat().st_size>10000 else dejavu
+    log(f"FONTS a={a_path} d={dejavu} d_ok={dejavu.exists() if dejavu else False}")
+    return a_path, dejavu
 
 def create_reels_video(image_path, idea, duration=9):
     from moviepy.editor import ImageClip, CompositeVideoClip, AudioClip
@@ -197,28 +202,39 @@ def create_reels_video(image_path, idea, duration=9):
         bg=(242,230,195) if is_top else (14,14,14)
         img=Image.new('RGB',(W,h),bg)
         d=ImageDraw.Draw(img)
+
+        # خط مضمون - لا يقع لـ 11px
         try:
-            f_ar=ImageFont.truetype(str(amiri_path), 92) if amiri_path and amiri_path.exists() else ImageFont.truetype(str(dejavu_path), 80) if dejavu_path else ImageFont.load_default()
-            f_en=ImageFont.truetype(str(dejavu_path), 74) if dejavu_path and Path(dejavu_path).exists() else ImageFont.load_default()
-            f_share=ImageFont.truetype(str(dejavu_path), 34) if dejavu_path else ImageFont.load_default()
-        except:
-            f_ar=f_en=f_share=ImageFont.load_default()
+            if amiri_path and Path(amiri_path).exists():
+                f_ar=ImageFont.truetype(str(amiri_path), 92)
+            else:
+                f_ar=ImageFont.truetype(str(dejavu_path), 82)
+        except Exception as e:
+            log(f"f_ar fail {e}")
+            f_ar=ImageFont.truetype(str(dejavu_path), 82) if dejavu_path else ImageFont.load_default()
+
+        try:
+            f_en=ImageFont.truetype(str(dejavu_path), 76)
+            f_share=ImageFont.truetype(str(dejavu_path), 34)
+        except Exception as e:
+            log(f"f_en fail {e} d={dejavu_path}")
+            # اخر محاولة
+            if dejavu_path and Path(dejavu_path).exists():
+                f_en=ImageFont.truetype(str(dejavu_path), 76)
+                f_share=ImageFont.truetype(str(dejavu_path), 34)
+            else:
+                f_en=f_share=ImageFont.load_default()
 
         ar_fixed=fix_ar(ar_text)
         en_clean=str(en_text).strip().upper()
 
-        try:
-            # AR 92px
-            bbox_ar=d.textbbox((0,0), ar_fixed, font=f_ar)
-            d.text(((W-(bbox_ar[2]-bbox_ar[0]))//2, 85), ar_fixed, font=f_ar, fill=(12,12,12) if is_top else (242,230,195))
-            # EN 74px كبير جدا
-            bbox_en=d.textbbox((0,0), en_clean, font=f_en)
-            d.text(((W-(bbox_en[2]-bbox_en[0]))//2, 295), en_clean, font=f_en, fill=(25,25,25) if is_top else (240,240,240))
-            d.text((W-205, 22), "> SHARE", font=f_share, fill=(90,90,90) if is_top else (120,120,120))
-        except Exception as ex:
-            log(f"box {ex}")
-            d.text((60,80), ar_text, fill=(0,0,0))
-            d.text((60,300), en_clean, fill=(0,0,0))
+        # AR 92px
+        bbox_ar=d.textbbox((0,0), ar_fixed, font=f_ar)
+        d.text(((W-(bbox_ar[2]-bbox_ar[0]))//2, 85), ar_fixed, font=f_ar, fill=(12,12,12) if is_top else (242,230,195))
+        # EN 76px كبير وواضح
+        bbox_en=d.textbbox((0,0), en_clean, font=f_en)
+        d.text(((W-(bbox_en[2]-bbox_en[0]))//2, 310), en_clean, font=f_en, fill=(25,25,25) if is_top else (240,240,240))
+        d.text((W-205, 22), "> SHARE", font=f_share, fill=(90,90,90) if is_top else (120,120,120))
 
         p=Path(tempfile.gettempdir())/f"b_{random.randint(1,9999999)}.png"
         img.save(p, quality=98)
@@ -230,24 +246,22 @@ def create_reels_video(image_path, idea, duration=9):
     bottom_c=ImageClip(str(bottom_p), duration=duration).set_position((0, H-620))
     final=CompositeVideoClip([base, top_c, bottom_c], size=(W,H)).set_duration(duration)
 
-    # ===== موسيقى مضمونة 100% - توليد داخلي بدون تحميل - مستحيل تفشل =====
+    # موسيقى داخلية مضمونة 100%
     try:
-        log("Generating Sad Piano Lo-fi internally - guaranteed")
+        log("Generating internal sad piano")
         def _single(tt):
             cycle = tt % 9.0
             pos = cycle % 2.25
-            if cycle < 2.25: freqs=[220.00, 261.63, 329.63] # Am
-            elif cycle < 4.5: freqs=[174.61, 220.00, 261.63] # F
-            elif cycle < 6.75: freqs=[130.81, 164.81, 196.00] # C low sad
-            else: freqs=[196.00, 246.94, 293.66] # G
+            if cycle < 2.25: freqs=[220.00,261.63,329.63]
+            elif cycle < 4.5: freqs=[174.61,220.00,261.63]
+            elif cycle < 6.75: freqs=[130.81,164.81,196.00]
+            else: freqs=[196.00,246.94,293.66]
             decay = max(0.06, float(np.exp(-pos*1.7)))
             v=0.0
             for i,f in enumerate(freqs):
                 amp=[0.55,0.32,0.22][i]
                 n=amp*np.sin(2*np.pi*f*tt)*decay
                 n+=amp*0.35*np.sin(2*np.pi*f*2*tt)*decay*0.45
-                n+=amp*0.12*np.sin(2*np.pi*f*3*tt)*decay*0.18
-                n*= (1.0 + 0.012*np.sin(2*np.pi*5.2*tt))
                 v+=n
             return v*0.40
 
@@ -263,10 +277,10 @@ def create_reels_video(image_path, idea, duration=9):
         music=AudioClip(sad_frame, duration=duration).volumex(0.9).audio_fadein(0.8).audio_fadeout(1.6)
         final=final.set_audio(music)
         has_audio=True
-        log("Music OK - internal piano")
+        log("Music OK internal")
     except Exception as e:
         import traceback
-        log(f"music fail {e} {traceback.format_exc()[-400:]}")
+        log(f"music fail {e}")
         has_audio=False
 
     out=Path(tempfile.gettempdir())/f"reel_{int(time.time())}.mp4"
@@ -294,7 +308,7 @@ def process(cid, cinematic=False, force_new=False):
             if cid in processing: send_text(cid,"⏳ يولد..."); return
             processing.add(cid)
         if force_new:
-            send_text(cid,"✨ V20.5 NEW\nEN 74px AR 92px | 🎵 بيانو داخلي مضمون")
+            send_text(cid,"✨ V20.6 NEW\nEN 76px AR 92px | 🎵 بيانو مضمون")
             idea=brain_generate_smart()
             send_text(cid,f"✅ {idea['action_ar']} -> {idea['reaction_ar']}\nEN {idea['action_en']} -> {idea['reaction_en']}")
             combined,qmsg=generate_two_in_one(idea, force_new=True)
@@ -307,11 +321,11 @@ def process(cid, cinematic=False, force_new=False):
                 idea={"action_ar":"تحفظهم ككلمة مرور","reaction_ar":"فينسونك كإعلان","action_en":"SAVE AS PASSWORD","reaction_en":"FORGOTTEN LIKE ADS"}
                 combined=LAST_IMAGE_PATH
                 qmsg="CACHED 0$"
-                send_text(cid,"🧪 TEST مجاني | EN كبير 74px | موسيقى مضمونة")
+                send_text(cid,"🧪 TEST مجاني | EN 76px | موسيقى مضمونة")
         send_text(cid,f"✅ صور | {qmsg}")
         if cinematic:
             vid,has_audio=create_reels_video(combined, idea, 9)
-            send_text(cid,f"✅ فيديو {'🎵 حزينة مضمونة' if has_audio else '🔇'} | 9ث")
+            send_text(cid,f"✅ فيديو {'🎵 بيانو' if has_audio else '🔇'} | 9ث | EN كبير")
             send_video(cid, vid)
             if vid and Path(vid).exists() and Path(vid)!=LAST_IMAGE_PATH:
                 Path(vid).unlink(missing_ok=True)
@@ -330,9 +344,9 @@ def handle_update(upd):
         if not chat: return
         if text.startswith("/start"):
             has=LAST_IMAGE_PATH.exists() and LAST_IMAGE_PATH.stat().st_size>50000
-            send_text(chat,f"V20.5 FINAL ✅\nEN 74px AR 92px كبير\n🎵 بيانو داخلي مضمون - مش صامت\nزوم 40%\n\n/cinema جديد\n/test_video مجاني {'✅' if has else '⚠️'}\n/ping")
+            send_text(chat,f"V20.6 FINAL ✅\nEN 76px AR 92px كبير مضمون\n🎵 بيانو داخلي\nزوم 40%\n\n/cinema جديد\n/test_video مجاني {'✅' if has else '⚠️'}\n/ping")
             return
-        if text.startswith("/ping"): send_text(chat,f"V20.5 | cache:{'نعم' if LAST_IMAGE_PATH.exists() else 'لا'}"); return
+        if text.startswith("/ping"): send_text(chat,f"V20.6 | cache:{'نعم' if LAST_IMAGE_PATH.exists() else 'لا'}"); return
         if "/test_video" in text:
             if LAST_IMAGE_PATH.exists() and LAST_IMAGE_PATH.stat().st_size>50000:
                 threading.Thread(target=process, args=(chat, True, False), daemon=True).start()
@@ -344,7 +358,7 @@ def handle_update(upd):
     except Exception as e: log(f"handle {e}")
 
 @app.get("/")
-def home(): return f"V20.5 FINAL cached={LAST_IMAGE_PATH.exists()}",200
+def home(): return f"V20.6 FINAL cached={LAST_IMAGE_PATH.exists()}",200
 @app.post("/telegram/webhook")
 def wh():
     upd=request.get_json(silent=True) or {}
