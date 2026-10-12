@@ -1,4 +1,4 @@
-import os, sys, json, time, threading, re, tempfile, random, hashlib, base64
+import os, sys, json, time, threading, re, tempfile, random, hashlib
 from pathlib import Path
 import requests
 from flask import Flask, request
@@ -28,12 +28,16 @@ MEMORY_FILE=Path("/tmp/hmisc_brain_memory.json")
 ARCHIVE_DIR=Path("/tmp/archive_images"); ARCHIVE_DIR.mkdir(exist_ok=True)
 TELEGRAM_API=f"https://api.telegram.org/bot{BOT_TOKEN}" if BOT_TOKEN else ""
 
-def log(m): print(f"[V10-FIXED] {str(m)[:900]}", flush=True)
+def log(m): print(f"[V11-SHA] {str(m)[:900]}", flush=True)
 
 def send_error_report(cid, where, error, extra=""):
     import traceback
-    tb=traceback.format_exc()[-1200:]
-    err_text=f"🚨 غلط\n📍 {where}\n❌ {str(error)[:600]}\n📝 {extra[:400]}\n📄 {tb[:600]}"
+    tb=traceback.format_exc()[-1000:]
+    # لا ترسل سبام للموسيقى - سجل بس
+    if "موسيقى" in where or "music" in where.lower():
+        log(f"music warn {where} {error}")
+        return
+    err_text=f"🚨 غلط\n📍 {where}\n❌ {str(error)[:600]}\n📝 {extra[:400]}\n📄 {tb[:500]}"
     if len(err_text)>3500: err_text=err_text[:3500]
     try:
         if cid: requests.post(f"{TELEGRAM_API}/sendMessage", json={"chat_id":cid,"text":err_text}, timeout=20)
@@ -74,7 +78,15 @@ def piapi_wait(tid):
 
 def download_file(url, path, is_music=False):
     path=Path(path)
-    headers={"User-Agent":"Mozilla/5.0","Accept":"*/*"} if is_music else {"User-Agent":"Mozilla/5.0"}
+    if is_music:
+        headers={
+            "User-Agent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Referer":"https://pixabay.com/",
+            "Accept":"*/*",
+            "Accept-Language":"en-US,en;q=0.9",
+        }
+    else:
+        headers={"User-Agent":"Mozilla/5.0"}
     with requests.get(url, timeout=120, stream=True, headers=headers, allow_redirects=True) as rr:
         rr.raise_for_status()
         with path.open("wb") as f:
@@ -82,11 +94,11 @@ def download_file(url, path, is_music=False):
                 if c: f.write(c)
     return path
 
-def piapi_gen(prompt, ref_path=None, strength=0.60):
+def piapi_gen(prompt):
     headers={"X-API-KEY": PIAPI_API_KEY, "Content-Type":"application/json"}
-    negative="watermark, logo, text, letters, words, writing, blurry, low quality, lowres, bad anatomy, bad hands, extra fingers, deformed, duplicate, cartoon, anime, female, woman"
-    base_positive="same young man 28yo male arab short black hair light beard white t-shirt same face identical male"
-    full=f"{base_positive}, {prompt}, ultra clean sharp 8k, no watermark no text no logo, photorealistic sharp focus male"
+    negative="watermark, logo, text, letters, words, writing, blurry, low quality, lowres, bad anatomy, bad hands, extra fingers, deformed, duplicate, cartoon, anime, female, woman, girl"
+    base="same young man 28yo male arab short black hair light beard white t-shirt same face identical male"
+    full=f"{base}, {prompt}, ultra clean sharp 8k, no watermark no text no logo, photorealistic sharp focus male"
     payload={"model":"Qubico/flux1-dev","task_type":"txt2img","input":{"prompt":full[:1500],"width":1024,"height":1024,"num_images":1,"guidance_scale":6.5,"num_inference_steps":45,"negative_prompt":negative}}
     r=requests.post(PIAPI_BASE, headers=headers, json=payload, timeout=90)
     r.raise_for_status()
@@ -96,7 +108,7 @@ def piapi_gen(prompt, ref_path=None, strength=0.60):
     download_file(url, tmp)
     return tmp
 
-def check_quality(p, cid=None):
+def check_quality(p):
     from PIL import Image
     try:
         path=Path(p)
@@ -104,7 +116,7 @@ def check_quality(p, cid=None):
         kb=path.stat().st_size//1024
         if path.stat().st_size<40000: return False, f"صغير {kb}KB"
         im=Image.open(path); w,h=im.size
-        if w<900 or h<900: return False, f"دقة ضعيفة {w}x{h}"
+        if w<900 or h<900: return False, f"دقة {w}x{h}"
         return True, f"OK {w}x{h} {kb}KB"
     except Exception as e: return False, str(e)
 
@@ -132,72 +144,45 @@ def brain_generate_smart(cid=None):
         "scene_reaction_en":"lying on floor alone head in hands sad phone far away dark lonely totally different pose",
         "mood":"sad_deep","title":"Password Ad"
     }
-    if not groq:
-        return fallback
-
+    if not groq: return fallback
     recent=", ".join(mem["ideas"][-60:]) or "none"
     hooks_sample = random.sample(SPECIAL_VIRAL_HOOKS, 4)
-    BANNED=["تحضر جبال","يتشمعين","جبال داخل"]
-
     for attempt in range(15):
         try:
             prompt=f"""Avoid: {recent}
 Inspiration: {"; ".join(hooks_sample)}
-Create viral unseen proverb 3-4 words each for Reels 9 sec.
-Modern: archive, password, mute, favorite, airplane mode, cloud
-Return JSON ONLY: {{"action_ar":"فعل 3-4 كلمات","reaction_ar":"رد فعل 3-4 كلمات","action_en":"cause 3-4 words","reaction_en":"effect 3-4 words","character":"same young man 28yo male white t-shirt short black hair light beard same face - LOCKED","location":"same small apartment evening warm light window left - LOCKED","scene_action_en":"sitting upright on sofa holding phone close to chest hopeful bright","scene_reaction_en":"TOTALLY DIFFERENT lying on floor head in hands crying phone far away dark","mood":"sad_deep","title":"two words"}}
-"""
-
-            content = ""
-            for model_try in ["llama-3.3-70b-versatile", "llama3-70b-8192", "mixtral-8x7b-32768"]:
+Create viral unseen proverb 3-4 words each for Reels 9 sec hook. Modern: archive, password, mute, favorite, airplane mode, cloud
+Return JSON ONLY: {{"action_ar":"فعل 3-4 كلمات","reaction_ar":"رد فعل 3-4 كلمات","action_en":"cause 3-4 words","reaction_en":"effect 3-4 words","character":"same young man 28yo male white t-shirt short black hair light beard same face - LOCKED","location":"same small apartment evening warm light window left - LOCKED","scene_action_en":"sitting upright on sofa holding phone close to chest hopeful bright","scene_reaction_en":"TOTALLY DIFFERENT lying on floor head in hands crying phone far away dark","mood":"sad_deep","title":"two words"}}"""
+            content=""
+            for model_try in ["llama-3.3-70b-versatile","llama3-70b-8192","mixtral-8x7b-32768"]:
                 try:
                     res=groq.chat.completions.create(model=model_try, temperature=0.9, max_completion_tokens=800,
-                        messages=[{"role":"system","content":"Return JSON only. No extra text."},{"role":"user","content":prompt}])
+                        messages=[{"role":"system","content":"Return JSON only."},{"role":"user","content":prompt}])
                     content=res.choices[0].message.content
                     if content and len(content.strip())>20: break
-                except Exception as e:
-                    log(f"model {model_try} fail {e}")
-                    continue
-
-            if not content or len(content.strip())<10:
-                log(f"empty groq attempt {attempt}")
-                time.sleep(1)
-                continue
-
+                except: continue
+            if not content or len(content.strip())<10: time.sleep(1); continue
             content=content.strip()
             if "```" in content:
                 for p in content.split("```"):
                     if "{" in p and "}" in p:
-                        content=p.replace("json","").strip()
-                        break
-            start=content.find("{"); end=content.rfind("}")
-            if start==-1 or end==-1: continue
-            content=content[start:end+1]
-
+                        content=p.replace("json","").strip(); break
+            s=content.find("{"); e=content.rfind("}")
+            if s==-1 or e==-1: continue
+            content=content[s:e+1]
             j=json.loads(content)
-            ar1=j.get("action_ar","").strip()
-            ar2=j.get("reaction_ar","").strip()
+            ar1=j.get("action_ar","").strip(); ar2=j.get("reaction_ar","").strip()
             if not ar1 or not ar2: continue
             if len(ar1.split())>4 or len(ar1.split())<2: continue
             if len(ar2.split())>4 or len(ar2.split())<2: continue
-            if any(b in ar1 or b in ar2 for b in BANNED): continue
+            if "جبال" in ar1 or "يتشمعين" in ar1: continue
             if ar1==ar2: continue
             if is_dup(ar1[:12], mem): continue
-
             mem["ideas"].append(j.get("title","")); mem["scenes"].append(ar1[:12]); save_memory(mem)
             log(f"HOOK OK {ar1} -> {ar2}")
             return j
-
-        except json.JSONDecodeError:
-            log(f"json fail attempt {attempt}: {content[:200] if 'content' in locals() else 'no content'}")
-            time.sleep(0.6)
-            continue
-        except Exception as e:
-            log(f"brain retry {attempt} {e}")
-            time.sleep(0.6)
-            continue
-
-    if cid: send_text(cid,"⚠️ استخدم مثل احتياطي Special - groq ما رجع JSON")
+        except: time.sleep(0.6); continue
+    if cid: send_text(cid,"⚠️ استخدم مثل احتياطي Special")
     return fallback
 
 def generate_two_in_one(idea, cid=None):
@@ -205,15 +190,11 @@ def generate_two_in_one(idea, cid=None):
     p_action=f"{char}, {loc}, {idea['scene_action_en']}, sitting upright on sofa holding phone close to chest hopeful bright, photorealistic 8k sharp"
     p_reaction=f"{char}, {loc}, {idea['scene_reaction_en']}, SAME young man SAME face SAME white t-shirt BUT completely different pose lying on floor or sitting on floor back against wall head in hands crying phone far away dark, photorealistic 8k sharp"
     img1=piapi_gen(p_action)
-    ok,msg=check_quality(img1, cid)
-    if not ok:
-        Path(img1).unlink(missing_ok=True)
-        raise RuntimeError(f"فعل تعبان: {msg}")
+    ok,msg=check_quality(img1)
+    if not ok: Path(img1).unlink(missing_ok=True); raise RuntimeError(f"فعل {msg}")
     img2=piapi_gen(p_reaction)
-    ok2,msg2=check_quality(img2, cid)
-    if not ok2:
-        Path(img1).unlink(missing_ok=True); Path(img2).unlink(missing_ok=True)
-        raise RuntimeError(f"رد فعل تعبان: {msg2}")
+    ok2,msg2=check_quality(img2)
+    if not ok2: Path(img1).unlink(missing_ok=True); Path(img2).unlink(missing_ok=True); raise RuntimeError(f"رد فعل {msg2}")
     from PIL import Image, ImageDraw
     top=Image.open(img1).convert("RGB").resize((1080,960), Image.LANCZOS)
     bottom=Image.open(img2).convert("RGB").resize((1080,960), Image.LANCZOS)
@@ -225,7 +206,7 @@ def generate_two_in_one(idea, cid=None):
     Path(img1).unlink(missing_ok=True); Path(img2).unlink(missing_ok=True)
     return out, f"{msg} | {msg2}"
 
-def ensure_fonts(cid=None):
+def ensure_fonts():
     base=Path("/tmp/fonts"); base.mkdir(exist_ok=True)
     amiri=base/"Amiri-Bold.ttf"
     dejavu=Path("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf")
@@ -236,12 +217,17 @@ def ensure_fonts(cid=None):
         except: pass
     return amiri if amiri.exists() and amiri.stat().st_size>5000 else None, dejavu
 
-TREND_MUSIC_BY_MOOD={"sad_deep":["https://cdn.pixabay.com/download/audio/2022/10/30/audio_fbd82ff3ef.mp3?filename=sad-piano-112199.mp3","https://cdn.pixabay.com/download/audio/2021/11/25/audio_39628d1d4f.mp3?filename=sad-background-113831.mp3"]}
+TREND_MUSIC_BY_MOOD={
+    "sad_deep": [
+        "https://cdn.pixabay.com/audio/2022/06/07/audio_b9bd4170e8.mp3",
+        "https://cdn.pixabay.com/audio/2021/08/04/audio_0625c1539c.mp3",
+        "https://cdn.pixabay.com/audio/2022/10/30/audio_fbd82ff3ef.mp3",
+    ],
+}
 def get_music(mood="sad_deep"):
-    mem=load_memory(); last=mem.get("last_music","")
+    mem=load_memory()
     pool=TREND_MUSIC_BY_MOOD.get(mood, TREND_MUSIC_BY_MOOD["sad_deep"])
-    choices=[m for m in pool if m!=last] or pool
-    pick=random.choice(choices); mem["last_music"]=pick; save_memory(mem); return pick
+    return random.choice(pool)
 
 def create_reels_video(image_path, idea, duration=9, cid=None):
     from moviepy.editor import ImageClip, AudioFileClip, CompositeVideoClip
@@ -251,17 +237,16 @@ def create_reels_video(image_path, idea, duration=9, cid=None):
         from bidi.algorithm import get_display
         HAS_AR=True
     except: HAS_AR=False
-    amiri_path, dejavu_path = ensure_fonts(cid)
+    amiri_path, dejavu_path = ensure_fonts()
     has_ar = amiri_path and amiri_path.exists() and HAS_AR
     def fix_ar(t):
-        if not t: return ""
         t=t.strip()
         if has_ar:
             try: return get_display(arabic_reshaper.reshape(t))
             except: return t
         return t
     W,H=1080,1920
-    base=ImageClip(str(image_path), duration=duration).resize(lambda t: 1.0 + 0.012*t/duration).set_position('center')
+    base=ImageClip(str(image_path), duration=duration).resize(lambda t: 1.0 + 0.015*t/duration).set_position('center')
     def make_box(ar_text, en_text, is_top=True):
         h=270
         bg=(245,233,201,255) if is_top else (18,18,18,255)
@@ -287,20 +272,29 @@ def create_reels_video(image_path, idea, duration=9, cid=None):
     top_c=ImageClip(str(top_p), duration=duration).set_position((0,0))
     bottom_c=ImageClip(str(bottom_p), duration=duration).set_position((0, H-270))
     final=CompositeVideoClip([base, top_c, bottom_c], size=(W,H)).set_duration(duration)
+
+    # موسيقى - لو فشلت يكمل بدون صوت بدون سبام غلط
     mp=Path(tempfile.gettempdir())/f"mus_{random.randint(1,99999)}.mp3"
-    for _ in range(3):
+    audio_added=False
+    for _ in range(5):
         try:
             music_url=get_music(idea.get("mood","sad_deep"))
             download_file(music_url, mp, is_music=True)
-            if mp.exists() and mp.stat().st_size>20000:
-                audio=AudioFileClip(str(mp)).subclip(0,duration).volumex(0.92).audio_fadein(0.5).audio_fadeout(0.8)
+            if mp.exists() and mp.stat().st_size>15000:
+                audio=AudioFileClip(str(mp)).subclip(0,duration).volumex(0.88).audio_fadein(0.5).audio_fadeout(0.8)
                 final=final.set_audio(audio)
+                audio_added=True
+                log(f"music OK {music_url[:50]}")
                 break
-        except: mp.unlink(missing_ok=True); time.sleep(0.3)
+        except Exception as e:
+            log(f"music try fail {e}")
+            if mp.exists(): mp.unlink(missing_ok=True)
+            continue
+
     out=Path(tempfile.gettempdir())/f"reel9s_{int(time.time())}.mp4"
-    final.write_videofile(str(out), fps=30, codec='libx264', audio_codec='aac', preset='ultrafast', bitrate="9000k", logger=None)
+    final.write_videofile(str(out), fps=30, codec='libx264', audio_codec='aac' if audio_added else None, preset='ultrafast', bitrate="9000k", logger=None)
     for p in [top_p,bottom_p,mp]: Path(p).unlink(missing_ok=True)
-    return out
+    return out, audio_added
 
 def send_text(cid,t):
     try: requests.post(f"{TELEGRAM_API}/sendMessage", json={"chat_id":cid,"text":t}, timeout=30)
@@ -322,24 +316,29 @@ def process(cid, cinematic=False):
         with plock:
             if cid in processing: send_text(cid,"⏳ يولد..."); return
             processing.add(cid)
-        send_text(cid,"✨ V10 FIXED 9ثواني Special\n🎯 فعل ورد فعل غريب غير منتشر\n🎨 صورتين مختلفتين جذريا\n🎵 بدون علامة بدون راوي\n📱 ريلز + شورت 1080x1920")
-        send_text(cid,"⏳ 1/3 بحث ذكي عن مثل hook...")
+        send_text(cid,"✨ V11 شامل 9ث Special\n🎯 فعل ورد فعل غريب غير منتشر\n🎨 صورتين مختلفتين جذريا\n🎵 بدون علامة بدون راوي\n📱 1080x1920 ريلز + شورت")
+
+        send_text(cid,"⏳ 1/3 بحث ذكي مدفوع عن مثل hook يجذب مشاهدات...")
         idea=brain_generate_smart(cid)
         send_text(cid,f"✅ HOOK:\n🔹 {idea['action_ar']}\n🔸 {idea['reaction_ar']}\nEN: {idea['action_en']} -> {idea['reaction_en']}")
+
         send_text(cid,"⏳ 2/3 صورتين مختلفتين بدون علامة...")
         combined, qmsg=generate_two_in_one(idea, cid)
         send_text(cid,f"✅ صورتين | {qmsg}")
+
         if cinematic:
-            send_text(cid,"⏳ 3/3 مونتاج 9 ثواني...")
-            vid=create_reels_video(combined, idea, duration=9, cid=cid)
-            send_text(cid,"✅ رفع 9ث...")
+            send_text(cid,"⏳ 3/3 مونتاج 9 ثواني زوم حلو...")
+            vid, has_audio=create_reels_video(combined, idea, duration=9, cid=cid)
+            send_text(cid,f"✅ رفع 9ث {'🎵 بموسيقى' if has_audio else '🔇 بدون موسيقى - pixabay محجوب'}...")
             send_video(cid, vid)
         else:
             send_photo(cid, combined)
+
         if combined and Path(combined).exists(): Path(combined).unlink(missing_ok=True)
         if vid and Path(vid).exists(): Path(vid).unlink(missing_ok=True)
         cnt=len(list(ARCHIVE_DIR.glob("*.jpg")))
-        send_text(cid,f"✅ جاهز 9ث\n🔹 {idea['action_ar']}\n🔸 {idea['reaction_ar']}\n💾 {cnt}\n/cinema التالي")
+        send_text(cid,f"✅ جاهز 9ث يجذب مشاهدات\n🔹 {idea['action_ar']}\n🔸 {idea['reaction_ar']}\n💾 {cnt}\n/cinema التالي")
+
     except Exception as e:
         import traceback; log(traceback.format_exc()[-900:])
         send_error_report(cid, "process", e)
@@ -353,8 +352,8 @@ def handle_update(upd):
     try:
         msg=upd.get("message") or {}; chat=(msg.get("chat") or {}).get("id"); text=(msg.get("text") or "").strip()
         if not chat: return
-        if text.startswith("/start"): send_text(chat,"V10 FIXED 9ث 🔒\n✅ فعل ورد فعل غريب غير منتشر\n✅ 3-4 كلمات يجذب مشاهدات\n✅ صورتين مختلفتين جذريا\n✅ بدون علامة بدون راوي\n✅ 9ث ريلز + شورت\n✅ مصلح غلط JSON\n/hikma صورة\n/cinema فيديو 9ث"); return
-        if text.startswith("/ping"): send_text(chat,f"✅ V10 {len(list(ARCHIVE_DIR.glob('*.jpg')))}"); return
+        if text.startswith("/start"): send_text(chat,"V11 شامل 9ث 🔒\n✅ فعل ورد فعل غريب غير منتشر 3-4 كلمات\n✅ بحث ذكي مدفوع hook يجذب مشاهدات\n✅ صورتين مختلفتين جذريا بصورة وحدة\n✅ بدون علامة مائية بدون راوي\n✅ 9 ثواني 1080x1920 ريلز + شورت\n✅ أي غلط حقيقي ببين بالبوت - الموسيقى لو فشلت بيكمل\n/hikma صورة\n/cinema فيديو 9ث"); return
+        if text.startswith("/ping"): send_text(chat,f"✅ V11 {len(list(ARCHIVE_DIR.glob('*.jpg')))}"); return
         if "/cinema" in text: threading.Thread(target=process, args=(chat, True), daemon=True).start(); return
         if "/hikma" in text: threading.Thread(target=process, args=(chat, False), daemon=True).start(); return
     except Exception as e:
@@ -364,7 +363,7 @@ def handle_update(upd):
         except: log(f"fatal {e}")
 
 @app.get("/")
-def home(): return f"V10 FIXED 9SEC {len(list(ARCHIVE_DIR.glob('*.jpg')))} AUTO=OFF",200
+def home(): return f"V11 SHA 9SEC {len(list(ARCHIVE_DIR.glob('*.jpg')))} AUTO=OFF",200
 @app.post("/telegram/webhook")
 def wh():
     upd=request.get_json(silent=True) or {}
