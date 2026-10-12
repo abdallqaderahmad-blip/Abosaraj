@@ -34,7 +34,7 @@ PIAPI_BASE = "https://api.piapi.ai/api/v1/task"
 MEMORY_FILE = Path("/tmp/hmisc_brain_memory.json")
 
 def log(m):
-    try: print(f"[FINAL] {str(m)[:400]}", flush=True)
+    try: print(f"[FINAL] {str(m)[:500]}", flush=True)
     except: pass
 
 def load_memory():
@@ -53,46 +53,73 @@ def is_dup(new_scene, mem):
         if s[:30] in new_scene or new_scene[:30] in s: return True
     return False
 
+# ---------------- BRAIN مصلح 100% ----------------
 def brain_generate():
     mem = load_memory()
     fallback = {
-        "action_ar":"تزرع خوفك في الظلام",
-        "reaction_ar":"ينمو نورك في القلب",
-        "action_en":"You plant fear in dark",
-        "reaction_en":"Your light grows inside",
-        "scene_action_en":"small yellow bean planting black seed dark soil tense top panel",
-        "scene_reaction_en":"same bean bright flower growing light hopeful bottom panel same place",
-        "mood":"hopeful_joy","title":"Seed Light"
+        "action_ar":"تخفي دمعتك بصمت",
+        "reaction_ar":"يصرخ قلبك بالوجع",
+        "action_en":"You hide tears silently",
+        "reaction_en":"Your heart screams loudly",
+        "scene_action_en":"small yellow bean hiding tears dark room top panel",
+        "scene_reaction_en":"same yellow bean heart screaming light breaking bottom panel same room",
+        "mood":"sad_deep","title":"Hidden Tears"
     }
     if not groq: return fallback
-    recent = "\n".join(mem["ideas"][-8:])
-    for _ in range(4):
+    recent = ", ".join(mem["ideas"][-12:]) or "none"
+    system_msg = "You are viral reels writer. Create SHORT action-reaction chains. Arabic poetic deep, English translation. Must be real sentences NOT placeholders like '5 words'."
+    for _ in range(6):
         try:
-            prompt = f"""Memory: {recent}
-Viral ACTION -> REACTION reels short 5 words each bilingual.
-
-JSON:
+            user_prompt = f"""Avoid titles: {recent}
+Generate JSON only with REAL content:
 {{
-"action_ar":"5 كلمات عربية فعل",
-"reaction_ar":"5 كلمات عربية رد فعل",
-"action_en":"5 words en action",
-"reaction_en":"5 words en reaction hopeful",
-"scene_action_en":"top panel small yellow bean action dark",
-"scene_reaction_en":"bottom panel same bean same location reaction bright",
-"mood":"hopeful_joy",
-"title":"2 words"
+"action_ar": "جملة عربية حقيقية 5 كلمات فعل حزين مثل تتجاهل قلبك كل يوم",
+"reaction_ar": "جملة عربية حقيقية 5 كلمات رد فعل مثل ينكسر بصمت مؤلم",
+"action_en": "real english action 5 words like You ignore heart daily",
+"reaction_en": "real english reaction 5 words like It breaks in silence",
+"scene_action_en": "top panel small yellow bean ignoring heart dark",
+"scene_reaction_en": "bottom panel same bean heart breaking light same place",
+"mood": "sad_deep",
+"title": "unique 2 words title"
 }}
+Rules: action_ar must be real Arabic NOT containing '5 كلمات'. Must be 4-6 words.
 """
-            res = groq.chat.completions.create(model=GROQ_MODEL, temperature=1.25, max_completion_tokens=1000, response_format={"type":"json_object"}, messages=[{"role":"user","content":prompt}])
-            j = json.loads(res.choices[0].message.content)
+            res = groq.chat.completions.create(
+                model=GROQ_MODEL, temperature=1.35,
+                max_completion_tokens=800,
+                messages=[
+                    {"role":"system","content": system_msg},
+                    {"role":"user","content": user_prompt}
+                ]
+            )
+            content = res.choices[0].message.content.strip()
+            if "```" in content:
+                parts = content.split("```")
+                for p in parts:
+                    if "{" in p and "}" in p:
+                        content = p
+                        if content.startswith("json"): content = content[4:]
+                        break
+                content = content.strip()
+            j = json.loads(content)
+            # رفض القالب
+            if "5 كلمات" in j.get("action_ar","") or "5 كلمات" in j.get("reaction_ar",""):
+                log("REJECT placeholder ar")
+                continue
+            if "5 words" in j.get("action_en","").lower():
+                log("REJECT placeholder en")
+                continue
+            if len(j.get("action_ar","").split()) < 3: continue
             combined = j.get("scene_action_en","")+j.get("scene_reaction_en","")
             if not is_dup(combined, mem):
                 mem["ideas"].append(j.get("title",""))
                 mem["scenes"].append(combined)
                 save_memory(mem)
+                log(f"BRAIN OK {j.get('title')} {j.get('action_ar')}")
                 return j
         except Exception as e:
-            log(f"brain {repr(e)[:300]}")
+            log(f"brain try {repr(e)[:400]}")
+            time.sleep(0.5)
     return fallback
 
 def extract_url(j):
@@ -130,7 +157,7 @@ def download_file(url, path):
 
 def generate_pro_image(action_en, reaction_en):
     headers={"X-API-KEY": PIAPI_API_KEY, "Content-Type":"application/json"}
-    prompt=f"SAME CHARACTER CONSISTENCY vertical two-panel comic strip SAME small yellow bean character thin black stick arms legs yellow body expressive face BOTH panels TOP PANEL: {action_en} BOTTOM PANEL: same character same location transformed {reaction_en} perfect alignment split line middle hmisc vintage beige paper watercolor ink crosshatch masterpiece NO TEXT 9:16"
+    prompt=f"SAME CHARACTER CONSISTENCY vertical two-panel comic SAME small yellow bean character thin black stick arms legs yellow body expressive face BOTH panels TOP PANEL: {action_en} BOTTOM PANEL: same character same location transformed {reaction_en} perfect alignment split line middle hmisc vintage beige paper watercolor ink crosshatch masterpiece NO TEXT 9:16"
     payload={"model":"Qubico/flux1-dev","task_type":"txt2img","input":{"prompt":prompt[:1500],"width":832,"height":1216,"num_images":1,"guidance_scale":3.8,"num_inference_steps":34}}
     r=requests.post(PIAPI_BASE, headers=headers, json=payload, timeout=60)
     r.raise_for_status()
@@ -202,6 +229,7 @@ def create_cinematic_with_music(image_path, mood, duration=10):
         "hopeful_joy":"https://cdn.pixabay.com/download/audio/2022/03/10/audio_4e2c7bb6f3.mp3",
         "calm_healing":"https://cdn.pixabay.com/download/audio/2022/05/27/audio_1808fbf07a.mp3",
         "reflective":"https://cdn.pixabay.com/download/audio/2022/10/30/audio_8b64a1c5e7.mp3",
+        "sad_deep":"https://cdn.pixabay.com/download/audio/2024/09/19/audio_8bfa6c1f48.mp3",
     }
     url = MUSIC.get(mood, MUSIC["hopeful_joy"])
     music_path = Path(tempfile.gettempdir())/f"m_{random.randint(1,9999)}.mp3"
@@ -247,7 +275,7 @@ def process(cid, cinematic=False):
                 send_text(cid,"Still generating...")
                 return
             processing.add(cid)
-        send_text(cid,"🧠 فعل ورد فعل...\n🎨 صورة واحدة 0.08$...\n🎬 موسيقى ترند عالية بدون راوي...")
+        send_text(cid,"🧠 فعل ورد فعل حقيقي...\n🎨 صورة واحدة 0.08$ تطابق 100%...\n🎬 موسيقى ترند عالية بدون راوي...")
         idea=brain_generate()
         img=generate_pro_image(idea["scene_action_en"], idea["scene_reaction_en"])
         add_text_action_reaction(img, idea["action_ar"], idea["reaction_ar"], idea["action_en"], idea["reaction_en"])
@@ -271,15 +299,15 @@ def handle_update(upd):
     msg=upd.get("message") or {}; chat=(msg.get("chat") or {}).get("id"); text=(msg.get("text") or "").strip()
     if not chat: return
     if text.startswith("/start"):
-        send_text(chat,"سلسلة فعل ورد فعل\nصورة واحدة 0.08$ - بدون راوي\n/hikma صورة\n/cinema فيديو ترند"); return
+        send_text(chat,"فعل ورد فعل حقيقي - بدون راوي\n/hikma صورة\n/cinema فيديو ترند"); return
     if text.startswith("/brain"):
         mem=load_memory(); send_text(chat,f"سلسلة: {len(mem['ideas'])}"); return
-    if text.startswith("/ping"): send_text(chat,"OK no narrator music only"); return
+    if text.startswith("/ping"): send_text(chat,"OK fixed real sentences"); return
     if "/cinema" in text: threading.Thread(target=process, args=(chat, True), daemon=True).start(); return
     if "/hikma" in text: threading.Thread(target=process, args=(chat, False), daemon=True).start(); return
 
 @app.get("/")
-def home(): return f"FINAL no-narrator {len(load_memory()['ideas'])}",200
+def home(): return f"FINAL FIXED {len(load_memory()['ideas'])}",200
 
 @app.post("/telegram/webhook")
 def wh():
