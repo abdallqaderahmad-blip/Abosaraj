@@ -34,7 +34,7 @@ PIAPI_BASE = "https://api.piapi.ai/api/v1/task"
 MEMORY_FILE = Path("/tmp/hmisc_brain_memory.json")
 
 def log(m):
-    try: print(f"[FINAL] {str(m)[:500]}", flush=True)
+    try: print(f"[MANUAL] {str(m)[:500]}", flush=True)
     except: pass
 
 def load_memory():
@@ -53,7 +53,7 @@ def is_dup(new_scene, mem):
         if s[:30] in new_scene or new_scene[:30] in s: return True
     return False
 
-# ---------------- BRAIN مصلح 100% ----------------
+# ---------------- BRAIN حقيقي بدون قوالب ----------------
 def brain_generate():
     mem = load_memory()
     fallback = {
@@ -67,11 +67,11 @@ def brain_generate():
     }
     if not groq: return fallback
     recent = ", ".join(mem["ideas"][-12:]) or "none"
-    system_msg = "You are viral reels writer. Create SHORT action-reaction chains. Arabic poetic deep, English translation. Must be real sentences NOT placeholders like '5 words'."
+    system_msg = "You are viral reels writer. Create SHORT action-reaction. Real Arabic poetic sentences, not placeholders."
     for _ in range(6):
         try:
             user_prompt = f"""Avoid titles: {recent}
-Generate JSON only with REAL content:
+Generate JSON only REAL content:
 {{
 "action_ar": "جملة عربية حقيقية 5 كلمات فعل حزين مثل تتجاهل قلبك كل يوم",
 "reaction_ar": "جملة عربية حقيقية 5 كلمات رد فعل مثل ينكسر بصمت مؤلم",
@@ -82,15 +82,12 @@ Generate JSON only with REAL content:
 "mood": "sad_deep",
 "title": "unique 2 words title"
 }}
-Rules: action_ar must be real Arabic NOT containing '5 كلمات'. Must be 4-6 words.
+Must be real sentences, no words '5 كلمات' or '5 words'.
 """
             res = groq.chat.completions.create(
                 model=GROQ_MODEL, temperature=1.35,
                 max_completion_tokens=800,
-                messages=[
-                    {"role":"system","content": system_msg},
-                    {"role":"user","content": user_prompt}
-                ]
+                messages=[{"role":"system","content": system_msg},{"role":"user","content": user_prompt}]
             )
             content = res.choices[0].message.content.strip()
             if "```" in content:
@@ -102,23 +99,17 @@ Rules: action_ar must be real Arabic NOT containing '5 كلمات'. Must be 4-6 
                         break
                 content = content.strip()
             j = json.loads(content)
-            # رفض القالب
-            if "5 كلمات" in j.get("action_ar","") or "5 كلمات" in j.get("reaction_ar",""):
-                log("REJECT placeholder ar")
-                continue
-            if "5 words" in j.get("action_en","").lower():
-                log("REJECT placeholder en")
-                continue
+            if "5 كلمات" in j.get("action_ar","") or "5 كلمات" in j.get("reaction_ar",""): continue
+            if "5 words" in j.get("action_en","").lower(): continue
             if len(j.get("action_ar","").split()) < 3: continue
             combined = j.get("scene_action_en","")+j.get("scene_reaction_en","")
             if not is_dup(combined, mem):
                 mem["ideas"].append(j.get("title",""))
                 mem["scenes"].append(combined)
                 save_memory(mem)
-                log(f"BRAIN OK {j.get('title')} {j.get('action_ar')}")
                 return j
         except Exception as e:
-            log(f"brain try {repr(e)[:400]}")
+            log(f"brain {repr(e)[:400]}")
             time.sleep(0.5)
     return fallback
 
@@ -272,7 +263,7 @@ def process(cid, cinematic=False):
     try:
         with plock:
             if cid in processing:
-                send_text(cid,"Still generating...")
+                send_text(cid,"⏳ قاعد يولد... انتظر خلص")
                 return
             processing.add(cid)
         send_text(cid,"🧠 فعل ورد فعل حقيقي...\n🎨 صورة واحدة 0.08$ تطابق 100%...\n🎬 موسيقى ترند عالية بدون راوي...")
@@ -298,16 +289,22 @@ def process(cid, cinematic=False):
 def handle_update(upd):
     msg=upd.get("message") or {}; chat=(msg.get("chat") or {}).get("id"); text=(msg.get("text") or "").strip()
     if not chat: return
+    # يدوي فقط - ما بيعمل شي اوتوماتيك
     if text.startswith("/start"):
-        send_text(chat,"فعل ورد فعل حقيقي - بدون راوي\n/hikma صورة\n/cinema فيديو ترند"); return
+        send_text(chat,"يدوي فقط - ما في اوتوماتيك\n/hikma صورة\n/cinema فيديو ترند\n/brain عدد الافكار"); return
     if text.startswith("/brain"):
         mem=load_memory(); send_text(chat,f"سلسلة: {len(mem['ideas'])}"); return
-    if text.startswith("/ping"): send_text(chat,"OK fixed real sentences"); return
-    if "/cinema" in text: threading.Thread(target=process, args=(chat, True), daemon=True).start(); return
-    if "/hikma" in text: threading.Thread(target=process, args=(chat, False), daemon=True).start(); return
+    if text.startswith("/ping"):
+        send_text(chat,"OK manual only - no auto next"); return
+    if "/cinema" in text:
+        threading.Thread(target=process, args=(chat, True), daemon=True).start(); return
+    if "/hikma" in text:
+        threading.Thread(target=process, args=(chat, False), daemon=True).start(); return
+    # اي رسالة عادية = يتجاهلها - ما بيعمل التالي اوتوماتيك
+    return
 
 @app.get("/")
-def home(): return f"FINAL FIXED {len(load_memory()['ideas'])}",200
+def home(): return f"MANUAL ONLY {len(load_memory()['ideas'])}",200
 
 @app.post("/telegram/webhook")
 def wh():
