@@ -1,9 +1,8 @@
-import os, sys, json, time, threading, re, tempfile, random, math, hashlib
+import os, sys, json, time, threading, re, tempfile, random, hashlib
 from pathlib import Path
 import requests
 from flask import Flask, request
 
-# Fix utf-8
 try:
     sys.stdout.reconfigure(encoding='utf-8', errors='ignore')
     sys.stderr.reconfigure(encoding='utf-8', errors='ignore')
@@ -34,7 +33,6 @@ app = Flask(__name__)
 PIAPI_BASE = "https://api.piapi.ai/api/v1/task"
 MEMORY_FILE = Path("/tmp/hmisc_brain_memory.json")
 
-# ---------------- LOG ----------------
 def log(m):
     try: print(f"[FINAL] {str(m)[:400]}", flush=True)
     except: pass
@@ -55,7 +53,6 @@ def is_dup(new_scene, mem):
         if s[:30] in new_scene or new_scene[:30] in s: return True
     return False
 
-# ---------------- BRAIN فعل ورد فعل بلغتين ----------------
 def brain_generate():
     mem = load_memory()
     fallback = {
@@ -63,8 +60,8 @@ def brain_generate():
         "reaction_ar":"ينمو نورك في القلب",
         "action_en":"You plant fear in dark",
         "reaction_en":"Your light grows inside",
-        "scene_action_en":"small yellow bean character planting black seed in dark soil tense top panel",
-        "scene_reaction_en":"same bean bright flower growing light shining hopeful bottom panel",
+        "scene_action_en":"small yellow bean planting black seed dark soil tense top panel",
+        "scene_reaction_en":"same bean bright flower growing light hopeful bottom panel same place",
         "mood":"hopeful_joy","title":"Seed Light"
     }
     if not groq: return fallback
@@ -72,7 +69,7 @@ def brain_generate():
     for _ in range(4):
         try:
             prompt = f"""Memory: {recent}
-Viral ACTION -> REACTION reels. SHORT 5 words each. Bilingual meaningful.
+Viral ACTION -> REACTION reels short 5 words each bilingual.
 
 JSON:
 {{
@@ -81,18 +78,12 @@ JSON:
 "action_en":"5 words en action",
 "reaction_en":"5 words en reaction hopeful",
 "scene_action_en":"top panel small yellow bean action dark",
-"scene_reaction_en":"bottom panel same bean reaction bright same place",
+"scene_reaction_en":"bottom panel same bean same location reaction bright",
 "mood":"hopeful_joy",
 "title":"2 words"
 }}
-Examples: تتجاهل قلبك / يصرخ بصمت, تحمل الماضي / يكسر حاضرك
 """
-            res = groq.chat.completions.create(
-                model=GROQ_MODEL, temperature=1.25,
-                max_completion_tokens=1000,
-                response_format={"type":"json_object"},
-                messages=[{"role":"user","content":prompt}]
-            )
+            res = groq.chat.completions.create(model=GROQ_MODEL, temperature=1.25, max_completion_tokens=1000, response_format={"type":"json_object"}, messages=[{"role":"user","content":prompt}])
             j = json.loads(res.choices[0].message.content)
             combined = j.get("scene_action_en","")+j.get("scene_reaction_en","")
             if not is_dup(combined, mem):
@@ -104,7 +95,6 @@ Examples: تتجاهل قلبك / يصرخ بصمت, تحمل الماضي / ي�
             log(f"brain {repr(e)[:300]}")
     return fallback
 
-# ---------------- PIAPI صورة واحدة فقط ----------------
 def extract_url(j):
     import json as js; s=js.dumps(j)
     m=re.search(r'https?://[^\s"\']+\.(?:jpg|jpeg|png|webp)[^\s"\']*', s)
@@ -139,10 +129,9 @@ def download_file(url, path):
     return path
 
 def generate_pro_image(action_en, reaction_en):
-    """صورة واحدة مدفوعة 0.08$ = فعل فوق + رد فعل تحت"""
     headers={"X-API-KEY": PIAPI_API_KEY, "Content-Type":"application/json"}
-    prompt=f"hmisc vintage beige paper brown stains vertical two-panel comic SAME small yellow bean thin black stick arms legs yellow body expressive face TOP PANEL: {action_en} BOTTOM PANEL: {reaction_en} split line middle watercolor ink crosshatch masterpiece NO TEXT pure illustration"
-    payload={"model":"Qubico/flux1-dev","task_type":"txt2img","input":{"prompt":prompt[:1500],"width":832,"height":1216,"num_images":1,"guidance_scale":3.5,"num_inference_steps":32}}
+    prompt=f"SAME CHARACTER CONSISTENCY vertical two-panel comic strip SAME small yellow bean character thin black stick arms legs yellow body expressive face BOTH panels TOP PANEL: {action_en} BOTTOM PANEL: same character same location transformed {reaction_en} perfect alignment split line middle hmisc vintage beige paper watercolor ink crosshatch masterpiece NO TEXT 9:16"
+    payload={"model":"Qubico/flux1-dev","task_type":"txt2img","input":{"prompt":prompt[:1500],"width":832,"height":1216,"num_images":1,"guidance_scale":3.8,"num_inference_steps":34}}
     r=requests.post(PIAPI_BASE, headers=headers, json=payload, timeout=60)
     r.raise_for_status()
     tid=r.json().get("data",{}).get("task_id")
@@ -163,7 +152,6 @@ def ensure_arabic_font():
     return bold if bold.exists() and bold.stat().st_size>5000 else None
 
 def add_text_action_reaction(image_path, action_ar, reaction_ar, action_en, reaction_en):
-    """نص بلغتين لكل بانل"""
     from PIL import Image, ImageDraw, ImageFont
     import arabic_reshaper
     from bidi.algorithm import get_display
@@ -171,13 +159,11 @@ def add_text_action_reaction(image_path, action_ar, reaction_ar, action_en, reac
     has_arabic = font_file and font_file.exists()
     img=Image.open(image_path).convert("RGB")
     W,H=img.size
-
     def fix_ar(t):
         try:
             if not has_arabic or not t: return ""
             return get_display(arabic_reshaper.reshape(t))
         except: return ""
-
     try:
         if has_arabic:
             f_big=ImageFont.truetype(str(font_file), 44)
@@ -190,7 +176,6 @@ def add_text_action_reaction(image_path, action_ar, reaction_ar, action_en, reac
         f_big=None; f_med=None
         f_en_big=ImageFont.load_default(); f_en_med=f_en_big; f_label=f_en_big
         has_arabic=False
-
     overlay = Image.new('RGBA', (W, H), (0,0,0,0))
     odraw = ImageDraw.Draw(overlay)
     odraw.rectangle([0, 0, W, 95], fill=(245,233,201,230))
@@ -199,17 +184,15 @@ def add_text_action_reaction(image_path, action_ar, reaction_ar, action_en, reac
     odraw.rectangle([0, H-85, W, H], fill=(245,233,201,230))
     img = Image.alpha_composite(img.convert('RGBA'), overlay).convert('RGB')
     draw = ImageDraw.Draw(img)
-
     try:
         if has_arabic and f_big:
-            draw.text((W//2, 30), fix_ar(action_ar), font=f_big, fill="#1a1a1a", anchor="mm", align="center")
+            draw.text((W//2, 30), fix_ar(action_ar), font=f_big, fill="#1a1a1a", anchor="mm")
         draw.text((W//2, 70), action_en, font=f_en_big, fill="#333", anchor="mm")
         draw.text((W//2, mid), "فعل → رد فعل | ACTION → REACTION", font=f_label, fill="white", anchor="mm")
         if has_arabic and f_med:
-            draw.text((W//2, H-55), fix_ar(reaction_ar), font=f_med, fill="#1a1a1a", anchor="mm", align="center")
+            draw.text((W//2, H-55), fix_ar(reaction_ar), font=f_med, fill="#1a1a1a", anchor="mm")
         draw.text((W//2, H-22), reaction_en, font=f_en_med, fill="#2a2a2a", anchor="mm")
     except Exception as e: log(f"draw {e}")
-
     img.save(image_path, quality=98)
     return image_path
 
@@ -218,29 +201,23 @@ def create_cinematic_with_music(image_path, mood, duration=10):
     MUSIC={
         "hopeful_joy":"https://cdn.pixabay.com/download/audio/2022/03/10/audio_4e2c7bb6f3.mp3",
         "calm_healing":"https://cdn.pixabay.com/download/audio/2022/05/27/audio_1808fbf07a.mp3",
-        "sad_deep":"https://cdn.pixabay.com/download/audio/2024/09/19/audio_8bfa6c1f48.mp3",
         "reflective":"https://cdn.pixabay.com/download/audio/2022/10/30/audio_8b64a1c5e7.mp3",
     }
-    music_url=MUSIC.get(mood, MUSIC["hopeful_joy"])
-    music_path=Path(tempfile.gettempdir())/f"m_{random.randint(1,9999)}.mp3"
-    try: download_file(music_url, music_path)
-    except: music_path=None
-
-    clip=ImageClip(str(image_path), duration=duration)
-    # زوم عمودي يكشف فعل -> رد فعل
-    clip = clip.resize(lambda t: 1.18 + 0.25*t/duration).set_position(lambda t: ('center', f"{-10 - 55*t/duration}%"))
-
+    url = MUSIC.get(mood, MUSIC["hopeful_joy"])
+    music_path = Path(tempfile.gettempdir())/f"m_{random.randint(1,9999)}.mp3"
+    try: download_file(url, music_path)
+    except: music_path = None
+    clip = ImageClip(str(image_path), duration=duration)
+    clip = clip.resize(lambda t: 1.20 + 0.30*t/duration).set_position(lambda t: ('center', f"{-5 - 70*t/duration}%"))
     if music_path and music_path.exists():
         try:
-            audio=AudioFileClip(str(music_path)).subclip(0, duration).volumex(0.92).audio_fadein(0.5).audio_fadeout(1.5)
-            clip=clip.set_audio(audio)
+            audio = AudioFileClip(str(music_path)).subclip(0, duration).volumex(0.95).audio_fadein(0.3).audio_fadeout(1.0)
+            clip = clip.set_audio(audio)
         except: pass
-
-    out=Path(tempfile.gettempdir())/f"cin_{int(time.time())}_{random.randint(100,999)}.mp4"
+    out = Path(tempfile.gettempdir())/f"cin_{int(time.time())}_{random.randint(100,999)}.mp4"
     clip.write_videofile(str(out), fps=30, codec='libx264', audio_codec='aac', preset='ultrafast', logger=None)
     return out
 
-# ---------------- TELEGRAM ----------------
 TELEGRAM_API=f"https://api.telegram.org/bot{BOT_TOKEN}" if BOT_TOKEN else ""
 
 def send_text(cid,t):
@@ -270,7 +247,7 @@ def process(cid, cinematic=False):
                 send_text(cid,"Still generating...")
                 return
             processing.add(cid)
-        send_text(cid,"🧠 عقل فعل ورد فعل بلغتين...\n🎨 صورة واحدة مدمجة 0.08$...\n🎬 زوم سينمائي + ترند...")
+        send_text(cid,"🧠 فعل ورد فعل...\n🎨 صورة واحدة 0.08$...\n🎬 موسيقى ترند عالية بدون راوي...")
         idea=brain_generate()
         img=generate_pro_image(idea["scene_action_en"], idea["scene_reaction_en"])
         add_text_action_reaction(img, idea["action_ar"], idea["reaction_ar"], idea["action_en"], idea["reaction_en"])
@@ -294,15 +271,15 @@ def handle_update(upd):
     msg=upd.get("message") or {}; chat=(msg.get("chat") or {}).get("id"); text=(msg.get("text") or "").strip()
     if not chat: return
     if text.startswith("/start"):
-        send_text(chat,"سلسلة فعل ورد فعل بلغتين\n/hikma صورة مدمجة\n/cinema فيديو ترند ريلز"); return
+        send_text(chat,"سلسلة فعل ورد فعل\nصورة واحدة 0.08$ - بدون راوي\n/hikma صورة\n/cinema فيديو ترند"); return
     if text.startswith("/brain"):
-        mem=load_memory(); send_text(chat,f"سلسلة: {len(mem['ideas'])} فكرة"); return
-    if text.startswith("/ping"): send_text(chat,"OK single image bilingual"); return
+        mem=load_memory(); send_text(chat,f"سلسلة: {len(mem['ideas'])}"); return
+    if text.startswith("/ping"): send_text(chat,"OK no narrator music only"); return
     if "/cinema" in text: threading.Thread(target=process, args=(chat, True), daemon=True).start(); return
     if "/hikma" in text: threading.Thread(target=process, args=(chat, False), daemon=True).start(); return
 
 @app.get("/")
-def home(): return f"FINAL bilingual single-image {len(load_memory()['ideas'])}",200
+def home(): return f"FINAL no-narrator {len(load_memory()['ideas'])}",200
 
 @app.post("/telegram/webhook")
 def wh():
