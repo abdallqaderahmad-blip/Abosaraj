@@ -25,7 +25,7 @@ MEMORY_FILE=Path("/tmp/hmisc_brain_memory.json")
 LAST_IMAGE_PATH=Path("/tmp/last_final.jpg")
 TELEGRAM_API=f"https://api.telegram.org/bot{BOT_TOKEN}" if BOT_TOKEN else ""
 
-def log(m): print(f"[V20.6] {str(m)[:900]}", flush=True)
+def log(m): print(f"[V21] {str(m)[:900]}", flush=True)
 
 def load_memory():
     if MEMORY_FILE.exists():
@@ -73,10 +73,11 @@ def download_file(url, path):
 
 def piapi_gen(prompt):
     headers={"X-API-KEY": PIAPI_API_KEY, "Content-Type":"application/json"}
-    negative="watermark, logo, text, letters, words, blurry, low quality, cartoon, anime, female, woman, girl"
-    base="same young man 28yo male arab short black hair light beard white t-shirt same face identical male"
-    full=f"{base}, {prompt}, ultra clean sharp 8k, no watermark no text no logo, photorealistic"
-    payload={"model":"Qubico/flux1-dev","task_type":"txt2img","input":{"prompt":full[:1500],"width":1024,"height":1024,"num_images":1,"guidance_scale":6.8,"num_inference_steps":45,"negative_prompt":negative}}
+    # مصلح الشوائب
+    negative="watermark, logo, text, letters, words, blurry, low quality, cartoon, anime, female, woman, girl, deformed hands, bad fingers, extra fingers, ugly, distorted, noisy, grainy"
+    base="same young man 28yo male arab short black hair light beard white t-shirt same face identical male, perfect hands with 5 fingers, clear black watch on wrist, sharp focus, detailed skin"
+    full=f"{base}, {prompt}, ultra clean sharp 8k, photorealistic, no watermark no text"
+    payload={"model":"Qubico/flux1-dev","task_type":"txt2img","input":{"prompt":full[:1500],"width":1024,"height":1024,"num_images":1,"guidance_scale":7.5,"num_inference_steps":50,"negative_prompt":negative}}
     r=requests.post(PIAPI_BASE, headers=headers, json=payload, timeout=90)
     r.raise_for_status()
     tid=r.json().get("data",{}).get("task_id")
@@ -90,7 +91,7 @@ def check_quality(p):
     try:
         path=Path(p)
         kb=path.stat().st_size//1024
-        if path.stat().st_size<40000: return False, f"صغير {kb}KB"
+        if path.stat().st_size<45000: return False, f"صغير {kb}KB"
         im=Image.open(path); w,h=im.size
         if w<900 or h<900: return False, f"دقة {w}x{h}"
         return True, f"OK {w}x{h} {kb}KB"
@@ -98,13 +99,13 @@ def check_quality(p):
 
 def brain_generate_smart():
     mem=load_memory()
-    fallback={"action_ar":"تحفظهم ككلمة مرور","reaction_ar":"فينسونك كإعلان","action_en":"SAVE AS PASSWORD","reaction_en":"FORGOTTEN LIKE ADS","character":"same young man 28yo male white t-shirt short black hair light beard same face","location":"same small apartment evening warm light window left","scene_action_en":"sitting upright on sofa holding phone close to chest hopeful bright","scene_reaction_en":"TOTALLY DIFFERENT lying on floor head in hands crying phone far away dark lonely","title":"Password Ad"}
+    fallback={"action_ar":"تحفظهم ككلمة مرور","reaction_ar":"فينسونك كإعلان","action_en":"SAVE AS PASSWORD","reaction_en":"FORGOTTEN LIKE ADS","character":"same young man 28yo male white t-shirt short black hair light beard same face","location":"same small apartment evening warm light window left","scene_action_en":"sitting upright on sofa holding phone close to chest hopeful bright, face visible, hands holding phone clearly","scene_reaction_en":"lying on floor head in hands crying phone far away dark lonely, side view","title":"Password Ad"}
     if not groq: return fallback
     recent=", ".join(mem["ideas"][-80:]) or "none"
     for _ in range(10):
         try:
             prompt=f"""Avoid: {recent}
-Return JSON ONLY: {{"action_ar":"فعل 3-4 كلمات","reaction_ar":"رد 3-4 كلمات","action_en":"3 WORDS EN CAPS","reaction_en":"3 WORDS EN CAPS","character":"same young man 28yo male white t-shirt short black hair light beard same face - LOCKED","location":"same small apartment evening warm light window left - LOCKED","scene_action_en":"sitting upright on sofa holding phone close to chest hopeful bright","scene_reaction_en":"TOTALLY DIFFERENT lying on floor head in hands crying phone far away dark","mood":"sad_deep","title":"two words"}}"""
+Return JSON ONLY: {{"action_ar":"فعل 3-4 كلمات","reaction_ar":"رد 3-4 كلمات","action_en":"3 WORDS EN CAPS","reaction_en":"3 WORDS EN CAPS","character":"same young man 28yo male white t-shirt short black hair light beard same face - LOCKED","location":"same small apartment evening warm light window left - LOCKED","scene_action_en":"sitting upright on sofa holding phone close to chest hopeful bright, face visible","scene_reaction_en":"lying on floor head in hands crying phone far away dark","mood":"sad_deep","title":"two words"}}"""
             res=groq.chat.completions.create(model="llama-3.3-70b-versatile", temperature=0.9, max_completion_tokens=600, messages=[{"role":"system","content":"Return JSON only."},{"role":"user","content":prompt}])
             content=res.choices[0].message.content.strip()
             if "```" in content:
@@ -123,7 +124,7 @@ Return JSON ONLY: {{"action_ar":"فعل 3-4 كلمات","reaction_ar":"رد 3-4 
 
 def generate_two_in_one_original(idea):
     char=idea["character"]; loc=idea["location"]
-    p1=f"{char}, {loc}, {idea['scene_action_en']}, photorealistic 8k"
+    p1=f"{char}, {loc}, {idea['scene_action_en']}, photorealistic 8k, perfect hands"
     p2=f"{char}, {loc}, {idea['scene_reaction_en']}, SAME face SAME shirt BUT different pose, photorealistic 8k"
     img1=piapi_gen(p1)
     ok,msg=check_quality(img1)
@@ -151,31 +152,30 @@ def generate_two_in_one(idea, force_new=False):
     return generate_two_in_one_original(idea)
 
 def ensure_fonts():
-    base=Path("/tmp/fonts"); base.mkdir(exist_ok=True)
-    # DejaVu موجود جاهز على Render
     possible=[
         Path("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"),
         Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
         Path("/usr/share/fonts/TTF/DejaVuSans-Bold.ttf"),
+        Path("/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf"),
     ]
     dejavu=None
     for p in possible:
-        if p.exists() and p.stat().st_size>10000:
-            dejavu=p
-            break
+        if p.exists() and p.stat().st_size>5000:
+            dejavu=p; break
+    # Amiri اختياري
+    base=Path("/tmp/fonts"); base.mkdir(exist_ok=True)
     amiri=base/"Amiri-Bold.ttf"
     if not amiri.exists() or amiri.stat().st_size<10000:
         try:
-            r=requests.get("https://github.com/google/fonts/raw/main/ofl/amiri/Amiri-Bold.ttf", timeout=15)
-            if r.status_code==200 and len(r.content)>10000:
-                amiri.write_bytes(r.content)
+            r=requests.get("https://github.com/google/fonts/raw/main/ofl/amiri/Amiri-Bold.ttf", timeout=10)
+            if r.status_code==200 and len(r.content)>10000: amiri.write_bytes(r.content)
         except: pass
     a_path = amiri if amiri.exists() and amiri.stat().st_size>10000 else dejavu
-    log(f"FONTS a={a_path} d={dejavu} d_ok={dejavu.exists() if dejavu else False}")
+    log(f"FONTS dejavu={dejavu} amiri={a_path}")
     return a_path, dejavu
 
 def create_reels_video(image_path, idea, duration=9):
-    from moviepy.editor import ImageClip, CompositeVideoClip, AudioClip
+    from moviepy.editor import ImageClip, CompositeVideoClip, AudioClip, CompositeAudioClip
     from PIL import Image, ImageDraw, ImageFont
     import numpy as np
     try:
@@ -195,75 +195,84 @@ def create_reels_video(image_path, idea, duration=9):
         return t
 
     W,H=1080,1920
-    base=ImageClip(str(image_path), duration=duration).resize(lambda t: 1.0 + 0.40*t/duration).set_position('center')
+    BOX_H=380 # كان 620 - هلا 380 عشان الصورة تبين
+    IMG_H=580
+
+    from PIL import Image as PILImage
+    full=PILImage.open(image_path).convert("RGB")
+    top_img = full.crop((0,0,1080,960)).resize((W,IMG_H), PILImage.LANCZOS)
+    bottom_img = full.crop((0,960,1080,1920)).resize((W,IMG_H), PILImage.LANCZOS)
+    top_tmp=Path(tempfile.gettempdir())/f"top_{random.randint(1,999999)}.jpg"
+    bottom_tmp=Path(tempfile.gettempdir())/f"bot_{random.randint(1,999999)}.jpg"
+    top_img.save(top_tmp, quality=98)
+    bottom_img.save(bottom_tmp, quality=98)
+
+    # زوم خفيف 8% بس - ما بيخفي الوجه
+    top_clip=ImageClip(str(top_tmp), duration=duration).resize(lambda t: 1.0 + 0.08*t/duration).set_position(('center', BOX_H))
+    bottom_clip=ImageClip(str(bottom_tmp), duration=duration).resize(lambda t: 1.0 + 0.08*t/duration).set_position(('center', BOX_H+IMG_H+4))
 
     def make_box(ar_text, en_text, is_top=True):
-        h=620
         bg=(242,230,195) if is_top else (14,14,14)
-        img=Image.new('RGB',(W,h),bg)
+        img=Image.new('RGB',(W,BOX_H),bg)
         d=ImageDraw.Draw(img)
-
-        # خط مضمون - لا يقع لـ 11px
+        # خط كبير مضمون
+        dejavu_str=str(dejavu_path) if dejavu_path else "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
         try:
             if amiri_path and Path(amiri_path).exists():
-                f_ar=ImageFont.truetype(str(amiri_path), 92)
+                f_ar=ImageFont.truetype(str(amiri_path), 95)
             else:
-                f_ar=ImageFont.truetype(str(dejavu_path), 82)
-        except Exception as e:
-            log(f"f_ar fail {e}")
-            f_ar=ImageFont.truetype(str(dejavu_path), 82) if dejavu_path else ImageFont.load_default()
+                f_ar=ImageFont.truetype(dejavu_str, 70)
+        except:
+            f_ar=ImageFont.truetype(dejavu_str, 70)
 
         try:
-            f_en=ImageFont.truetype(str(dejavu_path), 76)
-            f_share=ImageFont.truetype(str(dejavu_path), 34)
-        except Exception as e:
-            log(f"f_en fail {e} d={dejavu_path}")
-            # اخر محاولة
-            if dejavu_path and Path(dejavu_path).exists():
-                f_en=ImageFont.truetype(str(dejavu_path), 76)
-                f_share=ImageFont.truetype(str(dejavu_path), 34)
-            else:
-                f_en=f_share=ImageFont.load_default()
+            f_en=ImageFont.truetype(dejavu_str, 85)
+            f_share=ImageFont.truetype(dejavu_str, 32)
+        except:
+            f_en=ImageFont.truetype(dejavu_str, 85)
+            f_share=f_en
 
         ar_fixed=fix_ar(ar_text)
         en_clean=str(en_text).strip().upper()
 
-        # AR 92px
+        # AR 95px
         bbox_ar=d.textbbox((0,0), ar_fixed, font=f_ar)
-        d.text(((W-(bbox_ar[2]-bbox_ar[0]))//2, 85), ar_fixed, font=f_ar, fill=(12,12,12) if is_top else (242,230,195))
-        # EN 76px كبير وواضح
+        d.text(((W-(bbox_ar[2]-bbox_ar[0]))//2, 60), ar_fixed, font=f_ar, fill=(12,12,12) if is_top else (242,230,195))
+        # EN 85px كبير جدا وواضح
         bbox_en=d.textbbox((0,0), en_clean, font=f_en)
-        d.text(((W-(bbox_en[2]-bbox_en[0]))//2, 310), en_clean, font=f_en, fill=(25,25,25) if is_top else (240,240,240))
-        d.text((W-205, 22), "> SHARE", font=f_share, fill=(90,90,90) if is_top else (120,120,120))
+        d.text(((W-(bbox_en[2]-bbox_en[0]))//2, 200), en_clean, font=f_en, fill=(30,30,30) if is_top else (235,235,235))
+        d.text((W-190, 18), "> SHARE", font=f_share, fill=(90,90,90) if is_top else (110,110,110))
 
         p=Path(tempfile.gettempdir())/f"b_{random.randint(1,9999999)}.png"
         img.save(p, quality=98)
         return p
 
-    top_p=make_box(idea["action_ar"], idea["action_en"], True)
-    bottom_p=make_box(idea["reaction_ar"], idea["reaction_en"], False)
-    top_c=ImageClip(str(top_p), duration=duration).set_position((0,0))
-    bottom_c=ImageClip(str(bottom_p), duration=duration).set_position((0, H-620))
-    final=CompositeVideoClip([base, top_c, bottom_c], size=(W,H)).set_duration(duration)
+    top_box_p=make_box(idea["action_ar"], idea["action_en"], True)
+    bottom_box_p=make_box(idea["reaction_ar"], idea["reaction_en"], False)
+    top_box=ImageClip(str(top_box_p), duration=duration).set_position((0,0))
+    bottom_box=ImageClip(str(bottom_box_p), duration=duration).set_position((0, BOX_H+IMG_H*2+8))
 
-    # موسيقى داخلية مضمونة 100%
+    final=CompositeVideoClip([top_clip, bottom_clip, top_box, bottom_box], size=(W,H)).set_duration(duration)
+
+    # موسيقى عالية واضحة 1.4 + bass
     try:
-        log("Generating internal sad piano")
+        log("Music loud piano")
         def _single(tt):
-            cycle = tt % 9.0
-            pos = cycle % 2.25
-            if cycle < 2.25: freqs=[220.00,261.63,329.63]
-            elif cycle < 4.5: freqs=[174.61,220.00,261.63]
-            elif cycle < 6.75: freqs=[130.81,164.81,196.00]
-            else: freqs=[196.00,246.94,293.66]
-            decay = max(0.06, float(np.exp(-pos*1.7)))
+            cycle = tt % 8.0
+            pos = cycle % 2.0
+            if cycle < 2.0: freqs=[220.00,261.63,329.63, 440.0] # Am
+            elif cycle < 4.0: freqs=[174.61,220.00,261.63, 349.23] # F
+            elif cycle < 6.0: freqs=[130.81,164.81,196.00, 261.63] # C
+            else: freqs=[196.00,246.94,293.66, 392.0] # G
+            decay = max(0.12, float(np.exp(-pos*1.2)))
             v=0.0
             for i,f in enumerate(freqs):
-                amp=[0.55,0.32,0.22][i]
+                amp=[0.60,0.40,0.28,0.18][i]
                 n=amp*np.sin(2*np.pi*f*tt)*decay
-                n+=amp*0.35*np.sin(2*np.pi*f*2*tt)*decay*0.45
+                n+=amp*0.5*np.sin(2*np.pi*f*2*tt)*decay*0.4
+                n+=amp*0.25*np.sin(2*np.pi*f*0.5*tt)*decay # bass
                 v+=n
-            return v*0.40
+            return v*0.75 # اعلى
 
         def sad_frame(t):
             if isinstance(t, (int,float,np.floating)):
@@ -274,18 +283,17 @@ def create_reels_video(image_path, idea, duration=9):
                 vals=np.array([_single(float(x)) for x in arr], dtype=np.float32)
                 return np.column_stack([vals, vals])
 
-        music=AudioClip(sad_frame, duration=duration).volumex(0.9).audio_fadein(0.8).audio_fadeout(1.6)
+        music=AudioClip(sad_frame, duration=duration).volumex(1.4).audio_fadein(0.6).audio_fadeout(1.2)
         final=final.set_audio(music)
         has_audio=True
-        log("Music OK internal")
+        log("Music OK loud")
     except Exception as e:
-        import traceback
         log(f"music fail {e}")
         has_audio=False
 
     out=Path(tempfile.gettempdir())/f"reel_{int(time.time())}.mp4"
     final.write_videofile(str(out), fps=30, codec='libx264', audio_codec='aac' if has_audio else None, preset='ultrafast', bitrate="8000k", logger=None)
-    for p in [top_p,bottom_p]:
+    for p in [top_tmp,bottom_tmp,top_box_p,bottom_box_p]:
         try: Path(p).unlink(missing_ok=True)
         except: pass
     return out, has_audio
@@ -308,7 +316,7 @@ def process(cid, cinematic=False, force_new=False):
             if cid in processing: send_text(cid,"⏳ يولد..."); return
             processing.add(cid)
         if force_new:
-            send_text(cid,"✨ V20.6 NEW\nEN 76px AR 92px | 🎵 بيانو مضمون")
+            send_text(cid,"✨ V21 NEW\nبوكس 360 + صور 580 واضحة | EN 85px | 🎵 عالي")
             idea=brain_generate_smart()
             send_text(cid,f"✅ {idea['action_ar']} -> {idea['reaction_ar']}\nEN {idea['action_en']} -> {idea['reaction_en']}")
             combined,qmsg=generate_two_in_one(idea, force_new=True)
@@ -321,17 +329,17 @@ def process(cid, cinematic=False, force_new=False):
                 idea={"action_ar":"تحفظهم ككلمة مرور","reaction_ar":"فينسونك كإعلان","action_en":"SAVE AS PASSWORD","reaction_en":"FORGOTTEN LIKE ADS"}
                 combined=LAST_IMAGE_PATH
                 qmsg="CACHED 0$"
-                send_text(cid,"🧪 TEST مجاني | EN 76px | موسيقى مضمونة")
+                send_text(cid,"🧪 TEST مجاني | بوكس صغير + موسيقى عالية")
         send_text(cid,f"✅ صور | {qmsg}")
         if cinematic:
             vid,has_audio=create_reels_video(combined, idea, 9)
-            send_text(cid,f"✅ فيديو {'🎵 بيانو' if has_audio else '🔇'} | 9ث | EN كبير")
+            send_text(cid,f"✅ فيديو {'🎵 عالي واضح' if has_audio else '🔇'} | صور واضحة 580px")
             send_video(cid, vid)
             if vid and Path(vid).exists() and Path(vid)!=LAST_IMAGE_PATH:
                 Path(vid).unlink(missing_ok=True)
         else:
             send_photo(cid, combined)
-        send_text(cid,"✅ جاهز")
+        send_text(cid,"✅ جاهز V21")
     except Exception as e:
         import traceback; log(traceback.format_exc()[-900:])
         send_text(cid,f"❌ فشل {str(e)[:300]}")
@@ -344,9 +352,9 @@ def handle_update(upd):
         if not chat: return
         if text.startswith("/start"):
             has=LAST_IMAGE_PATH.exists() and LAST_IMAGE_PATH.stat().st_size>50000
-            send_text(chat,f"V20.6 FINAL ✅\nEN 76px AR 92px كبير مضمون\n🎵 بيانو داخلي\nزوم 40%\n\n/cinema جديد\n/test_video مجاني {'✅' if has else '⚠️'}\n/ping")
+            send_text(chat,f"V21 FINAL ✅\nبوكس 360px صغير + صورة 580px واضحة\nEN 85px AR 95px كبير جدا\n🎵 بيانو عالي 1.4 + Bass\nزوم 8% خفيف\nشوائب مصلحة\n\n/cinema جديد\n/test_video مجاني {'✅' if has else '⚠️'}\n/ping")
             return
-        if text.startswith("/ping"): send_text(chat,f"V20.6 | cache:{'نعم' if LAST_IMAGE_PATH.exists() else 'لا'}"); return
+        if text.startswith("/ping"): send_text(chat,f"V21 | cache:{'نعم' if LAST_IMAGE_PATH.exists() else 'لا'}"); return
         if "/test_video" in text:
             if LAST_IMAGE_PATH.exists() and LAST_IMAGE_PATH.stat().st_size>50000:
                 threading.Thread(target=process, args=(chat, True, False), daemon=True).start()
@@ -358,7 +366,7 @@ def handle_update(upd):
     except Exception as e: log(f"handle {e}")
 
 @app.get("/")
-def home(): return f"V20.6 FINAL cached={LAST_IMAGE_PATH.exists()}",200
+def home(): return f"V21 FINAL cached={LAST_IMAGE_PATH.exists()}",200
 @app.post("/telegram/webhook")
 def wh():
     upd=request.get_json(silent=True) or {}
