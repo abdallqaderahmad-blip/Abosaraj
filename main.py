@@ -26,7 +26,7 @@ MEMORY_FILE=Path("/tmp/hmisc_brain_memory.json")
 LAST_IMAGE_PATH=Path("/tmp/last_final.jpg")
 TELEGRAM_API=f"https://api.telegram.org/bot{BOT_TOKEN}" if BOT_TOKEN else ""
 
-def log(m): print(f"[V20.2-FINAL] {str(m)[:900]}", flush=True)
+def log(m): print(f"[V20.3-FINAL] {str(m)[:900]}", flush=True)
 
 def load_memory():
     if MEMORY_FILE.exists():
@@ -164,7 +164,6 @@ def ensure_fonts():
             except: continue
     return amiri if amiri.exists() and amiri.stat().st_size>10000 else None, dejavu
 
-# V20.2 - موسيقى تريند حزينة - Mixkit لا يعمل بلوك + Pixabay
 REAL_MUSIC = [
     "https://assets.mixkit.co/music/preview/mixkit-sad-piano-1071.mp3",
     "https://assets.mixkit.co/music/preview/mixkit-reflections-09-124.mp3",
@@ -275,34 +274,49 @@ def create_reels_video(image_path, idea, duration=9):
             log(f"music err {e}")
             if mp.exists(): mp.unlink(missing_ok=True)
             continue
+
     if not audio_added:
         try:
-            log("FALLBACK generating REAL sad Lo-fi piano Am-F-C-G")
+            log("FALLBACK generating REAL sad Lo-fi")
             import numpy as np
-            def sad_lofi_frame(t):
-                cycle = t % 9.0
+            def _single(tt):
+                cycle = tt % 9.0
                 pos = cycle % 2.25
                 if cycle < 2.25: freqs=[220.0,261.63,329.63]
                 elif cycle < 4.5: freqs=[174.61,220.0,261.63]
                 elif cycle < 6.75: freqs=[261.63,329.63,392.0]
                 else: freqs=[196.0,246.94,293.66]
-                decay = max(0.05, np.exp(-pos*1.8))
+                decay = max(0.05, float(np.exp(-pos*1.8)))
                 val=0.0
                 for i,f in enumerate(freqs):
                     amp=[0.5,0.3,0.2][i]
-                    note = amp*np.sin(2*np.pi*f*t)*decay
-                    note += amp*0.4*np.sin(2*np.pi*f*2*t)*decay*0.5
-                    note += amp*0.15*np.sin(2*np.pi*f*3*t)*decay*0.2
-                    note *= (1.0 + 0.015*np.sin(2*np.pi*5.5*t))
+                    note = amp*np.sin(2*np.pi*f*tt)*decay
+                    note += amp*0.4*np.sin(2*np.pi*f*2*tt)*decay*0.5
+                    note += amp*0.15*np.sin(2*np.pi*f*3*tt)*decay*0.2
+                    note *= (1.0 + 0.015*np.sin(2*np.pi*5.5*tt))
                     val+=note
                 val*=0.35
-                return np.array([val*0.95, val*0.95])
-            fallback_audio=AudioClip(sad_lofi_frame, duration=duration).volumex(0.8).audio_fadein(0.8).audio_fadeout(1.8)
+                return val
+
+            def sad_frame(t):
+                # fix ambiguous error - handle array
+                if isinstance(t, (int,float,np.floating)):
+                    v=_single(float(t))
+                    return np.array([v*0.95, v*0.95], dtype=np.float32)
+                else:
+                    arr=np.atleast_1d(t)
+                    vals=np.array([_single(float(x)) for x in arr], dtype=np.float32)
+                    stereo=np.column_stack([vals*0.95, vals*0.95])
+                    return stereo
+
+            fallback_audio=AudioClip(sad_frame, duration=duration).volumex(0.8).audio_fadein(0.8).audio_fadeout(1.8)
             final=final.set_audio(fallback_audio)
             audio_added=True
-            log("FALLBACK Sad Lo-fi OK - NOT phone")
+            log("FALLBACK Sad Lo-fi OK")
         except Exception as e:
-            log(f"fallback fail {e}")
+            import traceback
+            log(f"fallback fail {e} {traceback.format_exc()[-500:]}")
+
     out=Path(tempfile.gettempdir())/f"reel_{int(time.time())}.mp4"
     final.write_videofile(str(out), fps=30, codec='libx264', audio_codec='aac' if audio_added else None, preset='ultrafast', bitrate="8000k", logger=None)
     for p in [top_p,bottom_p,mp]:
@@ -328,13 +342,13 @@ def process(cid, cinematic=False, force_new=False):
             if cid in processing: send_text(cid,"⏳ يولد..."); return
             processing.add(cid)
         if force_new:
-            send_text(cid,"✨ V20.2 NEW\nزوم 40% | EN 65px AR 85px\n🎵 حزينة تريند Mixkit | SHARE")
+            send_text(cid,"✨ V20.3 NEW\nزوم 40% | EN 65px AR 85px\n🎵 حزينة تريند Mixkit")
             idea=brain_generate_smart()
             send_text(cid,f"✅ {idea['action_ar']} -> {idea['reaction_ar']}\nEN {idea['action_en']} -> {idea['reaction_en']}")
             combined,qmsg=generate_two_in_one(idea, force_new=True)
         else:
             if not LAST_IMAGE_PATH.exists() or LAST_IMAGE_PATH.stat().st_size<50000:
-                send_text(cid,"⚠️ ما في cache بعد Deploy - بولد جديد مرة وحدة")
+                send_text(cid,"⚠️ ما في cache - بولد جديد مرة وحدة")
                 idea=brain_generate_smart()
                 combined,qmsg=generate_two_in_one(idea, force_new=True)
             else:
@@ -364,9 +378,9 @@ def handle_update(upd):
         if not chat: return
         if text.startswith("/start"):
             has=LAST_IMAGE_PATH.exists() and LAST_IMAGE_PATH.stat().st_size>50000
-            send_text(chat,f"V20.2 FINAL ✅\nزوم 40% | EN 65px AR 85px\n🎵 Mixkit حزينة تريند - مش نغمة جوال\nSHARE | بدون خربشة\n\n/cinema = جديد بفلوس\n/test_video = اول مرة بفلوس بعدها 0$ {'✅ جاهز' if has else '⚠️ اول مرة بفلوس'}\n/ping")
+            send_text(chat,f"V20.3 FINAL ✅\nزوم 40% | EN 65px | 🎵 حزينة Mixkit\nمصلح ambiguous\n\n/cinema = جديد بفلوس\n/test_video = اول مرة بفلوس بعدها 0$ {'✅ جاهز' if has else '⚠️'}\n/ping")
             return
-        if text.startswith("/ping"): send_text(chat,f"V20.2 | cache:{'نعم' if LAST_IMAGE_PATH.exists() else 'لا'} | music Mixkit"); return
+        if text.startswith("/ping"): send_text(chat,f"V20.3 | cache:{'نعم' if LAST_IMAGE_PATH.exists() else 'لا'}"); return
         if "/test_video" in text:
             if LAST_IMAGE_PATH.exists() and LAST_IMAGE_PATH.stat().st_size>50000:
                 threading.Thread(target=process, args=(chat, True, False), daemon=True).start()
@@ -378,7 +392,7 @@ def handle_update(upd):
     except Exception as e: log(f"handle {e}")
 
 @app.get("/")
-def home(): return f"V20.2 FINAL cached={LAST_IMAGE_PATH.exists()}",200
+def home(): return f"V20.3 FINAL cached={LAST_IMAGE_PATH.exists()}",200
 @app.post("/telegram/webhook")
 def wh():
     upd=request.get_json(silent=True) or {}
