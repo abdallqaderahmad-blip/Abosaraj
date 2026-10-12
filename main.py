@@ -25,7 +25,7 @@ MEMORY_FILE=Path("/tmp/hmisc_brain_memory.json")
 LAST_IMAGE_PATH=Path("/tmp/last_final.jpg")
 TELEGRAM_API=f"https://api.telegram.org/bot{BOT_TOKEN}" if BOT_TOKEN else ""
 
-def log(m): print(f"[V22.1] {str(m)[:900]}", flush=True)
+def log(m): print(f"[V22.2] {str(m)[:900]}", flush=True)
 
 def load_memory():
     if MEMORY_FILE.exists():
@@ -46,7 +46,6 @@ def extract_url(j):
     import json as js; s=js.dumps(j)
     m=re.search(r'https?://[^\s"\']+\.(?:jpg|jpeg|png|webp)[^\s"\']*', s)
     return m.group(0) if m else None
-
 def piapi_wait(tid):
     headers={"X-API-KEY": PIAPI_API_KEY}
     url=f"{PIAPI_BASE}/{tid}"
@@ -60,7 +59,6 @@ def piapi_wait(tid):
         if status in ("failed","error","canceled"): raise RuntimeError(str(body)[:800])
         time.sleep(3)
     raise TimeoutError("piapi timeout")
-
 def download_file(url, path):
     path=Path(path)
     with requests.get(url, timeout=120, stream=True, headers={"User-Agent":"Mozilla/5.0"}, allow_redirects=True) as rr:
@@ -69,7 +67,6 @@ def download_file(url, path):
             for c in rr.iter_content(1024*256):
                 if c: f.write(c)
     return path
-
 def piapi_gen(prompt):
     headers={"X-API-KEY": PIAPI_API_KEY, "Content-Type":"application/json"}
     negative="watermark, logo, text, letters, words, blurry, low quality, cartoon, anime, female, woman, girl, deformed hands, bad fingers, extra fingers, ugly, distorted"
@@ -83,7 +80,6 @@ def piapi_gen(prompt):
     tmp=Path(tempfile.gettempdir())/f"g_{hashlib.md5(str(time.time()+random.random()).encode()).hexdigest()[:8]}.jpg"
     download_file(url, tmp)
     return tmp
-
 def check_quality(p):
     from PIL import Image
     try:
@@ -94,7 +90,6 @@ def check_quality(p):
         if w<900 or h<900: return False, f"دقة {w}x{h}"
         return True, f"OK {w}x{h} {kb}KB"
     except Exception as e: return False, str(e)
-
 def brain_generate_smart():
     mem=load_memory()
     fallback={"action_ar":"تحفظهم ككلمة مرور","reaction_ar":"فينسونك كإعلان","action_en":"SAVE AS PASSWORD","reaction_en":"FORGOTTEN LIKE ADS","character":"same young man 28yo male white t-shirt short black hair light beard same face","location":"same small apartment evening warm light window left","scene_action_en":"sitting upright on sofa holding phone close to chest hopeful bright face visible","scene_reaction_en":"lying on floor head in hands crying phone far away dark lonely side view","title":"Password Ad"}
@@ -119,7 +114,6 @@ Return JSON ONLY: {{"action_ar":"فعل 3-4 كلمات","reaction_ar":"رد 3-4 
             return j
         except: time.sleep(0.5); continue
     return fallback
-
 def generate_two_in_one_original(idea):
     char=idea["character"]; loc=idea["location"]
     p1=f"{char}, {loc}, {idea['scene_action_en']}, photorealistic 8k perfect hands"
@@ -142,21 +136,71 @@ def generate_two_in_one_original(idea):
     try: shutil.copy(out, LAST_IMAGE_PATH)
     except: pass
     return out, f"{msg} | {msg2}"
-
 def generate_two_in_one(idea, force_new=False):
     if not force_new and LAST_IMAGE_PATH.exists() and LAST_IMAGE_PATH.stat().st_size>50000:
         log("CACHED 0$")
         return LAST_IMAGE_PATH, "CACHED 0$ - مجاني"
     return generate_two_in_one_original(idea)
 
-def get_font(size):
+def ensure_arabic_font():
     from PIL import ImageFont
+    for p in [
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    ]:
+        try:
+            if Path(p).exists():
+                ImageFont.truetype(p, 20)
+                return Path(p)
+        except: continue
+    base=Path("/tmp/fonts"); base.mkdir(exist_ok=True)
+    noto=base/"NotoNaskhArabic-Bold.ttf"
+    if noto.exists():
+        try:
+            ImageFont.truetype(str(noto), 20)
+            return noto
+        except:
+            try: noto.unlink()
+            except: pass
+    try:
+        r=requests.get("https://github.com/googlefonts/noto-fonts/raw/main/hinted/ttf/NotoNaskhArabic/NotoNaskhArabic-Bold.ttf", timeout=15)
+        if r.status_code==200 and len(r.content)>50000:
+            noto.write_bytes(r.content)
+            ImageFont.truetype(str(noto), 20)
+            log(f"Downloaded Noto Arabic {len(r.content)}")
+            return noto
+    except Exception as e:
+        log(f"noto download fail {e}")
+    amiri=base/"Amiri-Bold.ttf"
+    if amiri.exists():
+        try:
+            ImageFont.truetype(str(amiri), 20)
+            return amiri
+        except:
+            try: amiri.unlink()
+            except: pass
+    try:
+        r=requests.get("https://github.com/google/fonts/raw/main/ofl/amiri/Amiri-Bold.ttf", timeout=10)
+        if r.status_code==200 and len(r.content)>20000:
+            amiri.write_bytes(r.content)
+            ImageFont.truetype(str(amiri), 20)
+            return amiri
+    except: pass
+    return None
+
+def get_font(size, need_arabic=False):
+    from PIL import ImageFont
+    if need_arabic:
+        p=ensure_arabic_font()
+        if p:
+            try:
+                return ImageFont.truetype(str(p), size)
+            except Exception as e:
+                log(f"arabic font fail {p} {e}")
     candidates=[
         "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
         "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
         "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
-        "/usr/share/fonts/TTF/DejaVuSans-Bold.ttf",
-        "/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf",
     ]
     for p in candidates:
         try:
@@ -197,9 +241,9 @@ def create_reels_video(image_path, idea, duration=9):
         bg=(242,230,195) if is_top else (18,18,18)
         img=Image.new('RGB',(W,BOX_H),bg)
         d=ImageDraw.Draw(img)
-        f_ar = get_font(78)
-        f_en = get_font(62)
-        f_share = get_font(28)
+        f_ar = get_font(78, need_arabic=True)
+        f_en = get_font(62, need_arabic=False)
+        f_share = get_font(28, need_arabic=False)
         ar_fixed=fix_ar(ar_text)
         en_clean=str(en_text).strip().upper()
         try:
@@ -207,8 +251,11 @@ def create_reels_video(image_path, idea, duration=9):
             x=(W-(bbox[2]-bbox[0]))//2
             d.text((x, 55), ar_fixed, font=f_ar, fill=(10,10,10) if is_top else (245,230,190))
         except Exception as e:
-            log(f"ar draw fail {e}")
-            d.text((100, 55), ar_text, fill=(0,0,0))
+            log(f"ar fail {e} font={f_ar}")
+            try:
+                d.text((W//2-200, 55), ar_text, font=f_ar, fill=(10,10,10) if is_top else (245,230,190))
+            except:
+                d.text((W//2-100, 55), "ARABIC", fill=(0,0,0))
         try:
             bbox2=d.textbbox((0,0), en_clean, font=f_en)
             x2=(W-(bbox2[2]-bbox2[0]))//2
@@ -217,7 +264,7 @@ def create_reels_video(image_path, idea, duration=9):
             else:
                 d.text((x2, 210), en_clean, font=f_en, fill=(255,255,255), stroke_width=3, stroke_fill=(0,0,0))
         except Exception as e:
-            log(f"en draw {e}")
+            log(f"en fail {e}")
             try:
                 d.text((W//2-150, 210), en_clean, font=f_en, fill=(20,20,20) if is_top else (255,255,255))
             except:
@@ -302,7 +349,7 @@ def process(cid, cinematic=False, force_new=False):
             if cid in processing: send_text(cid,"⏳ يولد..."); return
             processing.add(cid)
         if force_new:
-            send_text(cid,"✨ V22.1 NEW\nEN واضح + Stroke | 🎵 Arpeggio عالي")
+            send_text(cid,"✨ V22.2 NEW\nEN واضح + Noto Arabic + 🎵 Arpeggio عالي")
             idea=brain_generate_smart()
             send_text(cid,f"✅ {idea['action_ar']} -> {idea['reaction_ar']}\nEN {idea['action_en']} -> {idea['reaction_en']}")
             combined,qmsg=generate_two_in_one(idea, force_new=True)
@@ -315,17 +362,17 @@ def process(cid, cinematic=False, force_new=False):
                 idea={"action_ar":"تحفظهم ككلمة مرور","reaction_ar":"فينسونك كإعلان","action_en":"SAVE AS PASSWORD","reaction_en":"FORGOTTEN LIKE ADS"}
                 combined=LAST_IMAGE_PATH
                 qmsg="CACHED 0$"
-                send_text(cid,"🧪 TEST مجاني V22.1")
+                send_text(cid,"🧪 TEST مجاني V22.2")
         send_text(cid,f"✅ صور | {qmsg}")
         if cinematic:
             vid,has_audio=create_reels_video(combined, idea, 9)
-            send_text(cid,f"✅ فيديو {'🎵 Arpeggio عالي' if has_audio else '🔇'} | EN واضح")
+            send_text(cid,f"✅ فيديو {'🎵 Arpeggio عالي' if has_audio else '🔇'} | EN واضح + Noto")
             send_video(cid, vid)
             if vid and Path(vid).exists() and Path(vid)!=LAST_IMAGE_PATH:
                 Path(vid).unlink(missing_ok=True)
         else:
             send_photo(cid, combined)
-        send_text(cid,"✅ جاهز V22.1")
+        send_text(cid,"✅ جاهز V22.2")
     except Exception as e:
         import traceback; log(traceback.format_exc()[-900:])
         send_text(cid,f"❌ فشل {str(e)[:300]}")
@@ -338,9 +385,9 @@ def handle_update(upd):
         if not chat: return
         if text.startswith("/start"):
             has=LAST_IMAGE_PATH.exists() and LAST_IMAGE_PATH.stat().st_size>50000
-            send_text(chat,f"V22.1 FIX ✅\nlatin-1 مصلح\nEN 62px + Stroke واضح\n🎵 Arpeggio حزين عالي\n\n/cinema جديد\n/test_video مجاني {'✅' if has else '⚠️'}\n/ping")
+            send_text(chat,f"V22.2 FIX ✅\nlatin-1 مصلح نهائي - Noto Arabic\nEN 62px + Stroke واضح\n🎵 Arpeggio حزين عالي 1.8\n\n/cinema جديد\n/test_video مجاني {'✅' if has else '⚠️'}\n/ping")
             return
-        if text.startswith("/ping"): send_text(chat,f"V22.1 | cache:{'نعم' if LAST_IMAGE_PATH.exists() else 'لا'}"); return
+        if text.startswith("/ping"): send_text(chat,f"V22.2 | cache:{'نعم' if LAST_IMAGE_PATH.exists() else 'لا'}"); return
         if "/test_video" in text:
             if LAST_IMAGE_PATH.exists() and LAST_IMAGE_PATH.stat().st_size>50000:
                 threading.Thread(target=process, args=(chat, True, False), daemon=True).start()
@@ -352,7 +399,7 @@ def handle_update(upd):
     except Exception as e: log(f"handle {e}")
 
 @app.get("/")
-def home(): return f"V22.1 FINAL cached={LAST_IMAGE_PATH.exists()}",200
+def home(): return f"V22.2 FINAL cached={LAST_IMAGE_PATH.exists()}",200
 @app.post("/telegram/webhook")
 def wh():
     upd=request.get_json(silent=True) or {}
