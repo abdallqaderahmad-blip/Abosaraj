@@ -29,7 +29,7 @@ MEMORY_FILE=Path("/tmp/hmisc_brain_memory.json")
 ARCHIVE_DIR=Path("/tmp/archive_images"); ARCHIVE_DIR.mkdir(exist_ok=True)
 TELEGRAM_API=f"https://api.telegram.org/bot{BOT_TOKEN}" if BOT_TOKEN else ""
 
-def log(m): print(f"[FINAL] {str(m)[:800]}", flush=True)
+def log(m): print(f"[V4-VIRAL] {str(m)[:800]}", flush=True)
 
 def send_error_report(cid, where, error):
     import traceback
@@ -54,68 +54,6 @@ def is_dup(s, mem):
         if old[:40] in s or s[:40] in old: return True
     return False
 
-# ========== عقل واقعي - فعل ورد فعل من الحياة ==========
-def brain_generate():
-    mem=load_memory()
-    fallback={
-        "action_ar":"تترك هاتفك ينتظر رسالة",
-        "reaction_ar":"فينطفئ قلبك قبل البطارية",
-        "action_en":"You leave phone waiting for message",
-        "reaction_en":"Your heart dies before battery",
-        "character":"same young man 28yo white t-shirt short black hair light beard same face realistic",
-        "location":"same small apartment evening warm light window left kitchen background",
-        "scene_action_en":"young man sitting on bed looking at phone waiting, realistic everyday",
-        "scene_reaction_en":"same man same bed same shirt same light, now phone dark screen in hand head down disappointed realistic",
-        "mood":"lonely_dark",
-        "title":"Waiting Phone"
-    }
-    if not groq: return fallback
-    recent=", ".join(mem["ideas"][-30:]) or "none"
-    for _ in range(15):
-        try:
-            prompt=f"""Avoid titles: {recent}
-You create REAL LIFE viral quotes: action people do daily -> real consequence they live.
-GOOD EXAMPLES:
-- تثق بمن لا يستحق / فتتعلم الخذلان درس قاس
-- تترك هاتفك ينتظر رسالة / فينطفئ قلبك قبل البطارية
-- تبتسم وأنت متعب جدا / فيظن الجميع أنك بخير
-- تسكت كي لا تخسر أحدا / فتخسر نفسك بصمت
-- تعطي وقتك لمن لا وقت له / فتجد نفسك وحيدا بلا وقت
-- تنتظر اعتذارا لن يأتي / فيطول انتظارك ويقصرك العمر
-
-Rules: real daily actions, not poetic fantasy. Cause -> effect logical.
-Return JSON ONLY:
-{{
-"action_ar":"فعل واقعي 5-7 كلمات من الحياة",
-"reaction_ar":"رد فعل واقعي نتيجة حتمية 5-7 كلمات",
-"action_en":"real action 5-7 words",
-"reaction_en":"real reaction consequence",
-"character":"same young man 28yo white t-shirt short black hair light beard same face - LOCKED realistic",
-"location":"same small apartment evening warm light window left - LOCKED realistic",
-"scene_action_en":"action visual distinct pose: sitting looking at phone waiting realistic",
-"scene_reaction_en":"reaction visual distinct: same man same place same clothes but head down phone dark disappointed realistic",
-"mood":"sad_deep",
-"title":"two english words"
-}}
-mood one of: sad_deep, lonely_dark, hopeful_light, anxious_night, love_soft
-"""
-            res=groq.chat.completions.create(model=GROQ_MODEL, temperature=1.35, max_completion_tokens=1100, messages=[{"role":"system","content":"You are realistic Arab philosopher. Real daily life quotes action->real consequence. Lock character/location. Visual different."},{"role":"user","content":prompt}])
-            content=res.choices[0].message.content.strip()
-            if "```" in content:
-                for p in content.split("```"):
-                    if "{" in p and "}" in p: content=p.replace("json","").strip(); break
-            j=json.loads(content)
-            if len(j.get("action_ar","").split())<4: continue
-            if len(j.get("reaction_ar","").split())<4: continue
-            if j.get("action_ar")==j.get("reaction_ar"): continue
-            if "يدك ترتجف" in j.get("action_ar",""): continue
-            if is_dup(j.get("action_ar","")[:15]+j["scene_action_en"], mem): continue
-            mem["ideas"].append(j.get("title","")); mem["scenes"].append(j.get("action_ar","")[:15]+j["scene_action_en"]); save_memory(mem)
-            log(f"REAL brain {j['action_ar']} -> {j['reaction_ar']} mood={j['mood']}")
-            return j
-        except Exception as e: log(f"brain retry {e}"); time.sleep(0.7)
-    return fallback
-
 def extract_url(j):
     import json as js; s=js.dumps(j)
     m=re.search(r'https?://[^\s"\']+\.(?:jpg|jpeg|png|webp)[^\s"\']*', s)
@@ -137,11 +75,7 @@ def piapi_wait(tid):
 
 def download_file(url, path, is_music=False):
     path=Path(path)
-    headers={
-        "User-Agent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
-        "Referer":"https://mixkit.co/" if "mixkit" in url else "https://pixabay.com/",
-        "Accept":"audio/mpeg,audio/*,*/*;q=0.9",
-    } if is_music else {"User-Agent":"Mozilla/5.0"}
+    headers={"User-Agent":"Mozilla/5.0","Accept":"*/*"} if is_music else {"User-Agent":"Mozilla/5.0"}
     with requests.get(url, timeout=120, stream=True, headers=headers, allow_redirects=True) as rr:
         rr.raise_for_status()
         with path.open("wb") as f:
@@ -149,9 +83,9 @@ def download_file(url, path, is_music=False):
                 if c: f.write(c)
     return path
 
-def piapi_gen(prompt, ref_path=None, strength=0.55):
+def piapi_gen(prompt, ref_path=None, strength=0.60):
     headers={"X-API-KEY": PIAPI_API_KEY, "Content-Type":"application/json"}
-    negative="watermark, logo, text, letters, words, blurry, low quality, artifacts, stripes, noise, deformed, extra fingers, glitch, dirty, lowres"
+    negative="watermark, logo, text, letters, words, blurry, low quality, artifacts, stripes, noise, deformed, extra fingers, glitch, dirty, lowres, duplicate"
     full=f"{prompt}, ultra clean sharp 8k, no watermark, no text, no logo, no artifacts, masterpiece photorealistic, sharp focus, natural skin"
     if ref_path and Path(ref_path).exists():
         with open(ref_path,"rb") as f: b64=base64.b64encode(f.read()).decode()
@@ -179,31 +113,99 @@ def check_quality(p):
         return True, f"OK {w}x{h} {kb}KB"
     except Exception as e: return False, str(e)
 
+# ========== عقل V4 VIRAL قابل للشير ==========
+def brain_generate():
+    mem=load_memory()
+    fallback={
+        "action_ar":"تسامح كثيرا",
+        "reaction_ar":"فيظنون أنك لا تتألم",
+        "action_en":"You forgive too much",
+        "reaction_en":"They think you never hurt",
+        "character":"same young man 28yo white t-shirt short black hair light beard same face realistic",
+        "location":"same small apartment evening warm light window left",
+        "scene_action_en":"young man sitting upright on sofa smiling forgiving holding phone hopeful pose",
+        "scene_reaction_en":"same man same sofa same shirt same room BUT lying down on side head in hands crying completely different pose sad",
+        "mood":"sad_deep",
+        "title":"Forgive Hurt",
+        "hashtag":"#خذلان"
+    }
+    if not groq: return fallback
+    recent=", ".join(mem["ideas"][-30:]) or "none"
+    for _ in range(20):
+        try:
+            prompt=f"""Avoid: {recent}
+Create VIRAL Reels quotes that make people SHARE. Must be emotional, same topic cause->effect.
+
+VIRAL SHAREABLE EXAMPLES (same topic):
+- تسامح كثيرا -> فيظنون أنك لا تتألم (forgiving)
+- تظل متاحا دائما -> فينسون قيمتك (availability)
+- تكتم حزنك وتبتسم -> فيصدقون أنك بخير (hiding pain)
+- تعطي قلبك كاملا -> فيعيدونه ناقصا (giving heart)
+- تنتظر طوال الليل -> فينامون دون أن يفكروا بك (waiting)
+- تثق سريعا -> فتتعلم ببطء (trust)
+
+BAD: تجلس على الأريكة وتشغل هاتفك -> تلقي إشعارا ثم تكتشف غموض (no relation, too long)
+
+Return JSON ONLY:
+{{
+"action_ar":"فعل قصير 4-5 كلمات يمس القلب",
+"reaction_ar":"رد فعل نفس الموضوع 4-5 كلمات موجع",
+"action_en":"short cause 4-5 words emotional",
+"reaction_en":"same topic effect 4-5 words painful",
+"character":"same young man 28yo white t-shirt short black hair light beard same face - LOCKED realistic",
+"location":"same small apartment evening warm light window left - LOCKED",
+"scene_action_en":"POSE 1 distinct: sitting upright smiling hopeful holding phone",
+"scene_reaction_en":"POSE 2 TOTALLY DIFFERENT: same man same place but lying down head in hands crying or sitting on floor lonely - must be different body position",
+"mood":"sad_deep",
+"title":"two words",
+"hashtag":"#حزن"
+}}
+mood: sad_deep, lonely_dark, love_soft
+POSE 2 MUST BE DIFFERENT POSITION - critical!
+Keep 4-5 words max, emotional, shareable.
+"""
+            res=groq.chat.completions.create(model=GROQ_MODEL, temperature=1.4, max_completion_tokens=1100,
+                messages=[{"role":"system","content":"You create viral Arabic quotes for Reels sharing. Same topic cause->effect, short, emotional, makes people say هذا أنا. POSE 2 different position."},{"role":"user","content":prompt}])
+            content=res.choices[0].message.content.strip()
+            if "```" in content:
+                for p in content.split("```"):
+                    if "{" in p and "}" in p: content=p.replace("json","").strip(); break
+            j=json.loads(content)
+            if len(j.get("action_ar","").split())>6: continue
+            if len(j.get("reaction_ar","").split())>6: continue
+            if j.get("action_ar")==j.get("reaction_ar"): continue
+            if is_dup(j.get("action_ar","")[:12], mem): continue
+            mem["ideas"].append(j.get("title","")); mem["scenes"].append(j.get("action_ar","")[:12]); save_memory(mem)
+            log(f"VIRAL {j['action_ar']} -> {j['reaction_ar']}")
+            return j
+        except Exception as e: log(f"brain retry {e}"); time.sleep(0.6)
+    return fallback
+
 def generate_two_in_one(idea):
     char=idea["character"]; loc=idea["location"]
-    mood=idea.get("mood","sad_deep")
-    p_action=f"{char}, {loc}, {idea['scene_action_en']}, {idea['action_en']}, {mood} mood, {idea['action_ar']}, cinematic still photorealistic 8k sharp"
-    p_reaction=f"{char}, {loc}, {idea['scene_reaction_en']}, {idea['reaction_en']}, SAME face SAME clothes SAME background SAME lighting, {mood} mood, {idea['reaction_ar']}, but different emotion pose reaction moment photorealistic 8k"
+    p_action=f"{char}, {loc}, {idea['scene_action_en']}, {idea['action_en']}, hopeful soft light, sitting upright, photorealistic sharp 8k"
+    p_reaction=f"{char}, {loc}, {idea['scene_reaction_en']}, {idea['reaction_en']}, SAME face SAME shirt SAME room BUT totally different body pose and emotion lying or head in hands, sad dark mood, photorealistic sharp 8k"
 
     for _ in range(2):
-        img1=piapi_gen(p_action, None, strength=0.55)
+        img1=piapi_gen(p_action, None, strength=0.60)
         ok,msg=check_quality(img1)
         if ok: break
         Path(img1).unlink(missing_ok=True)
-    else:
-        raise RuntimeError(f"جودة فعل فشلت {msg}")
-    for _ in range(2):
-        img2=piapi_gen(p_reaction, img1, strength=0.58)
+    else: raise RuntimeError(f"فعل فشل {msg}")
+
+    for _ in range(3):
+        img2=piapi_gen(p_reaction, img1, strength=0.75)
         ok2,msg2=check_quality(img2)
         if ok2: break
         Path(img2).unlink(missing_ok=True)
     else:
         Path(img1).unlink(missing_ok=True)
-        raise RuntimeError(f"جودة رد فعل فشلت {msg2}")
+        raise RuntimeError(f"رد فعل فشل {msg2}")
+
     try:
         from PIL import Image
-        Image.open(img1).save(ARCHIVE_DIR/f"{int(time.time())}_action_{idea['title'][:10]}.jpg", quality=95)
-        Image.open(img2).save(ARCHIVE_DIR/f"{int(time.time())}_reaction_{idea['title'][:10]}.jpg", quality=95)
+        Image.open(img1).save(ARCHIVE_DIR/f"{int(time.time())}_a_{idea['title'][:10]}.jpg", quality=95)
+        Image.open(img2).save(ARCHIVE_DIR/f"{int(time.time())}_r_{idea['title'][:10]}.jpg", quality=95)
     except: pass
     from PIL import Image, ImageDraw
     top=Image.open(img1).convert("RGB").resize((1080,960), Image.LANCZOS)
@@ -214,7 +216,7 @@ def generate_two_in_one(idea):
     out=Path(tempfile.gettempdir())/f"final_{int(time.time())}.jpg"
     combined.save(out, quality=98, subsampling=0)
     Path(img1).unlink(missing_ok=True); Path(img2).unlink(missing_ok=True)
-    return out, f"{msg} | {msg2} | {mood}"
+    return out, f"{msg} | {msg2}"
 
 def ensure_fonts():
     base=Path("/tmp/fonts"); base.mkdir(exist_ok=True)
@@ -228,22 +230,27 @@ def ensure_fonts():
     return amiri if amiri.exists() and amiri.stat().st_size>5000 else None, dejavu
 
 TREND_MUSIC_BY_MOOD={
-    "sad_deep": ["https://assets.mixkit.co/music/preview/mixkit-sad-moment-135.mp3","https://assets.mixkit.co/music/preview/mixkit-lonely-town-42.mp3"],
-    "lonely_dark": ["https://assets.mixkit.co/music/preview/mixkit-sleepy-cat-135.mp3","https://assets.mixkit.co/music/preview/mixkit-reflections-22.mp3"],
-    "hopeful_light": ["https://assets.mixkit.co/music/preview/mixkit-a-very-happy-christmas-897.mp3","https://assets.mixkit.co/music/preview/mixkit-deep-urban-623.mp3"],
-    "anxious_night": ["https://assets.mixkit.co/music/preview/mixkit-cinematic-dramatic-116.mp3","https://assets.mixkit.co/music/preview/mixkit-deep-urban-623.mp3"],
-    "love_soft": ["https://assets.mixkit.co/music/preview/mixkit-reflections-22.mp3","https://cdn.pixabay.com/download/audio/2022/06/07/audio_b9bd4170e8.mp3?filename=ambient-piano-11599.mp3"],
-    "real_life": ["https://assets.mixkit.co/music/preview/mixkit-reflections-22.mp3","https://assets.mixkit.co/music/preview/mixkit-sad-moment-135.mp3"],
+    "sad_deep": [
+        "https://cdn.pixabay.com/download/audio/2021/08/04/audio_0625c50d2c.mp3?filename=sad-piano-101760.mp3",
+        "https://cdn.pixabay.com/download/audio/2022/06/07/audio_b9bd4170e8.mp3?filename=ambient-piano-11599.mp3",
+        "https://cdn.pixabay.com/download/audio/2022/03/24/audio_2a9aafb6cb.mp3?filename=soft-piano-118571.mp3"
+    ],
+    "lonely_dark": [
+        "https://cdn.pixabay.com/download/audio/2021/10/25/audio_39628d1d4f.mp3?filename=lost-ambient-116201.mp3",
+        "https://cdn.pixabay.com/download/audio/2022/10/30/audio_8bd4170e8a.mp3?filename=lonely-116879.mp3"
+    ],
+    "love_soft": [
+        "https://cdn.pixabay.com/download/audio/2022/03/10/audio_c8c8a650f6.mp3?filename=lofi-chill-113199.mp3"
+    ],
 }
 def get_music(mood="sad_deep"):
     mem=load_memory(); last=mem.get("last_music","")
     pool=TREND_MUSIC_BY_MOOD.get(mood, TREND_MUSIC_BY_MOOD["sad_deep"])
-    choices=[m for m in pool if m!=last]
-    if not choices: choices=pool
+    choices=[m for m in pool if m!=last] or pool
     pick=random.choice(choices)
     mem["last_music"]=pick; save_memory(mem); return pick
 
-def create_reels_video(image_path, idea, duration=9):
+def create_reels_video(image_path, idea, duration=8):
     from moviepy.editor import ImageClip, AudioFileClip, CompositeVideoClip
     from PIL import Image, ImageDraw, ImageFont
     try:
@@ -260,78 +267,64 @@ def create_reels_video(image_path, idea, duration=9):
             return t
         except: return t
 
+    # بدون زوم يخرب - 1.5% فقط
     base=ImageClip(str(image_path), duration=duration)
-    base=base.resize(lambda t: 1.0 + 0.10*t/duration)
-    base=base.set_position(lambda t: ('center', - int((t/duration)*80)))
+    base=base.resize(lambda t: 1.0 + 0.015*t/duration)
+    base=base.set_position('center')
 
     W,H=1080,1920
-    def make_box(ar_text, en_text, h=220, is_top=True):
-        bg_color=(245,233,201,255) if is_top else (25,25,25,255)
-        col_ar=(10,10,10) if is_top else (245,233,201)
-        col_en=(50,50,50) if is_top else (180,180,180)
-        img=Image.new('RGBA',(W,h),bg_color)
+    def make_box(ar_text, en_text, is_top=True):
+        h=240
+        bg=(245,233,201,255) if is_top else (18,18,18,255)
+        col_ar=(12,12,12) if is_top else (245,233,201)
+        col_en=(25,25,25) if is_top else (210,210,210)
+        img=Image.new('RGBA',(W,h),bg)
         d=ImageDraw.Draw(img)
         try:
-            if has_ar: f_ar=ImageFont.truetype(str(amiri_path), 52)
-            else: f_ar=ImageFont.truetype(str(dejavu_path), 38) if dejavu_path.exists() else ImageFont.load_default()
-            f_en=ImageFont.truetype(str(dejavu_path), 28) if dejavu_path.exists() else ImageFont.load_default()
-        except: f_ar=f_en=ImageFont.load_default()
-        ar_fixed=fix_ar(ar_text); en_fixed=en_text
+            f_ar=ImageFont.truetype(str(amiri_path), 56) if has_ar else ImageFont.truetype(str(dejavu_path), 42) if dejavu_path.exists() else ImageFont.load_default()
+            f_en=ImageFont.truetype(str(dejavu_path), 30) if dejavu_path.exists() else ImageFont.load_default()
+            f_en_b=ImageFont.truetype(str(dejavu_path), 32) if dejavu_path.exists() else f_en
+        except: f_ar=f_en=f_en_b=ImageFont.load_default()
+        ar_fixed=fix_ar(ar_text)
         try:
             bbox_ar=d.textbbox((0,0), ar_fixed, font=f_ar)
-            w_ar=bbox_ar[2]-bbox_ar[0]; h_ar=bbox_ar[3]-bbox_ar[1]
-            d.text(((W-w_ar)//2, (h//2-32)-h_ar//2), ar_fixed, font=f_ar, fill=col_ar)
-            bbox_en=d.textbbox((0,0), en_fixed, font=f_en)
-            w_en=bbox_en[2]-bbox_en[0]
-            d.text(((W-w_en)//2, (h//2+32)), en_fixed, font=f_en, fill=col_en)
-        except: pass
+            d.text(((W-(bbox_ar[2]-bbox_ar[0]))//2, 45), ar_fixed, font=f_ar, fill=col_ar)
+            bbox_en=d.textbbox((0,0), en_text, font=f_en_b)
+            x_en=(W-(bbox_en[2]-bbox_en[0]))//2
+            # انجليزي واضح مع stroke
+            d.text((x_en, 135), en_text, font=f_en_b, fill=col_en, stroke_width=2, stroke_fill=(0,0,0) if is_top else (0,0,0))
+        except: d.text((50,50), ar_fixed, fill=col_ar)
         p=Path(tempfile.gettempdir())/f"box_{random.randint(1,9999999)}.png"
         img.save(p); return p
-    def make_mid():
-        img=Image.new('RGBA',(W,60),(255,255,255,230))
-        d=ImageDraw.Draw(img)
-        try:
-            f=ImageFont.truetype(str(dejavu_path), 22) if dejavu_path.exists() else ImageFont.load_default()
-            txt="فعل → رد فعل | ACTION → REACTION"
-            bbox=d.textbbox((0,0), txt, font=f)
-            d.text(((W-(bbox[2]-bbox[0]))//2, (60-(bbox[3]-bbox[1]))//2), txt, font=f, fill=(0,0,0))
-        except: pass
-        p=Path(tempfile.gettempdir())/f"mid_{random.randint(1,9999)}.png"; img.save(p); return p
 
-    top_p=make_box(idea["action_ar"], idea["action_en"], h=220, is_top=True)
-    bottom_p=make_box(idea["reaction_ar"], idea["reaction_en"], h=220, is_top=False)
-    mid_p=make_mid()
+    top_p=make_box(idea["action_ar"], idea["action_en"], is_top=True)
+    bottom_p=make_box(idea["reaction_ar"], idea["reaction_en"], is_top=False)
     top_c=ImageClip(str(top_p), duration=duration).set_position((0,0))
-    mid_c=ImageClip(str(mid_p), duration=duration).set_position((0, H//2-30))
-    bottom_c=ImageClip(str(bottom_p), duration=duration).set_position((0, H-220))
-    bg=Image.new('RGB',(W,H),(12,12,12))
-    bg_p=Path(tempfile.gettempdir())/f"bg_{random.randint(1,9999)}.jpg"; bg.save(bg_p)
-    bg_c=ImageClip(str(bg_p), duration=duration)
-    final=CompositeVideoClip([bg_c, base, top_c, mid_c, bottom_c], size=(W,H)).set_duration(duration)
+    bottom_c=ImageClip(str(bottom_p), duration=duration).set_position((0, H-240))
+    final=CompositeVideoClip([base, top_c, bottom_c], size=(W,H)).set_duration(duration)
 
     mp=Path(tempfile.gettempdir())/f"mus_{random.randint(1,99999)}.mp3"
     audio_added=False
-    for _ in range(5):
+    for _ in range(3):
         music_url=get_music(idea.get("mood","sad_deep"))
         try:
-            log(f"try music {music_url[:50]} mood={idea.get('mood')}")
+            log(f"music {music_url[:70]} mood={idea.get('mood')}")
             download_file(music_url, mp, is_music=True)
-            if mp.exists() and mp.stat().st_size>15000:
-                audio=AudioFileClip(str(mp)).subclip(0,duration).volumex(0.92).audio_fadein(0.4).audio_fadeout(0.9)
+            if mp.exists() and mp.stat().st_size>20000:
+                audio=AudioFileClip(str(mp)).subclip(0,duration).volumex(0.95).audio_fadein(0.5).audio_fadeout(0.8)
                 final=final.set_audio(audio)
                 audio_added=True
                 log(f"music OK {mp.stat().st_size//1024}KB")
                 break
         except Exception as e:
             log(f"music fail {e}")
-            try: mp.unlink(missing_ok=True)
-            except: pass
-            time.sleep(0.3)
-    if not audio_added: log("music failed - video without music")
+            mp.unlink(missing_ok=True)
+            time.sleep(0.4)
+    if not audio_added: log("no music - mute video")
 
     out=Path(tempfile.gettempdir())/f"reel_{int(time.time())}.mp4"
-    final.write_videofile(str(out), fps=30, codec='libx264', audio_codec='aac', preset='ultrafast', bitrate="6000k", logger=None)
-    for p in [top_p,bottom_p,mid_p,bg_p,mp]: Path(p).unlink(missing_ok=True)
+    final.write_videofile(str(out), fps=30, codec='libx264', audio_codec='aac', preset='ultrafast', bitrate="8000k", logger=None)
+    for p in [top_p,bottom_p,mp]: Path(p).unlink(missing_ok=True)
     return out
 
 def send_text(cid,t):
@@ -359,21 +352,21 @@ def process(cid, cinematic=False):
         with plock:
             if cid in processing: send_text(cid,"⏳ يولد..."); return
             processing.add(cid)
-        send_text(cid,"🧠 فعل واقعي من الحياة...\n🎨 صورتين بقصة مختلفة...\n🎵 موسيقى حسب المزاج...\n🔒 يدوي فقط")
+        send_text(cid,"🧠 فعل واقعي يمس القلب...\n🎨 صورتين مختلفتين فعلا...\n🎵 موسيقى pixabay شغالة...\n📱 مناسب للشير ريلز")
 
-        send_text(cid,"⏳ 1/3 عقل واقعي...")
+        send_text(cid,"⏳ 1/3 عقل viral...")
         try: idea=brain_generate()
         except Exception as e: send_error_report(cid, "brain_generate", e); raise
-        send_text(cid,f"✅ فعل واقعي: {idea['action_ar']}\nرد فعل: {idea['reaction_ar']}")
+        send_text(cid,f"✅ {idea['action_ar']} -> {idea['reaction_ar']}\nEN: {idea['action_en']} -> {idea['reaction_en']}")
 
-        send_text(cid,"⏳ 2/3 توليد صورتين بقصة...")
+        send_text(cid,"⏳ 2/3 صورتين مختلفتين...")
         try: combined, qmsg=generate_two_in_one(idea)
         except Exception as e: send_error_report(cid, "generate_two_in_one PIAPI", e); raise
-        send_text(cid,f"✅ صورتين بقصة جاهزة | {qmsg}")
+        send_text(cid,f"✅ صورتين مختلفتين | {qmsg}")
 
         if cinematic:
-            send_text(cid,"⏳ 3/3 مونتاج ريلز 9ث...")
-            try: vid=create_reels_video(combined, idea, duration=9)
+            send_text(cid,"⏳ 3/3 مونتاج ريلز 8ث...")
+            try: vid=create_reels_video(combined, idea, duration=8)
             except Exception as e: send_error_report(cid, "create_reels_video مونتاج", e); raise
             send_text(cid,"✅ مونتاج جاهز - رفع...")
             send_video(cid, vid)
@@ -383,7 +376,7 @@ def process(cid, cinematic=False):
         if combined and Path(combined).exists(): Path(combined).unlink(missing_ok=True)
         if vid and Path(vid).exists(): Path(vid).unlink(missing_ok=True)
         cnt=len(list(ARCHIVE_DIR.glob("*.jpg")))
-        send_text(cid,f"✅ تم\n🔹 {idea['action_ar']} | {idea['action_en']}\n🔸 {idea['reaction_ar']} | {idea['reaction_en']}\n💾 أرشيف {cnt}\n/cinema التالي يدوي")
+        send_text(cid,f"✅ تم\n🔹 {idea['action_ar']} | {idea['action_en']}\n🔸 {idea['reaction_ar']} | {idea['reaction_en']}\n{idea.get('hashtag','')}\n💾 {cnt}\n/cinema التالي")
 
     except Exception as e:
         import traceback; log(traceback.format_exc()[-900:])
@@ -397,8 +390,8 @@ def handle_update(upd):
     try:
         msg=upd.get("message") or {}; chat=(msg.get("chat") or {}).get("id"); text=(msg.get("text") or "").strip()
         if not chat: return
-        if text.startswith("/start"): send_text(chat,"نموذج فعل ورد فعل واقعي\n✅ أقوال واقعية من الحياة\n✅ صورتين بقصة مختلفة نفس الشخص\n✅ موسيقى حسب المزاج\n✅ بدون راوي 9ث ريلز\n✅ يدوي فقط 🔒\n/hikma صورة\n/cinema فيديو\n/archive الأرشيف"); return
-        if text.startswith("/ping"): send_text(chat,f"✅ REAL MANUAL FINAL 🔒 {len(list(ARCHIVE_DIR.glob('*.jpg')))} archived"); return
+        if text.startswith("/start"): send_text(chat,"نموذج V4 VIRAL قابل للشير\n✅ فعل ورد فعل نفس الموضوع يمس القلب\n✅ صورتين مختلفتين فعلا 0.75\n✅ انجليزي واضح بولد + stroke\n✅ موسيقى pixabay شغالة 100%\n✅ بدون زوم يخرب 1.5% فقط\n✅ قصير 4-5 كلمات للشير ريلز\n✅ يدوي فقط 🔒\n/hikma صورة\n/cinema فيديو"); return
+        if text.startswith("/ping"): send_text(chat,f"✅ V4 VIRAL {len(list(ARCHIVE_DIR.glob('*.jpg')))} archived"); return
         if text.startswith("/archive"): send_text(chat,f"💾 أرشيف {len(list(ARCHIVE_DIR.glob('*.jpg')))} صورة"); return
         if "/cinema" in text: threading.Thread(target=process, args=(chat, True), daemon=True).start(); return
         if "/hikma" in text: threading.Thread(target=process, args=(chat, False), daemon=True).start(); return
@@ -409,7 +402,7 @@ def handle_update(upd):
         except: log(f"fatal {e}")
 
 @app.get("/")
-def home(): return f"FINAL REAL ACTION-REACTION V3 {len(list(ARCHIVE_DIR.glob('*.jpg')))} AUTO=OFF",200
+def home(): return f"V4 VIRAL SHAREABLE {len(list(ARCHIVE_DIR.glob('*.jpg')))} AUTO=OFF",200
 @app.post("/telegram/webhook")
 def wh():
     upd=request.get_json(silent=True) or {}
