@@ -1,6 +1,5 @@
-import os, requests, json, time, random, math
+import os, requests, json, time, random
 from flask import Flask, request
-from PIL import Image, ImageDraw
 
 TOKEN = (os.getenv("BOT_TOKEN") or "").strip()
 GROQ_KEY = (os.getenv("GROQ_API_KEY") or "").strip()
@@ -11,123 +10,136 @@ if GROQ_KEY:
     try:
         from groq import Groq
         groq_client = Groq(api_key=GROQ_KEY)
-    except: pass
+        print("✅ Groq OK")
+    except Exception as e:
+        print(f"Groq fail: {e}")
 
 def tele_api(): return f"https://api.telegram.org/bot{TOKEN}"
-def send_msg(c,t):
-    try: requests.post(f"{tele_api()}/sendMessage", json={"chat_id":c,"text":t}, timeout=20)
-    except: pass
-def send_photo(c,p,cap=""):
+
+def send_msg(chat_id, text):
     try:
-        with open(p,'rb') as f: requests.post(f"{tele_api()}/sendPhoto", data={"chat_id":c,"caption":cap}, files={"photo":f}, timeout=80)
-    except Exception as e: print(e)
+        requests.post(f"{tele_api()}/sendMessage", json={"chat_id": chat_id, "text": text}, timeout=20)
+    except: pass
+
+def send_photo(chat_id, path, caption=""):
+    try:
+        with open(path, 'rb') as f:
+            requests.post(f"{tele_api()}/sendPhoto", data={"chat_id": chat_id, "caption": caption}, files={"photo": f}, timeout=120)
+    except Exception as e:
+        print(f"send_photo error: {e}")
 
 def generate_hikma():
-    fb={"ar_top":"لا تنتظر ما في أيدي الناس","ar_bottom":"فما كتبه الله لك سيأتيك","en":"Don't wait for what is in people's hands","full":"لا تنتظر ما في أيدي الناس فما كتبه الله لك سيأتيك"}
-    if not groq_client: return fb
+    fallback = {
+        "hikma": "لا تصنع هموماً لم يكتبها الله عليك",
+        "full": "لا تنتظر ما في أيدي الناس، فالله أعلم بما يصلح لك، وما أخره عنك لحكمة، وما كتبه لك سيأتيك، فاطمئن، إن رزقك لن يخطئ طريقه إليك",
+        "scene": "top: yellow bean character drowning with hands up above water surface, bottom: same character sitting peacefully on sandy seabed underwater, water bubbles, seaweed"
+    }
+    if not groq_client:
+        return fallback
     try:
-        r=groq_client.chat.completions.create(model="llama3-70b-8192", messages=[{"role":"user","content":'JSON only {"ar_top":"سطر قصير 4 كلمات","ar_bottom":"سطر ثاني 4 كلمات","en":"short english","full":"كاملة"}'}], response_format={"type":"json_object"})
-        return json.loads(r.choices[0].message.content)
-    except: return fb
+        r = groq_client.chat.completions.create(
+            model="llama3-70b-8192",
+            messages=[{"role":"user","content":'أنت كاتب حكم مثل hmisc. اكتب JSON فقط: {"hikma":"حكمة قصيرة مؤثرة 7 كلمات","full":"نص طويل مؤثر 30 كلمة عن نفس الحكمة","scene":"وصف مشهدين بالانجليزي للمشهد top و bottom مع شخصية صفراء"}'}],
+            response_format={"type":"json_object"}
+        )
+        data = json.loads(r.choices[0].message.content)
+        return {"hikma": data.get("hikma","لا تصنع هموما لم يكتبها الله عليك"), "full": data.get("full",""), "scene": data.get("scene","yellow character in water")}
+    except Exception as e:
+        print(e)
+        return fallback
 
-# رسم hmisc محلي محسّن جدا
-def gen_hmisc(mood="sad", seed=0):
-    W,H = 1080,1350
-    random.seed(seed)
-    bg = (242, 235, 222)
-    img = Image.new("RGB", (W,H), bg)
-    draw = ImageDraw.Draw(img)
+def gen_hmisc_exact(hikma_short, hikma_long, scene_desc):
+    """
+    هذا هو السحر - نفس ستايل hmisc بالضبط
+    """
+    prompt = f"""
+    hmisc style exact replica, masterpiece,
+    vintage textured beige paper with old stains and grain,
+    two-panel vertical comic, watercolor and ink illustration,
+    small yellow bean-shaped character with thin black stick arms and legs,
+    yellow body with soft watercolor shading and crosshatch,
+    top panel: {scene_desc} - drowning struggle,
+    bottom panel: same yellow character sitting calm underwater on sand,
+    Arabic calligraphy text at top: '{hikma_short}',
+    highly detailed, crosshatch shading, ink outline, water ripples, bubbles, seaweed, sand texture,
+    cozy melancholic deep meaning, children's book illustration by hmisc,
+    NOT 3d, NOT clay, NOT plastic, NOT simple blob, NOT cartoon, watercolor painting
+    """
 
-    # texture ورق قوي
-    for _ in range(8000):
-        x,y = random.randint(0,W), random.randint(0,H)
-        c = random.randint(220,235)
-        draw.point((x,y), fill=(c, c-5, c-15))
+    # نجرب 3 مرات
+    for attempt in range(3):
+        try:
+            seed = random.randint(1000000, 9999999)
+            # flux هو الوحيد اللي بيعرف يرسم hmisc
+            encoded = requests.utils.quote(prompt)
+            url = f"https://image.pollinations.ai/prompt/{encoded}?width=1080&height=1350&model=flux&nologo=true&enhance=true&seed={seed}"
 
-    cx, cy = W//2, H//2
-    # جسم مموج مو ellipse مثالي - زي رسم اليد
-    points = []
-    for i in range(60):
-        angle = i * 6.28 / 60
-        # تموج خفيف
-        r = 1 + 0.06*math.sin(angle*3) + 0.04*random.random()
-        rx = 200 * r
-        ry = 270 * r
-        x = cx + rx * math.cos(angle)
-        y = cy + ry * math.sin(angle)
-        points.append((x,y))
+            print(f"🎨 Generating attempt {attempt+1} seed {seed}...")
+            res = requests.get(url, timeout=90)
 
-    # ظل
-    shadow = [(x+12, y+35) for x,y in points]
-    draw.polygon(shadow, fill=(200,190,170))
-    # جسم اصفر
-    yellow = (255, 229, 120)
-    draw.polygon(points, fill=yellow, outline=(35,35,35), width=5)
+            print(f"Status {res.status_code} size {len(res.content)}")
+            if res.status_code == 200 and len(res.content) > 20000:
+                path = f"/tmp/hmisc_{seed}.jpg"
+                with open(path, "wb") as f:
+                    f.write(res.content)
+                print(f"✅ Image saved {path}")
+                return path
+            else:
+                print(f"❌ Failed attempt {attempt+1}")
+                time.sleep(3)
+        except Exception as e:
+            print(f"Error attempt {attempt+1}: {e}")
+            time.sleep(4)
 
-    # اذنين
-    for ox in [-90, 90]:
-        ex, ey = cx+ox, cy-260
-        draw.ellipse([ex-45, ey-35, ex+45, ey+45], fill=yellow, outline=(35,35,35), width=5)
-
-    # وجه
-    if mood=="sad":
-        # عيون حزينة نايمة
-        draw.ellipse([cx-75, cy-30, cx-35, cy-10], fill=(35,35,35))
-        draw.ellipse([cx+35, cy-30, cx+75, cy-10], fill=(35,35,35))
-        # فم مموج حزين
-        draw.line([cx-25, cy+40, cx-10, cy+45, cx+10, cy+45, cx+25, cy+40], fill=(35,35,35), width=4, joint="curve")
-        # دمعة؟
-        # draw.ellipse([cx-85, cy, cx-75, cy+15], fill=(180,200,255))
-    else:
-        # عيون سعيدة
-        draw.ellipse([cx-70, cy-35, cx-30, cy+5], fill=(35,35,35))
-        draw.ellipse([cx+30, cy-35, cx+70, cy+5], fill=(35,35,35))
-        # لمعة عين
-        draw.ellipse([cx-60, cy-25, cx-45, cy-10], fill=(255,255,255))
-        draw.ellipse([cx+40, cy-25, cx+55, cy-10], fill=(255,255,255))
-        # خدود
-        draw.ellipse([cx-105, cy+25, cx-75, cy+50], fill=(255, 180, 175))
-        draw.ellipse([cx+75, cy+25, cx+105, cy+50], fill=(255, 180, 175))
-        # ابتسامة
-        draw.arc([cx-45, cy+15, cx+45, cy+75], 20, 160, fill=(35,35,35), width=4)
-
-    path = f"/tmp/hmisc_{seed}_{mood}.jpg"
-    img.save(path, "JPEG", quality=95)
-    return path
+    return None
 
 @flask_app.route('/')
-def home(): return "✅ Hmisc Local 100% Live"
+def home():
+    return f"✅ Hmisc Factory - Flux Exact Style - Live"
 
 @flask_app.route('/setwebhook')
 def setwebhook():
-    host=request.host_url.replace("http://","https://")
-    full=f"{host}{TOKEN}"
-    r=requests.get(f"{tele_api()}/setWebhook?url={full}", timeout=15)
-    return f"Webhook {full}<br>{r.text}"
+    if not TOKEN: return "❌ No token", 500
+    host = request.host_url.replace("http://", "https://")
+    full_url = f"{host}{TOKEN}"
+    r = requests.get(f"{tele_api()}/setWebhook?url={full_url}", timeout=15)
+    return f"Webhook: {full_url}<br>Result: {r.text}"
 
 @flask_app.route('/<token>', methods=['POST'])
 def webhook(token):
-    if token!=TOKEN: return "ok",200
+    if token!= TOKEN:
+        return "ok", 200
     try:
-        data=request.get_json(force=True)
-        if not data or "message" not in data: return "ok",200
-        chat_id=data["message"]["chat"]["id"]
-        text=data["message"].get("text","")
+        data = request.get_json(force=True)
+        if not data or "message" not in data:
+            return "ok", 200
+
+        chat_id = data["message"]["chat"]["id"]
+        text = data["message"].get("text", "")
 
         if "/start" in text:
-            send_msg(chat_id,"🎨 Hmisc Factory شغال 100% محلي ✅\nسريع وما بفشل\n\n/hikma")
+            send_msg(chat_id, "🎨 Hmisc Factory الأصلي ✅\n\nستايل vintage مائي حقيقي\n\n/hikma - يصنع حكمة بلوحتين مثل الفيديو")
 
-        elif "/hikma" in text:
-            d=generate_hikma()
-            send_msg(chat_id,f"💡 {d['full']}\n\n🎨 برسم...")
-            p1=gen_hmisc("sad", seed=random.randint(1,999999))
-            send_photo(chat_id,p1,d['ar_top'])
-            time.sleep(1)
-            p2=gen_hmisc("happy", seed=random.randint(1,999999))
-            send_photo(chat_id,p2,f"{d['ar_bottom']}\n\n{d['en']}\n\n#hmisc")
+        elif "/hikma" in text or "/Hikma" in text:
+            send_msg(chat_id, "⏳ بصنع حكمة hmisc... 30-40 ثانية ⏳\n(flux بطيء بس ستايل أصلي)")
 
-    except Exception as e: print(e)
-    return "ok",200
+            d = generate_hikma()
+            send_msg(chat_id, f"💡 {d['hikma']}\n\n{d['full'][:200]}\n\n🎨 برسم اللوحة...")
 
-if __name__=="__main__":
-    flask_app.run(host='0.0.0.0', port=int(os.environ.get("PORT",10000)))
+            img_path = gen_hmisc_exact(d['hikma'], d['full'], d['scene'])
+
+            if img_path:
+                caption = f"{d['hikma']}\n\n{d['full']}\n\n#hmisc #حكمة"
+                send_photo(chat_id, img_path, caption)
+                send_msg(chat_id, "✅ جاهزة للنشر! اذا بدك واحدة ثانية /hikma")
+            else:
+                send_msg(chat_id, "❌ Flux معلق هلا (السيرفر المجاني بعلق احيانا)\nجرب /hikma بعد دقيقة")
+
+    except Exception as e:
+        print(f"Webhook error: {e}")
+
+    return "ok", 200
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 10000))
+    flask_app.run(host='0.0.0.0', port=port)
