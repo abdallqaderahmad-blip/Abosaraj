@@ -1,8 +1,10 @@
-import os, requests, json, time, random
+import os, requests, json, random, time
 from flask import Flask, request
 
 TOKEN = (os.getenv("BOT_TOKEN") or "").strip()
 GROQ_KEY = (os.getenv("GROQ_API_KEY") or "").strip()
+REPLICATE_KEY = (os.getenv("REPLICATE_API_TOKEN") or "").strip()
+
 flask_app = Flask(__name__)
 
 groq_client = None
@@ -10,136 +12,112 @@ if GROQ_KEY:
     try:
         from groq import Groq
         groq_client = Groq(api_key=GROQ_KEY)
-        print("✅ Groq OK")
-    except Exception as e:
-        print(f"Groq fail: {e}")
-
-def tele_api(): return f"https://api.telegram.org/bot{TOKEN}"
-
-def send_msg(chat_id, text):
-    try:
-        requests.post(f"{tele_api()}/sendMessage", json={"chat_id": chat_id, "text": text}, timeout=20)
     except: pass
 
-def send_photo(chat_id, path, caption=""):
+def tele_api(): return f"https://api.telegram.org/bot{TOKEN}"
+def send_msg(c,t):
+    try: requests.post(f"{tele_api()}/sendMessage", json={"chat_id":c,"text":t}, timeout=20)
+    except: pass
+def send_photo(c,p,cap=""):
     try:
-        with open(path, 'rb') as f:
-            requests.post(f"{tele_api()}/sendPhoto", data={"chat_id": chat_id, "caption": caption}, files={"photo": f}, timeout=120)
-    except Exception as e:
-        print(f"send_photo error: {e}")
+        with open(p,'rb') as f: requests.post(f"{tele_api()}/sendPhoto", data={"chat_id":c,"caption":cap}, files={"photo":f}, timeout=120)
+    except Exception as e: print(e)
 
 def generate_hikma():
-    fallback = {
-        "hikma": "لا تصنع هموماً لم يكتبها الله عليك",
-        "full": "لا تنتظر ما في أيدي الناس، فالله أعلم بما يصلح لك، وما أخره عنك لحكمة، وما كتبه لك سيأتيك، فاطمئن، إن رزقك لن يخطئ طريقه إليك",
-        "scene": "top: yellow bean character drowning with hands up above water surface, bottom: same character sitting peacefully on sandy seabed underwater, water bubbles, seaweed"
-    }
-    if not groq_client:
-        return fallback
+    fb = {"hikma":"لا تصنع هموماً لم يكتبها الله عليك","full":"لا تنتظر ما في أيدي الناس، فالله أعلم بما يصلح لك، وما أخره عنك لحكمة، وما كتبه لك سيأتيك، فاطمئن، إن رزقك لن يخطئ طريقه إليك"}
+    if not groq_client: return fb
     try:
-        r = groq_client.chat.completions.create(
-            model="llama3-70b-8192",
-            messages=[{"role":"user","content":'أنت كاتب حكم مثل hmisc. اكتب JSON فقط: {"hikma":"حكمة قصيرة مؤثرة 7 كلمات","full":"نص طويل مؤثر 30 كلمة عن نفس الحكمة","scene":"وصف مشهدين بالانجليزي للمشهد top و bottom مع شخصية صفراء"}'}],
-            response_format={"type":"json_object"}
-        )
-        data = json.loads(r.choices[0].message.content)
-        return {"hikma": data.get("hikma","لا تصنع هموما لم يكتبها الله عليك"), "full": data.get("full",""), "scene": data.get("scene","yellow character in water")}
-    except Exception as e:
-        print(e)
-        return fallback
+        r=groq_client.chat.completions.create(model="llama3-70b-8192", messages=[{"role":"user","content":'JSON only {"hikma":"حكمة قصيرة 7 كلمات","full":"نص 30 كلمة"}'}], response_format={"type":"json_object"})
+        j=json.loads(r.choices[0].message.content)
+        return {"hikma":j.get("hikma",fb["hikma"]), "full":j.get("full",fb["full"])}
+    except: return fb
 
-def gen_hmisc_exact(hikma_short, hikma_long, scene_desc):
-    """
-    هذا هو السحر - نفس ستايل hmisc بالضبط
-    """
+def gen_with_replicate(hikma_text):
+    if not REPLICATE_KEY:
+        return None, "❌ ضيف REPLICATE_API_TOKEN في Render Env"
+
+    # Prompt السحري اللي بيجيب hmisc بالضبط
     prompt = f"""
-    hmisc style exact replica, masterpiece,
-    vintage textured beige paper with old stains and grain,
-    two-panel vertical comic, watercolor and ink illustration,
-    small yellow bean-shaped character with thin black stick arms and legs,
-    yellow body with soft watercolor shading and crosshatch,
-    top panel: {scene_desc} - drowning struggle,
-    bottom panel: same yellow character sitting calm underwater on sand,
-    Arabic calligraphy text at top: '{hikma_short}',
-    highly detailed, crosshatch shading, ink outline, water ripples, bubbles, seaweed, sand texture,
-    cozy melancholic deep meaning, children's book illustration by hmisc,
-    NOT 3d, NOT clay, NOT plastic, NOT simple blob, NOT cartoon, watercolor painting
+    hmisc style exact, two panel vertical comic, vintage beige paper texture watercolor,
+    small yellow bean character with thin black stick limbs, crosshatch ink shading,
+    top: yellow character drowning hands up water ripples panic,
+    bottom: same character sitting calm on sandy seabed underwater bubbles seaweed,
+    Arabic text at top '{hikma_text}',
+    masterpiece, soft watercolor, ink outline, detailed, cozy melancholic
     """
 
-    # نجرب 3 مرات
-    for attempt in range(3):
-        try:
-            seed = random.randint(1000000, 9999999)
-            # flux هو الوحيد اللي بيعرف يرسم hmisc
-            encoded = requests.utils.quote(prompt)
-            url = f"https://image.pollinations.ai/prompt/{encoded}?width=1080&height=1350&model=flux&nologo=true&enhance=true&seed={seed}"
+    try:
+        # نطلب من replicate
+        resp = requests.post(
+            "https://api.replicate.com/v1/predictions",
+            headers={"Authorization": f"Token {REPLICATE_KEY}", "Content-Type":"application/json"},
+            json={
+                "version": "black-forest-labs/flux-1.1-pro",
+                "input": {
+                    "prompt": prompt,
+                    "aspect_ratio": "4:5",
+                    "output_format": "jpg",
+                    "safety_tolerance": 2
+                }
+            },
+            timeout=20
+        )
+        data = resp.json()
+        get_url = data["urls"]["get"]
 
-            print(f"🎨 Generating attempt {attempt+1} seed {seed}...")
-            res = requests.get(url, timeout=90)
-
-            print(f"Status {res.status_code} size {len(res.content)}")
-            if res.status_code == 200 and len(res.content) > 20000:
-                path = f"/tmp/hmisc_{seed}.jpg"
-                with open(path, "wb") as f:
-                    f.write(res.content)
-                print(f"✅ Image saved {path}")
-                return path
-            else:
-                print(f"❌ Failed attempt {attempt+1}")
-                time.sleep(3)
-        except Exception as e:
-            print(f"Error attempt {attempt+1}: {e}")
-            time.sleep(4)
-
-    return None
+        # ننتظر النتيجة
+        for _ in range(30):
+            time.sleep(2)
+            r = requests.get(get_url, headers={"Authorization": f"Token {REPLICATE_KEY}"}, timeout=10).json()
+            if r["status"] == "succeeded":
+                img_url = r["output"]
+                if isinstance(img_url, list): img_url = img_url[0]
+                img_data = requests.get(img_url, timeout=60).content
+                path = f"/tmp/{random.randint(1,999999)}.jpg"
+                with open(path,"wb") as f: f.write(img_data)
+                return path, None
+            if r["status"] == "failed":
+                return None, f"Replicate failed: {r.get('error')}"
+        return None, "Timeout"
+    except Exception as e:
+        return None, str(e)
 
 @flask_app.route('/')
-def home():
-    return f"✅ Hmisc Factory - Flux Exact Style - Live"
+def home(): return "✅ Hmisc Pro - Replicate"
 
 @flask_app.route('/setwebhook')
 def setwebhook():
-    if not TOKEN: return "❌ No token", 500
-    host = request.host_url.replace("http://", "https://")
-    full_url = f"{host}{TOKEN}"
-    r = requests.get(f"{tele_api()}/setWebhook?url={full_url}", timeout=15)
-    return f"Webhook: {full_url}<br>Result: {r.text}"
+    host=request.host_url.replace("http://","https://")
+    full=f"{host}{TOKEN}"
+    r=requests.get(f"{tele_api()}/setWebhook?url={full}", timeout=15)
+    return f"{full}<br>{r.text}"
 
 @flask_app.route('/<token>', methods=['POST'])
 def webhook(token):
-    if token!= TOKEN:
-        return "ok", 200
+    if token!=TOKEN: return "ok",200
     try:
-        data = request.get_json(force=True)
-        if not data or "message" not in data:
-            return "ok", 200
-
-        chat_id = data["message"]["chat"]["id"]
-        text = data["message"].get("text", "")
+        data=request.get_json(force=True)
+        if not data or "message" not in data: return "ok",200
+        chat_id=data["message"]["chat"]["id"]
+        text=data["message"].get("text","")
 
         if "/start" in text:
-            send_msg(chat_id, "🎨 Hmisc Factory الأصلي ✅\n\nستايل vintage مائي حقيقي\n\n/hikma - يصنع حكمة بلوحتين مثل الفيديو")
+            send_msg(chat_id,"🎨 Hmisc Pro شغال ✅\n/hikma - ستايل أصلي 100%")
 
-        elif "/hikma" in text or "/Hikma" in text:
-            send_msg(chat_id, "⏳ بصنع حكمة hmisc... 30-40 ثانية ⏳\n(flux بطيء بس ستايل أصلي)")
+        elif "/hikma" in text:
+            if not REPLICATE_KEY:
+                send_msg(chat_id,"❌ لازم تضيف REPLICATE_API_TOKEN في Render > Environment\nروح replicate.com/account/api-tokens واعمل توكن")
+                return "ok",200
 
-            d = generate_hikma()
-            send_msg(chat_id, f"💡 {d['hikma']}\n\n{d['full'][:200]}\n\n🎨 برسم اللوحة...")
-
-            img_path = gen_hmisc_exact(d['hikma'], d['full'], d['scene'])
-
-            if img_path:
-                caption = f"{d['hikma']}\n\n{d['full']}\n\n#hmisc #حكمة"
-                send_photo(chat_id, img_path, caption)
-                send_msg(chat_id, "✅ جاهزة للنشر! اذا بدك واحدة ثانية /hikma")
+            send_msg(chat_id,"⏳ بصنع بستايل hmisc الأصلي... 20 ثانية ⏳")
+            d=generate_hikma()
+            path, err = gen_with_replicate(d["hikma"])
+            if path:
+                send_photo(chat_id, path, f"{d['hikma']}\n\n{d['full']}\n\n#hmisc")
             else:
-                send_msg(chat_id, "❌ Flux معلق هلا (السيرفر المجاني بعلق احيانا)\nجرب /hikma بعد دقيقة")
+                send_msg(chat_id,f"❌ {err}")
+    except Exception as e: print(e)
+    return "ok",200
 
-    except Exception as e:
-        print(f"Webhook error: {e}")
-
-    return "ok", 200
-
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))
-    flask_app.run(host='0.0.0.0', port=port)
+if __name__=="__main__":
+    flask_app.run(host='0.0.0.0', port=int(os.environ.get("PORT",10000)))
