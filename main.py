@@ -25,7 +25,7 @@ MEMORY_FILE=Path("/tmp/hmisc_brain_memory.json")
 LAST_IMAGE_PATH=Path("/tmp/last_final.jpg")
 TELEGRAM_API=f"https://api.telegram.org/bot{BOT_TOKEN}" if BOT_TOKEN else ""
 
-def log(m): print(f"[V21] {str(m)[:900]}", flush=True)
+def log(m): print(f"[V21.1] {str(m)[:900]}", flush=True)
 
 def load_memory():
     if MEMORY_FILE.exists():
@@ -73,7 +73,6 @@ def download_file(url, path):
 
 def piapi_gen(prompt):
     headers={"X-API-KEY": PIAPI_API_KEY, "Content-Type":"application/json"}
-    # مصلح الشوائب
     negative="watermark, logo, text, letters, words, blurry, low quality, cartoon, anime, female, woman, girl, deformed hands, bad fingers, extra fingers, ugly, distorted, noisy, grainy"
     base="same young man 28yo male arab short black hair light beard white t-shirt same face identical male, perfect hands with 5 fingers, clear black watch on wrist, sharp focus, detailed skin"
     full=f"{base}, {prompt}, ultra clean sharp 8k, photorealistic, no watermark no text"
@@ -152,6 +151,16 @@ def generate_two_in_one(idea, force_new=False):
     return generate_two_in_one_original(idea)
 
 def ensure_fonts():
+    from PIL import ImageFont
+    base=Path("/tmp/fonts"); base.mkdir(exist_ok=True)
+    amiri=base/"Amiri-Bold.ttf"
+    if amiri.exists():
+        try:
+            ImageFont.truetype(str(amiri), 20)
+        except:
+            try: amiri.unlink()
+            except: pass
+            log("Deleted corrupted Amiri")
     possible=[
         Path("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"),
         Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
@@ -161,21 +170,32 @@ def ensure_fonts():
     dejavu=None
     for p in possible:
         if p.exists() and p.stat().st_size>5000:
-            dejavu=p; break
-    # Amiri اختياري
-    base=Path("/tmp/fonts"); base.mkdir(exist_ok=True)
-    amiri=base/"Amiri-Bold.ttf"
-    if not amiri.exists() or amiri.stat().st_size<10000:
+            try:
+                ImageFont.truetype(str(p), 20)
+                dejavu=p
+                break
+            except: continue
+    if not amiri.exists():
         try:
             r=requests.get("https://github.com/google/fonts/raw/main/ofl/amiri/Amiri-Bold.ttf", timeout=10)
-            if r.status_code==200 and len(r.content)>10000: amiri.write_bytes(r.content)
-        except: pass
-    a_path = amiri if amiri.exists() and amiri.stat().st_size>10000 else dejavu
-    log(f"FONTS dejavu={dejavu} amiri={a_path}")
+            if r.status_code==200 and len(r.content)>20000:
+                amiri.write_bytes(r.content)
+                ImageFont.truetype(str(amiri), 20)
+            else:
+                if amiri.exists(): amiri.unlink()
+        except:
+            if amiri.exists():
+                try: amiri.unlink()
+                except: pass
+    a_path = amiri if amiri.exists() and amiri.stat().st_size>20000 else dejavu
+    if a_path:
+        try: ImageFont.truetype(str(a_path), 20)
+        except: a_path=dejavu
+    log(f"FONTS final dejavu={dejavu} amiri_final={a_path}")
     return a_path, dejavu
 
 def create_reels_video(image_path, idea, duration=9):
-    from moviepy.editor import ImageClip, CompositeVideoClip, AudioClip, CompositeAudioClip
+    from moviepy.editor import ImageClip, CompositeVideoClip, AudioClip
     from PIL import Image, ImageDraw, ImageFont
     import numpy as np
     try:
@@ -195,7 +215,7 @@ def create_reels_video(image_path, idea, duration=9):
         return t
 
     W,H=1080,1920
-    BOX_H=380 # كان 620 - هلا 380 عشان الصورة تبين
+    BOX_H=360
     IMG_H=580
 
     from PIL import Image as PILImage
@@ -207,42 +227,43 @@ def create_reels_video(image_path, idea, duration=9):
     top_img.save(top_tmp, quality=98)
     bottom_img.save(bottom_tmp, quality=98)
 
-    # زوم خفيف 8% بس - ما بيخفي الوجه
     top_clip=ImageClip(str(top_tmp), duration=duration).resize(lambda t: 1.0 + 0.08*t/duration).set_position(('center', BOX_H))
     bottom_clip=ImageClip(str(bottom_tmp), duration=duration).resize(lambda t: 1.0 + 0.08*t/duration).set_position(('center', BOX_H+IMG_H+4))
+
+    def safe_font(path, size):
+        try:
+            if path and Path(path).exists():
+                return ImageFont.truetype(str(path), size)
+        except Exception as e:
+            log(f"font fail {path} {e}")
+        try:
+            if dejavu_path and Path(dejavu_path).exists():
+                return ImageFont.truetype(str(dejavu_path), size)
+        except: pass
+        return ImageFont.load_default()
 
     def make_box(ar_text, en_text, is_top=True):
         bg=(242,230,195) if is_top else (14,14,14)
         img=Image.new('RGB',(W,BOX_H),bg)
         d=ImageDraw.Draw(img)
-        # خط كبير مضمون
-        dejavu_str=str(dejavu_path) if dejavu_path else "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
-        try:
-            if amiri_path and Path(amiri_path).exists():
-                f_ar=ImageFont.truetype(str(amiri_path), 95)
-            else:
-                f_ar=ImageFont.truetype(dejavu_str, 70)
-        except:
-            f_ar=ImageFont.truetype(dejavu_str, 70)
-
-        try:
-            f_en=ImageFont.truetype(dejavu_str, 85)
-            f_share=ImageFont.truetype(dejavu_str, 32)
-        except:
-            f_en=ImageFont.truetype(dejavu_str, 85)
-            f_share=f_en
-
+        f_ar = safe_font(amiri_path, 95)
+        f_en = safe_font(dejavu_path, 85)
+        f_share = safe_font(dejavu_path, 32)
         ar_fixed=fix_ar(ar_text)
         en_clean=str(en_text).strip().upper()
-
-        # AR 95px
-        bbox_ar=d.textbbox((0,0), ar_fixed, font=f_ar)
-        d.text(((W-(bbox_ar[2]-bbox_ar[0]))//2, 60), ar_fixed, font=f_ar, fill=(12,12,12) if is_top else (242,230,195))
-        # EN 85px كبير جدا وواضح
-        bbox_en=d.textbbox((0,0), en_clean, font=f_en)
-        d.text(((W-(bbox_en[2]-bbox_en[0]))//2, 200), en_clean, font=f_en, fill=(30,30,30) if is_top else (235,235,235))
-        d.text((W-190, 18), "> SHARE", font=f_share, fill=(90,90,90) if is_top else (110,110,110))
-
+        try:
+            bbox_ar=d.textbbox((0,0), ar_fixed, font=f_ar)
+            d.text(((W-(bbox_ar[2]-bbox_ar[0]))//2, 60), ar_fixed, font=f_ar, fill=(12,12,12) if is_top else (242,230,195))
+        except:
+            d.text((W//2-200, 60), ar_text, fill=(0,0,0))
+        try:
+            bbox_en=d.textbbox((0,0), en_clean, font=f_en)
+            d.text(((W-(bbox_en[2]-bbox_en[0]))//2, 200), en_clean, font=f_en, fill=(30,30,30) if is_top else (235,235,235))
+        except:
+            d.text((W//2-200, 200), en_clean, fill=(0,0,0))
+        try:
+            d.text((W-190, 18), "> SHARE", font=f_share, fill=(90,90,90) if is_top else (110,110,110))
+        except: pass
         p=Path(tempfile.gettempdir())/f"b_{random.randint(1,9999999)}.png"
         img.save(p, quality=98)
         return p
@@ -251,29 +272,26 @@ def create_reels_video(image_path, idea, duration=9):
     bottom_box_p=make_box(idea["reaction_ar"], idea["reaction_en"], False)
     top_box=ImageClip(str(top_box_p), duration=duration).set_position((0,0))
     bottom_box=ImageClip(str(bottom_box_p), duration=duration).set_position((0, BOX_H+IMG_H*2+8))
-
     final=CompositeVideoClip([top_clip, bottom_clip, top_box, bottom_box], size=(W,H)).set_duration(duration)
 
-    # موسيقى عالية واضحة 1.4 + bass
     try:
         log("Music loud piano")
         def _single(tt):
             cycle = tt % 8.0
             pos = cycle % 2.0
-            if cycle < 2.0: freqs=[220.00,261.63,329.63, 440.0] # Am
-            elif cycle < 4.0: freqs=[174.61,220.00,261.63, 349.23] # F
-            elif cycle < 6.0: freqs=[130.81,164.81,196.00, 261.63] # C
-            else: freqs=[196.00,246.94,293.66, 392.0] # G
+            if cycle < 2.0: freqs=[220.00,261.63,329.63,440.0]
+            elif cycle < 4.0: freqs=[174.61,220.00,261.63,349.23]
+            elif cycle < 6.0: freqs=[130.81,164.81,196.00,261.63]
+            else: freqs=[196.00,246.94,293.66,392.0]
             decay = max(0.12, float(np.exp(-pos*1.2)))
             v=0.0
             for i,f in enumerate(freqs):
                 amp=[0.60,0.40,0.28,0.18][i]
                 n=amp*np.sin(2*np.pi*f*tt)*decay
                 n+=amp*0.5*np.sin(2*np.pi*f*2*tt)*decay*0.4
-                n+=amp*0.25*np.sin(2*np.pi*f*0.5*tt)*decay # bass
+                n+=amp*0.25*np.sin(2*np.pi*f*0.5*tt)*decay
                 v+=n
-            return v*0.75 # اعلى
-
+            return v*0.75
         def sad_frame(t):
             if isinstance(t, (int,float,np.floating)):
                 v=_single(float(t))
@@ -282,7 +300,6 @@ def create_reels_video(image_path, idea, duration=9):
                 arr=np.atleast_1d(t).astype(float)
                 vals=np.array([_single(float(x)) for x in arr], dtype=np.float32)
                 return np.column_stack([vals, vals])
-
         music=AudioClip(sad_frame, duration=duration).volumex(1.4).audio_fadein(0.6).audio_fadeout(1.2)
         final=final.set_audio(music)
         has_audio=True
@@ -316,7 +333,7 @@ def process(cid, cinematic=False, force_new=False):
             if cid in processing: send_text(cid,"⏳ يولد..."); return
             processing.add(cid)
         if force_new:
-            send_text(cid,"✨ V21 NEW\nبوكس 360 + صور 580 واضحة | EN 85px | 🎵 عالي")
+            send_text(cid,"✨ V21.1 FIX\nخط مصلح + بوكس صغير")
             idea=brain_generate_smart()
             send_text(cid,f"✅ {idea['action_ar']} -> {idea['reaction_ar']}\nEN {idea['action_en']} -> {idea['reaction_en']}")
             combined,qmsg=generate_two_in_one(idea, force_new=True)
@@ -329,17 +346,17 @@ def process(cid, cinematic=False, force_new=False):
                 idea={"action_ar":"تحفظهم ككلمة مرور","reaction_ar":"فينسونك كإعلان","action_en":"SAVE AS PASSWORD","reaction_en":"FORGOTTEN LIKE ADS"}
                 combined=LAST_IMAGE_PATH
                 qmsg="CACHED 0$"
-                send_text(cid,"🧪 TEST مجاني | بوكس صغير + موسيقى عالية")
+                send_text(cid,"🧪 TEST مجاني V21.1")
         send_text(cid,f"✅ صور | {qmsg}")
         if cinematic:
             vid,has_audio=create_reels_video(combined, idea, 9)
-            send_text(cid,f"✅ فيديو {'🎵 عالي واضح' if has_audio else '🔇'} | صور واضحة 580px")
+            send_text(cid,f"✅ فيديو {'🎵 عالي' if has_audio else '🔇'} | بوكس 360")
             send_video(cid, vid)
             if vid and Path(vid).exists() and Path(vid)!=LAST_IMAGE_PATH:
                 Path(vid).unlink(missing_ok=True)
         else:
             send_photo(cid, combined)
-        send_text(cid,"✅ جاهز V21")
+        send_text(cid,"✅ جاهز V21.1")
     except Exception as e:
         import traceback; log(traceback.format_exc()[-900:])
         send_text(cid,f"❌ فشل {str(e)[:300]}")
@@ -352,9 +369,9 @@ def handle_update(upd):
         if not chat: return
         if text.startswith("/start"):
             has=LAST_IMAGE_PATH.exists() and LAST_IMAGE_PATH.stat().st_size>50000
-            send_text(chat,f"V21 FINAL ✅\nبوكس 360px صغير + صورة 580px واضحة\nEN 85px AR 95px كبير جدا\n🎵 بيانو عالي 1.4 + Bass\nزوم 8% خفيف\nشوائب مصلحة\n\n/cinema جديد\n/test_video مجاني {'✅' if has else '⚠️'}\n/ping")
+            send_text(chat,f"V21.1 FIX ✅\ncannot open resource مصلح\nبوكس 360 صغير + صورة 580 واضحة\nEN 85px AR 95px\n🎵 عالي\n\n/cinema جديد\n/test_video مجاني {'✅' if has else '⚠️'}\n/ping")
             return
-        if text.startswith("/ping"): send_text(chat,f"V21 | cache:{'نعم' if LAST_IMAGE_PATH.exists() else 'لا'}"); return
+        if text.startswith("/ping"): send_text(chat,f"V21.1 | cache:{'نعم' if LAST_IMAGE_PATH.exists() else 'لا'}"); return
         if "/test_video" in text:
             if LAST_IMAGE_PATH.exists() and LAST_IMAGE_PATH.stat().st_size>50000:
                 threading.Thread(target=process, args=(chat, True, False), daemon=True).start()
@@ -366,7 +383,7 @@ def handle_update(upd):
     except Exception as e: log(f"handle {e}")
 
 @app.get("/")
-def home(): return f"V21 FINAL cached={LAST_IMAGE_PATH.exists()}",200
+def home(): return f"V21.1 FINAL cached={LAST_IMAGE_PATH.exists()}",200
 @app.post("/telegram/webhook")
 def wh():
     upd=request.get_json(silent=True) or {}
